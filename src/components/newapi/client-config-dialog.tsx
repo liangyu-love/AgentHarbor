@@ -100,7 +100,8 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       claudeOneM: isClaude ? claudeOneMDefaults(saved?.claudeOneM) : undefined,
       authField: saved?.authField ?? "authToken",
       ...(isHarness ? { harnessProfile: saved?.harnessProfile ?? harnessProfiles[0]?.name ?? null,
-        harnessDefaultModel: saved?.harnessDefaultModel ?? true } : {}),
+        harnessDefaultModel: saved?.harnessDefaultModel ?? true,
+        harnessReasoningEffort: canRestore ? saved?.harnessReasoningEffort ?? null : null } : {}),
     };
   });
   // A configured client shows the kinds it uses; a new one offers every kind.
@@ -176,6 +177,26 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       providerIds: selected.map(entry => entry.id), providerModelIds: undefined, aggregateIngressProtocol: "anthropicMessages",
       modelSelection: target ? { defaultTarget: target, availableTargets: mixedEntries.map(entry => entry.target) } : undefined };
   };
+  /** The request as it is previewed and applied: every target the client may reach. */
+  const buildConfiguredRequest = (): ClientConfigRequest => {
+    if (claudeMixed) return mixedRequest();
+    if (isClaude) return { ...request, claudeModelIds: configuredModels };
+    const availableTargets: ModelTargetRef[] = [...selected.flatMap(entry => modelIdsForProvider(entry).map(modelId => ({ kind: "provider" as const, providerId: entry.id, modelId }))),
+      ...aggregateIds.map(aggregateId => ({ kind: "aggregate" as const, aggregateId }))];
+    return { ...request,
+      modelSelection: aggregateIds.length ? { defaultTarget: aggregateMode ? defaultTarget : { kind: "provider" as const, providerId: request.providerId, modelId: request.model }, availableTargets } : undefined,
+      providerModelIds: Object.fromEntries(selected.map(entry => [entry.id, modelIdsForProvider(entry)])) };
+  };
+  // Harness's thinking levels for the default model, resolved by the backend like the routes it writes.
+  const reasoningRequest = isHarness && modelCompatible && request.harnessDefaultModel !== false
+    ? { ...buildConfiguredRequest(), harnessReasoningEffort: null } : null;
+  const reasoningQuery = useQuery({
+    queryKey: ["harness-reasoning", reasoningRequest],
+    queryFn: () => api.targets.harnessReasoning(reasoningRequest!),
+    enabled: !!reasoningRequest,
+    retry: false,
+  });
+  const reasoning = reasoningRequest ? reasoningQuery.data : undefined;
   const profileTargetLabel = (profile: ClaudeConfigProfile) => {
     const target = profile.request.modelSelection?.defaultTarget;
     return target?.kind === "aggregate"
@@ -184,7 +205,12 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   };
   const update = (patch: Partial<ClientConfigRequest>) => {
     if (busy) return;
-    setRequest(current => ({ ...current, ...patch }));
+    setRequest(current => {
+      const next = { ...current, ...patch };
+      // A chosen thinking level belongs to the model it was picked for.
+      return isHarness && (next.model !== current.model || next.providerId !== current.providerId)
+        ? { ...next, harnessReasoningEffort: null } : next;
+    });
     setPreview(null);
     setError(null);
   };
@@ -515,13 +541,11 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     setBusy(true);
     setError(null);
     try {
-      const availableTargets: ModelTargetRef[] = [...selected.flatMap(entry => modelIdsForProvider(entry).map(modelId => ({ kind: "provider" as const, providerId: entry.id, modelId }))),
-        ...aggregateIds.map(aggregateId => ({ kind: "aggregate" as const, aggregateId }))];
-      const configuredRequest = claudeMixed ? mixedRequest() : isClaude ? { ...request, claudeModelIds: configuredModels } : { ...request,
-        modelSelection: aggregateIds.length ? { defaultTarget: aggregateMode ? defaultTarget : { kind: "provider" as const, providerId: request.providerId, modelId: request.model }, availableTargets } : undefined,
-        providerModelIds: Object.fromEntries(
-        selected.map(entry => [entry.id, modelIdsForProvider(entry)]),
-      ) };
+      const configuredRequest = buildConfiguredRequest();
+      // A saved level the model no longer offers falls back to its default.
+      if (reasoning && configuredRequest.harnessReasoningEffort && !reasoning.levels.includes(configuredRequest.harnessReasoningEffort)) {
+        configuredRequest.harnessReasoningEffort = null;
+      }
       if (preview) {
         const applied = await api.targets.applyConfig(configuredRequest, preview.revision, client.conflict);
         await onApplied();
@@ -748,6 +772,18 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
                     onChange={event => update({ harnessDefaultModel: event.target.checked })} />
                   {t("clients.harnessDefaultModel")}
                 </label>}
+                {isHarness && !!reasoning?.levels.length && <div className="flex items-center justify-between gap-3 pt-1" data-harness-reasoning>
+                  <Label htmlFor="client-harness-reasoning" className="text-xs font-normal text-muted-foreground">{t("clients.harnessReasoning")}</Label>
+                  <Select disabled={busy} value={request.harnessReasoningEffort && reasoning.levels.includes(request.harnessReasoningEffort) ? request.harnessReasoningEffort : "auto"}
+                    onValueChange={value => update({ harnessReasoningEffort: value === "auto" ? null : value })}>
+                    <SelectTrigger id="client-harness-reasoning" className="h-8 w-44 bg-card"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">{reasoning.modelDefault
+                        ? t("clients.harnessReasoningDefault", { level: reasoning.modelDefault }) : t("clients.harnessReasoningProvider")}</SelectItem>
+                      {reasoning.levels.map(level => <SelectItem key={level} value={level}>{level}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>}
                 {isClaude && <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground"
                   title={startupOneMUnavailable ? t("clients.oneMUnavailable") : undefined}>
                   <input type="checkbox" checked={!startupOneMUnavailable && (request.claudeOneM?.startup ?? false)}

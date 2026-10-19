@@ -96,6 +96,15 @@ export interface ClientConfigRequest {
   harnessProfile?: string | null;
   /** DeepSeek Harness: whether new sessions start on the chosen model; absent means yes. */
   harnessDefaultModel?: boolean | null;
+  /** DeepSeek Harness: the default model's thinking level; absent follows the model's default. */
+  harnessReasoningEffort?: string | null;
+}
+/** DeepSeek Harness: the thinking levels the default model offers. */
+export interface HarnessReasoning {
+  levels: string[];
+  /** The model's own default level, used when none is chosen. */
+  modelDefault: string | null;
+  effort: string | null;
 }
 export interface ClientConfigPreview {
   path: string;

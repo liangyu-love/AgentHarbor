@@ -571,6 +571,58 @@ fn a_bearer_only_messages_relay_is_reached_through_the_router() {
 }
 
 #[test]
+fn the_default_model_starts_on_its_default_effort_or_the_chosen_level() {
+    let mut fixture = Fixture::new(ClientAccessMode::Router, Some(DESKTOP), Some(CREDENTIALS));
+    fixture.store.providers[0].models[0].overrides.reasoning = Some(
+        ["none", "low", "high", "max"]
+            .into_iter()
+            .map(|effort| crate::core::model_metadata::ReasoningLevel {
+                effort: effort.into(),
+                description: String::new(),
+            })
+            .collect(),
+    );
+    let offered = fixture
+        .manager
+        .harness_reasoning(&fixture.store, &fixture.request)
+        .unwrap();
+    assert_eq!(offered.levels, ["off", "low", "high", "max"]);
+    // No declared default: the resolver's policy picks high over low and max.
+    assert_eq!(offered.model_default.as_deref(), Some("high"));
+    let preview = fixture
+        .manager
+        .preview(&fixture.store, &fixture.request)
+        .unwrap();
+    assert!(preview.removed_fields.is_empty(), "{:?}", preview.removed_fields);
+    fixture.apply();
+    assert_eq!(default_model(&fixture.patch_doc())["reasoningEffort"], "high");
+
+    fixture.request.options.harness_reasoning_effort = Some("max".into());
+    fixture.apply();
+    assert_eq!(default_model(&fixture.patch_doc())["reasoningEffort"], "max");
+
+    fixture.request.options.harness_reasoning_effort = Some("medium".into());
+    assert_eq!(
+        fixture
+            .manager
+            .preview(&fixture.store, &fixture.request)
+            .err()
+            .as_deref(),
+        Some("clients.errors.harnessReasoningEffort")
+    );
+
+    // A model with no levels leaves the provider's default.
+    fixture.request.options.harness_reasoning_effort = None;
+    fixture.store.providers[0].models[0].overrides.reasoning = None;
+    fixture.apply();
+    assert!(default_model(&fixture.patch_doc())
+        .get("reasoningEffort")
+        .is_none());
+    fixture.manager.restore(TargetId::Harness).unwrap();
+    assert_eq!(fixture.patch_text(), DESKTOP);
+}
+
+#[test]
 fn a_default_model_picked_in_harness_is_activity_and_survives_restore() {
     let fixture = Fixture::new(ClientAccessMode::Router, Some(DESKTOP), Some(CREDENTIALS));
     fixture.apply();

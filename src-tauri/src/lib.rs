@@ -214,6 +214,7 @@ pub fn run() {
             commands::client_config::list_client_configs,
             commands::client_config::list_client_files,
             commands::client_config::preview_client_config,
+            commands::client_config::harness_reasoning_levels,
             commands::client_config::apply_client_config,
             commands::client_config::restore_client_config,
             commands::client_config::preview_claude_code_official_config,

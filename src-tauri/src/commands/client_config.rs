@@ -1,7 +1,7 @@
 use crate::core::{
     client_config::{
         ClaudeOfficialPreview, ClientPaths, ClientStatus, ConfigApplied, ConfigManager,
-        ConfigPreview, ConfigRequest, Network,
+        ConfigPreview, ConfigRequest, HarnessReasoning, Network,
     },
     models::ApiProxyMode,
     repository::Repository,
@@ -90,6 +90,16 @@ pub fn preview_client_config(
         &request,
         replace_conflicts.unwrap_or(false),
     )
+}
+
+/// The thinking levels DeepSeek Harness offers for the dialog's default model.
+#[tauri::command]
+pub fn harness_reasoning_levels(
+    repo: State<'_, Mutex<Repository>>,
+    request: ConfigRequest,
+) -> Result<HarnessReasoning, String> {
+    let paths = paths(&repo)?;
+    manager(&paths).harness_reasoning(&router::load_store(&paths)?, &request)
 }
 
 #[tauri::command]

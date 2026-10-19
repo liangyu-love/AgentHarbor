@@ -24,6 +24,18 @@ pub(super) struct Routes {
     pub credentials: Vec<(String, String)>,
     /// The route and model new sessions start on.
     pub default: Option<(String, String)>,
+    /// The default model's thinking levels and the one new sessions start on.
+    pub reasoning: Reasoning,
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reasoning {
+    pub levels: Vec<String>,
+    /// The model's own default level, chosen when the user picks none.
+    pub model_default: Option<String>,
+    /// The level written; absent leaves the provider's default.
+    pub effort: Option<String>,
 }
 
 /// A route key Harness accepts: lowercase and hyphenated. A provider id that
@@ -170,6 +182,8 @@ pub(super) fn build(
         name
     };
     let mut routes = Vec::new();
+    // Thinking levels per (route, model), for the default model's effort.
+    let mut levels = Vec::new();
     for provider in providers {
         let ids: BTreeSet<String> =
             if let Some(ids) = request.options.provider_model_ids.get(&provider.id) {
@@ -211,6 +225,15 @@ pub(super) fn build(
                         json!(["text"])
                     };
                 }
+                levels.push((
+                    route_key(&provider.id, protocol),
+                    id.clone(),
+                    Reasoning {
+                        levels: facts.thinking_levels().into_iter().map(str::to_owned).collect(),
+                        model_default: facts.default_level().map(str::to_owned),
+                        effort: None,
+                    },
+                ));
                 if facts.reasoning == Some(false) {
                     entry["reasoningEfforts"] = json!(false);
                 } else {
@@ -323,6 +346,20 @@ pub(super) fn build(
         if !serves {
             return Err("clients.errors.modelSelection".into());
         }
+        // Aggregates carry no declared levels, so they keep the provider's default.
+        let mut reasoning = levels
+            .into_iter()
+            .find(|(route, model, _)| *route == key && *model == request.model)
+            .map(|(.., reasoning)| reasoning)
+            .unwrap_or_default();
+        reasoning.effort = match request.options.harness_reasoning_effort.as_deref() {
+            Some(level) if reasoning.levels.iter().any(|offered| offered == level) => {
+                Some(level.to_owned())
+            }
+            Some(_) => return Err("clients.errors.harnessReasoningEffort".into()),
+            None => reasoning.model_default.clone(),
+        };
+        output.reasoning = reasoning;
         output.default = Some((key, request.model.clone()));
     }
     output.routes = routes;

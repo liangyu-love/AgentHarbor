@@ -37,7 +37,7 @@ import type {
 import { claudeDesktopApi } from "@/lib/claude-desktop";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
-import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview, ClientLaunch } from "@/types/clients";
+import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview, ClientLaunch, HarnessReasoning } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
@@ -329,6 +329,7 @@ const targetsApi = {
   configs: () => invoke<ClientStatus[]>("list_client_configs"),
   files: () => invoke<ClientFiles[]>("list_client_files"),
   previewConfig: (request: ClientConfigRequest, replaceConflicts = false) => invoke<ClientConfigPreview>("preview_client_config", { request, replaceConflicts }),
+  harnessReasoning: (request: ClientConfigRequest) => invoke<HarnessReasoning>("harness_reasoning_levels", { request }),
   applyConfig: (request: ClientConfigRequest, revision: string, replaceConflicts = false) => invoke<ClientConfigApplied>("apply_client_config", { request, revision, replaceConflicts }),
   restoreConfig: (targetId: TargetId, replaceConflicts = false) => invoke<ClientConfigApplied>("restore_client_config", { targetId, replaceConflicts }),
   previewClaudeOfficial: () => invoke<ClaudeOfficialPreview>("preview_claude_code_official_config"),

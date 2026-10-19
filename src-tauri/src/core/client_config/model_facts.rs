@@ -12,6 +12,8 @@ pub(super) struct ModelFacts {
     /// Declared effort spellings in declaration order; empty when the
     /// deployment declares no effort control.
     pub efforts: Vec<String>,
+    /// The effort the deployment starts on when it declares one.
+    pub default_effort: Option<String>,
     /// Whether the model reasons. Explicit effort levels are also a
     /// capability declaration, so a manually configured, uncatalogued model
     /// with levels stays usable.
@@ -30,6 +32,26 @@ impl ModelFacts {
             .iter()
             .find(|effort| *effort == level || (level == "off" && *effort == "none"))
             .map(String::as_str)
+    }
+
+    /// The pi-ai thinking levels this deployment offers, in pi-ai's order.
+    pub fn thinking_levels(&self) -> Vec<&'static str> {
+        if self.reasoning == Some(false) {
+            return Vec::new();
+        }
+        THINKING_LEVELS
+            .into_iter()
+            .filter(|level| self.effort_for(level).is_some())
+            .collect()
+    }
+
+    /// The thinking level the deployment's default effort sends, when offered.
+    pub fn default_level(&self) -> Option<&'static str> {
+        let effort = self.default_effort.as_deref()?;
+        self.thinking_levels().into_iter().find(|level| {
+            self.effort_for(level)
+                .is_some_and(|declared| declared.eq_ignore_ascii_case(effort))
+        })
     }
 }
 
@@ -98,6 +120,7 @@ pub(super) fn facts(
         label,
         projection,
         efforts,
+        default_effort: metadata.default_effort.clone(),
         reasoning,
         image_input,
         price,

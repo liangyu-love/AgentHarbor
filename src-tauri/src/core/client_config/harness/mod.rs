@@ -17,6 +17,7 @@ mod dotenv;
 mod routes;
 mod yaml;
 
+pub use routes::Reasoning as HarnessReasoning;
 pub(super) use routes::PROTOCOLS;
 
 use super::*;
@@ -588,15 +589,7 @@ impl ConfigManager {
             }
             None => (current.clone(), current.clone()),
         };
-        let built = {
-            let catalog = models_dev::load(&self.app_data_dir);
-            let official = self
-                .official_home
-                .as_ref()
-                .map(|home| model_catalog::official(home, &self.app_data_dir))
-                .unwrap_or_default();
-            routes::build(store, request, &catalog, &official.models)?
-        };
+        let built = self.harness_routes(store, request)?;
         let mut edits: Vec<(Field, Option<Value>)> = Vec::new();
         for route in &built.routes {
             let field = Field::patch(PROVIDERS_ROW, &["providers", &route.key]);
@@ -612,8 +605,12 @@ impl ConfigManager {
                 Some(json!(provider)),
             ));
             edits.push((Field::patch(DEFAULT_ROW, &["model"]), Some(json!(model))));
-            // A saved effort belongs to the previous model.
-            edits.push((Field::patch(DEFAULT_ROW, &["reasoningEffort"]), None));
+            // A saved effort belongs to the previous model; absent follows
+            // the provider's own default.
+            edits.push((
+                Field::patch(DEFAULT_ROW, &["reasoningEffort"]),
+                built.reasoning.effort.as_ref().map(|effort| json!(effort)),
+            ));
         }
         for (name, value) in &built.credentials {
             let field = Field::Credential { name: name.clone() };
@@ -718,6 +715,28 @@ impl ConfigManager {
             warnings.push("clients.warnings.harnessRestart".into());
         }
         Ok(warnings)
+    }
+
+    fn harness_routes(&self, store: &Store, request: &ConfigRequest) -> Result<routes::Routes, String> {
+        let catalog = models_dev::load(&self.app_data_dir);
+        let official = self
+            .official_home
+            .as_ref()
+            .map(|home| model_catalog::official(home, &self.app_data_dir))
+            .unwrap_or_default();
+        routes::build(store, request, &catalog, &official.models)
+    }
+
+    /// The thinking levels the dialog offers for the chosen default model.
+    pub fn harness_reasoning(
+        &self,
+        store: &Store,
+        request: &ConfigRequest,
+    ) -> Result<HarnessReasoning, String> {
+        let mut request = request.clone();
+        request.options.harness_default_model = Some(true);
+        request.options.harness_reasoning_effort = None;
+        Ok(self.harness_routes(store, &request)?.reasoning)
     }
 
     pub(super) fn harness_preview(

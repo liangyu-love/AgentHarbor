@@ -76,6 +76,10 @@ pub struct ClientOptions {
     /// absent means yes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness_default_model: Option<bool>,
+    /// The thinking level Harness's default model starts on; absent follows
+    /// the model's own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_reasoning_effort: Option<String>,
 }
 
 impl ConfigRequest {

@@ -16,7 +16,7 @@ mod owned;
 mod takeover;
 mod version;
 pub use claude_official::ClaudeOfficialPreview;
-pub use harness::{HarnessInfo, HarnessProfile};
+pub use harness::{HarnessInfo, HarnessProfile, HarnessReasoning};
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
 #[cfg(test)]
