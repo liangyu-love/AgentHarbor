@@ -77,7 +77,7 @@ pub fn query(
     let url_text = request
         .url
         .replace("{{baseUrl}}", root.as_str().trim_end_matches('/'));
-    let url = reqwest::Url::parse(&url_text).map_err(|_| "newapi.errors.url")?;
+    let mut url = reqwest::Url::parse(&url_text).map_err(|_| "newapi.errors.url")?;
     if url.origin() != root.origin()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -105,6 +105,18 @@ pub fn query(
                     .unwrap_or_default(),
             ))
     };
+    // The parser percent-encodes `{{…}}`, so expand decoded pairs and let the
+    // serializer encode secrets such as `&`, `+` or `#` as plain values.
+    if url
+        .query_pairs()
+        .any(|(k, v)| k.contains("{{") || v.contains("{{"))
+    {
+        let pairs = url
+            .query_pairs()
+            .map(|(k, v)| Ok((expand(&k)?, expand(&v)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        url.query_pairs_mut().clear().extend_pairs(pairs);
+    }
     let client = newapi::client(proxy)?;
     let mut builder = match request.method.as_deref().unwrap_or("GET") {
         "GET" => client.get(url),
@@ -185,6 +197,56 @@ mod tests {
             )
             .unwrap_err(),
             "newapi.errors.balanceScriptOrigin"
+        );
+    }
+    #[test]
+    fn custom_query_encodes_secrets_in_query_parameters() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut bytes = [0u8; 8192];
+            let count = socket.read(&mut bytes).unwrap();
+            let request = String::from_utf8_lossy(&bytes[..count]).into_owned();
+            let target = request.split(' ').nth(1).unwrap().to_owned();
+            let body = r#"{"balance":3}"#;
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            target
+        });
+        let connection = newapi::Connection {
+            base_url: format!("http://{address}"),
+            api_key: "sk-a&b+c#d=e".into(),
+            ..Default::default()
+        };
+        let proxy = newapi::effective_proxy("direct", &ApiProxyConfigPayload::default());
+        let script = "({request:{url:'{{baseUrl}}/usage?tag=a&key={{apiKey}}&tag=b&empty='},extractor:r=>({remaining:r.balance})})";
+        assert_eq!(query(&connection, &proxy, script).unwrap().remaining, 3.0);
+        let target = server.join().unwrap();
+        let url = reqwest::Url::parse(&format!("http://{address}{target}")).unwrap();
+        let pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        assert_eq!(
+            pairs,
+            [
+                ("tag", "a"),
+                ("key", "sk-a&b+c#d=e"),
+                ("tag", "b"),
+                ("empty", "")
+            ]
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        );
+
+        // A missing key fails before any request is attempted.
+        let unauthenticated = newapi::Connection {
+            base_url: "http://127.0.0.1:9".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            query(&unauthenticated, &proxy, script).unwrap_err(),
+            "newapi.errors.token"
         );
     }
 }
