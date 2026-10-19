@@ -83,7 +83,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
   const fetching = sourceTab ? sources.query.isFetching : accountsQuery.isFetching;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5 pb-8">
+    <div className="space-y-5 pb-8">
         <PageHero kicker="Accounts" icon={<UsersRound />} titleAs="h2" title={t("accounts.title")}
           description={t("accounts.heroDesc")}
           badge={<Badge variant="outline" className="border-primary/25 bg-primary/5 text-[10px] text-primary">{t("accounts.official")}</Badge>}
@@ -149,7 +149,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
         </section>
 
         {accountsQuery.isPending ? (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4">
             {Array.from({ length: 3 }).map((_, index) => (
             <Skeleton key={index} className="h-[330px] rounded-2xl" />
             ))}
@@ -179,7 +179,7 @@ export function AccountsPage({ refreshInterval }: { refreshInterval: RefreshInte
             {t("accounts.noMatch")}
           </div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4">
             {filtered.map((account) => (
               <AccountCard
                 key={account.accountKey}

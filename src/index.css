@@ -827,8 +827,7 @@ body {
   --overview-soft: hsl(var(--muted) / 0.72);
   display: grid;
   gap: 1rem;
-  width: min(100%, 1440px);
-  margin-inline: auto;
+  width: 100%;
   padding-bottom: 1.5rem;
 }
 .overview-shell button:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 3px; }
@@ -1042,15 +1041,18 @@ body {
   animation: sidebar-capsule-in 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 html[data-has-custom-bg="true"] .sidebar-capsule {
-  background: hsl(var(--card) / 0.52);
+  background: hsl(var(--card) / 0.34);
   box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.38), 0 22px 44px -24px rgb(0 0 0 / 0.4);
-  backdrop-filter: blur(20px) saturate(1.5);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  backdrop-filter: blur(14px) saturate(1.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.6);
 }
 html.dark[data-has-custom-bg="true"] .sidebar-capsule {
-  background: hsl(var(--card) / 0.56);
+  background: hsl(var(--card) / 0.4);
   box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.09), 0 22px 44px -24px rgb(0 0 0 / 0.6);
 }
+/* Clearer glass needs firmer ink: labels and icons keep their contrast over any wallpaper. */
+html[data-has-custom-bg="true"] .sidebar-capsule .app-nav-button { color: hsl(var(--foreground)); text-shadow: 0 1px 2px hsl(var(--card) / 0.55); }
+html[data-has-custom-bg="true"] .sidebar-capsule .app-nav-button > svg:not(.text-primary) { color: hsl(var(--foreground) / 0.82); }
 .sidebar-capsule [data-sidebar="content"] { scrollbar-width: none; }
 /* The wallpaper, not the sidebar tint, fills the canvas around the capsule. */
 html[data-has-custom-bg="true"] .group\/sidebar-wrapper { background-color: transparent; }

@@ -37,7 +37,7 @@ export async function testSidebarCapsule({ page, reset, captureDir }) {
   assert.ok(await capsule.evaluate(element => getComputedStyle(element).animationName === "sidebar-capsule-in"), "The capsule slides in");
   await settled();
   const open = await assertCentred();
-  assert.equal(Math.round(open.width), 172);
+  assert.equal(Math.round(open.width), 148);
   assert.ok(open.height < 800 - 36, "The capsule is as tall as its content, not the window");
   assert.equal(await capsule.evaluate(element => getComputedStyle(element).borderTopLeftRadius), "28px");
   assert.equal(await page.locator(".poster-kicker", { hasText: /^(Home|Connect|Work|Extend|System)$/ }).count(), 0, "Hairlines part the groups instead of headings");
@@ -103,8 +103,8 @@ export async function testSidebarCapsule({ page, reset, captureDir }) {
     background: getComputedStyle(element).backgroundColor,
     canvas: getComputedStyle(element.closest(".group\\/sidebar-wrapper")).backgroundColor,
   }));
-  assert.match(glass.filter, /blur\(20px\)/);
-  assert.match(glass.background, /\/ 0\.52\)|, 0\.52\)/, `The capsule lets the wallpaper through: ${glass.background}`);
+  assert.match(glass.filter, /blur\(14px\)/);
+  assert.match(glass.background, /\/ 0\.34\)|, 0\.34\)/, `The capsule lets the wallpaper through: ${glass.background}`);
   assert.equal(glass.canvas, "rgba(0, 0, 0, 0)", "The canvas around the capsule shows the wallpaper");
   await capture("sidebar-capsule-wallpaper.png");
   await page.evaluate(() => document.documentElement.classList.add("dark"));

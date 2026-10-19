@@ -277,7 +277,7 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
   const titleId = `account-source-${kind}-title`;
   const signingIn = sources.pending?.kind === kind;
   if (sources.query.isPending) {
-    return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{[0, 1].map(index => <Skeleton key={index} className="h-52 rounded-2xl" />)}</div>;
+    return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4">{[0, 1].map(index => <Skeleton key={index} className="h-52 rounded-2xl" />)}</div>;
   }
   if (sources.query.isError || !source) {
     return (
@@ -359,7 +359,7 @@ export function AccountSourcePanel({ kind, sources }: { kind: AccountSourceKind;
           <SourceSignInButton className="mt-5" source={source} sources={sources} />
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 min-[1800px]:grid-cols-4">
           {source.accounts.map((account, index) => (
             <SourceAccountCard key={account.id} source={source} account={account} sources={sources} order={index}
               onRemove={() => setConfirm({

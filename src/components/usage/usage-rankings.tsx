@@ -197,7 +197,7 @@ export function UsageRankings({ data, metric, onManageProviders, onOpenThreads }
   const { t } = useTranslation();
   const official = t("usage.channel.official");
   // Rows of a pair share one height; folding keeps both near the same length.
-  return <div className="grid gap-5 lg:grid-cols-2">
+  return <div className="grid gap-5 lg:grid-cols-2 min-[1800px]:grid-cols-4">
     <RankCard kicker="Clients" title={t("usage.rank.clients")}>
       {rows(data.byClient, metric, (group, max) => <RankRow key={group.key} group={group} metric={metric} max={max}
         name={clientLabel(group.key, t)} icon={<ClientIcon client={group.key} />} extra={cacheLine(group, t)} />) ?? <Empty />}

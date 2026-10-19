@@ -70,12 +70,12 @@ const navGroups: { id: string; routes: Route[] }[] = [
   { id: "system", routes: ["maintenance", "settings"] },
 ];
 
-// The frame keeps 12px either side of the capsule: 172px open, 52px closed.
-export const SIDEBAR_EXPANDED_WIDTH_PX = 196;
+// The frame keeps 12px either side of the capsule: 148px open, 52px closed.
+export const SIDEBAR_EXPANDED_WIDTH_PX = 172;
 export const SIDEBAR_COLLAPSED_WIDTH_PX = 76;
 
 const navButtonClassName =
-  "app-nav-button relative overflow-hidden !rounded-[12px] group-data-[state=expanded]:!px-3 group-data-[state=expanded]:!py-2 group-data-[state=expanded]:gap-2.5 " +
+  "app-nav-button relative overflow-hidden !rounded-[12px] group-data-[state=expanded]:!px-2.5 group-data-[state=expanded]:!py-2 group-data-[state=expanded]:gap-2 " +
   "md:group-data-[collapsible=icon]/sidebar:translate-x-0 hover:bg-sidebar-accent/70 " +
   // The gliding indicator paints the selection; the button itself stays clear.
   "data-[active=true]:!bg-transparent data-[active=true]:!text-foreground data-[active=true]:!shadow-none data-[active=true]:!ring-0 data-[active=true]:!outline-none " +
@@ -171,7 +171,7 @@ function SidebarThemeToggle({
             equalWidth
             className="gap-1"
             indicatorClassName="rounded-full bg-white shadow-[0_2px_10px_rgba(15,23,42,0.08)] dark:bg-white/[0.10]"
-            itemClassName="h-8 gap-1.5 whitespace-nowrap rounded-full px-2.5 text-[13px] font-medium [&_svg]:size-4"
+            itemClassName="h-8 gap-1 whitespace-nowrap rounded-full px-2 text-[12.5px] font-medium [&_svg]:size-3.5"
             activeItemClassName="text-foreground dark:text-white"
             inactiveItemClassName="text-sidebar-foreground/72 hover:text-sidebar-foreground dark:text-sidebar-foreground/72 dark:hover:text-sidebar-foreground"
           />
@@ -222,11 +222,11 @@ export function AppSidebar({
   return (
     <Sidebar collapsible="icon" variant="capsule">
       <SidebarHeader className="!p-0">
-        <div className="app-nav-item flex w-full items-center gap-3 px-2.5 pb-1 pt-3 group-data-[collapsible=icon]/sidebar:justify-center group-data-[collapsible=icon]/sidebar:px-0"
+        <div className="app-nav-item flex w-full items-center gap-2 px-2 pb-1 pt-3 group-data-[collapsible=icon]/sidebar:justify-center group-data-[collapsible=icon]/sidebar:px-0"
           style={arrival(0)}>
           <button type="button" onClick={avatar.chooseImage} disabled={avatar.busy}
             aria-label={t("avatar.choose")} title={t("avatar.choose")}
-            className="relative h-[35px] w-[35px] shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50">
+            className="relative h-8 w-8 shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50">
             <AppAvatarImage className="h-full w-full select-none rounded-full object-cover" />
             <span
               aria-hidden
@@ -235,10 +235,10 @@ export function AppSidebar({
           </button>
           <button type="button" onClick={() => handleNavigate("overview")}
             className="app-nav-label flex min-w-0 flex-col items-start rounded-md text-left leading-tight hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]/sidebar:hidden">
-            <span className="truncate font-display text-[16px] font-bold tracking-tight text-sidebar-foreground">
+            <span className="truncate font-display text-[15px] font-bold tracking-tight text-sidebar-foreground">
               AgentHarbor
             </span>
-            <span className="poster-kicker truncate text-[9.5px] text-sidebar-foreground/55">
+            <span className="poster-kicker truncate text-[8.5px] text-sidebar-foreground/55">
               Codex Assistant
             </span>
           </button>

@@ -89,7 +89,7 @@ export function UsagePage({ refreshInterval, onManageProviders, onOpenThreads }:
   const data = usage.data;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5 pb-8" data-usage-page>
+    <div className="space-y-5 pb-8" data-usage-page>
       <PageHero kicker="Usage" icon={<ChartColumn />} titleAs="h2" title={t("usage.title")}
         description={t("usage.heroDesc")}
         actions={<>
