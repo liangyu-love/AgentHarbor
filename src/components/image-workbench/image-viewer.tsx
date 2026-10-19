@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { Check, ChevronLeft, ChevronRight, ChevronUp, Copy, Expand, Feather, Info, Loader2, Minus, Plus, Scan, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ChevronUp, Copy, Expand, Feather, ImageUp, Info, Loader2, Minus, Plus, Scan, X } from "lucide-react";
 import type { GalleryMeta } from "@/lib/api";
 import { formatDateTime, formatRelative } from "@/lib/format-time";
 import { cn } from "@/lib/utils";
@@ -23,7 +23,7 @@ const clamp = (value: number, low: number, high: number) => Math.min(high, Math.
  * Full-window preview: wheel to zoom at the cursor, drag to pan, double-click to toggle,
  * arrows to step through its neighbours, and the prompt that made the image.
  */
-export function ImageViewer({ src, alt, onClose, meta, takenAt, position, onStep, loading = false, onUsePrompt }: {
+export function ImageViewer({ src, alt, onClose, meta, takenAt, position, onStep, loading = false, onUsePrompt, onUseAsReference }: {
   src: string;
   alt: string;
   onClose: () => void;
@@ -35,6 +35,8 @@ export function ImageViewer({ src, alt, onClose, meta, takenAt, position, onStep
   /** A neighbour is on its way; the current image stays until it arrives. */
   loading?: boolean;
   onUsePrompt?: (prompt: string) => void;
+  /** Load the image on screen as the next generation's reference. */
+  onUseAsReference?: (src: string) => void;
 }) {
   const [view, setView] = useState<View>(FIT);
   // Fitted width to natural width: the scale that shows real pixels one to one.
@@ -234,7 +236,7 @@ export function ImageViewer({ src, alt, onClose, meta, takenAt, position, onStep
       <div
         data-viewer-toolbar
         role="toolbar"
-        aria-label="缩放"
+        aria-label="预览工具"
         className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-black/65 px-1.5 py-1 text-white shadow-lg ring-1 ring-white/10"
       >
         <button type="button" className={toolButton} onClick={() => zoom(scale => scale / STEP, true)} disabled={view.scale <= 1}
@@ -255,6 +257,15 @@ export function ImageViewer({ src, alt, onClose, meta, takenAt, position, onStep
         <button type="button" className={toolButton} onClick={() => zoom(() => actual, true)} aria-label="原始尺寸" title="原始尺寸（1）">
           <Expand className="h-4 w-4" />
         </button>
+        {onUseAsReference && (
+          <>
+            <span className="mx-1 h-4 w-px bg-white/20" aria-hidden />
+            <button type="button" className={toolButton} onClick={() => onUseAsReference(src)} disabled={loading}
+              aria-label="用作底本" title="用作底本（图生图）">
+              <ImageUp className="h-4 w-4" />
+            </button>
+          </>
+        )}
         {canStep && position && (
           <span data-viewer-position className="px-2 font-mono text-xs tabular-nums text-white/70">
             {position.index + 1} / {position.total}

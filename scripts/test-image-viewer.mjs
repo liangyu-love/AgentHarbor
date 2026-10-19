@@ -39,6 +39,16 @@ export async function testImageViewer({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.lastToast === "已填入提示词");
   console.log("PASS gallery cards show their prompt, group by day, search, and fill the prompt box");
 
+  // A saved image becomes the next generation's reference in one click.
+  const reference = page.locator("[data-image-reference] img");
+  await card("gallery-1.png").hover();
+  await card("gallery-1.png").getByRole("button", { name: "用作底本" }).click();
+  await page.waitForFunction(() => window.review.lastToast === "已载入为底本");
+  assert.match(await reference.getAttribute("src"), /^data:image\//);
+  await page.getByRole("button", { name: "移除画稿" }).click();
+  await reference.waitFor({ state: "detached" });
+  console.log("PASS a gallery image loads as the reference for image-to-image");
+
   await page.locator('button[title="gallery-0.png"]').click();
   const viewer = page.getByRole("dialog", { name: "成图放大预览", exact: true });
   await viewer.waitFor();
@@ -136,4 +146,22 @@ export async function testImageViewer({ page, reset, captureDir }) {
   await canvas.getByRole("button", { name: "复用这条提示词" }).click();
   assert.equal(await mainPrompt.inputValue(), "雪山晨光，航拍");
   console.log("PASS generated images keep their prompt and parameters, from the canvas to the gallery");
+
+  // A generated image becomes the reference from the canvas or its preview, and the next request edits it.
+  const generated = await canvas.locator("img").first().getAttribute("src");
+  await canvas.getByRole("button", { name: "用作底本" }).click();
+  await eventually(async () => assert.equal(await reference.getAttribute("src"), generated));
+  await page.getByRole("button", { name: "移除画稿" }).click();
+  await reference.waitFor({ state: "detached" });
+  await canvas.locator("img").first().click();
+  await viewer.waitFor();
+  await viewer.getByRole("button", { name: "用作底本" }).click();
+  await viewer.waitFor({ state: "detached" });
+  assert.equal(await reference.getAttribute("src"), generated);
+  await page.locator("[data-image-generate]").click();
+  await page.waitForFunction(() => window.review.imageRequests.length === 2);
+  assert.equal(await page.evaluate(() => window.review.imageRequests[1].imageData), generated);
+  await page.evaluate(() => window.review.imageResolvers[1]());
+  await page.getByRole("button", { name: "移除画稿" }).click();
+  console.log("PASS a generated image loads as the reference from the canvas and the preview");
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type WheelEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, ChevronRight, Download, Expand, Feather, Loader2, Pause, Play, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Expand, Feather, ImageUp, Loader2, Pause, Play, Trash2 } from "lucide-react";
 import type { GalleryItem } from "@/lib/api";
 import { formatDateTime, formatRelative } from "@/lib/format-time";
 import { cn } from "@/lib/utils";
@@ -40,10 +40,11 @@ function useSize(ref: React.RefObject<HTMLElement | null>) {
  * a blurred wash of its colours behind, and a broadcast lower third for what made it.
  * Drag, flick, swipe sideways, use the arrows, or let it play.
  */
-export function GalleryAlbum({ items, gallery, onUsePrompt }: {
+export function GalleryAlbum({ items, gallery, onUsePrompt, onUseAsReference }: {
   items: GalleryItem[];
   gallery: ImageGallery;
   onUsePrompt: (prompt: string) => void;
+  onUseAsReference: (item: GalleryItem) => void;
 }) {
   const { t } = useTranslation();
   const stage = useRef<HTMLDivElement>(null);
@@ -231,6 +232,9 @@ export function GalleryAlbum({ items, gallery, onUsePrompt }: {
           <div className="gallery-album-actions" data-album-control>
             {prompt && <button type="button" className={control} onClick={() => onUsePrompt(prompt)}
               title="填入提示词" aria-label="填入提示词"><Feather className="h-3.5 w-3.5" /></button>}
+            <button type="button" className={control} onClick={() => onUseAsReference(current)} title="用作底本" aria-label="用作底本">
+              <ImageUp className="h-3.5 w-3.5" />
+            </button>
             <button type="button" className={control} onClick={open} title={t("image.album.open")} aria-label={t("image.album.open")}>
               <Expand className="h-3.5 w-3.5" />
             </button>

@@ -1,6 +1,7 @@
 import { useContext, useState } from "react";
 import { PageActiveContext } from "@/components/layout/page-stage";
 import { toast } from "@/hooks/use-toast";
+import { api, type GalleryItem } from "@/lib/api";
 import { GalleryOverlays, GalleryPanel } from "./gallery-panel";
 import { GenerationCanvas } from "./generation-canvas";
 import { GenerationForm } from "./generation-form";
@@ -45,6 +46,23 @@ export function ImageWorkbenchPage() {
     toast({ title: "已填入提示词", variant: "success" });
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     document.querySelector("[data-image-prompt]")?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
+  };
+
+  /** Make a finished image the next generation's reference, and bring the reference into view. */
+  const takeAsReference = (src: string) => {
+    setImageData(src);
+    setError(null);
+    toast({ title: "已载入为底本", description: "下次生成将以这张图做图生图", variant: "success" });
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.querySelector("[data-image-reference]")?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
+  };
+
+  const takeGalleryAsReference = async (item: GalleryItem) => {
+    try {
+      takeAsReference(await api.image.loadGalleryImage(item.path));
+    } catch {
+      toast({ title: "未能载入底本", description: item.name, variant: "destructive" });
+    }
   };
 
   const generate = () => {
@@ -93,13 +111,17 @@ export function ImageWorkbenchPage() {
           onPreview={gallery.showPreview}
           onSaveAs={gallery.saveImageAs}
           onUsePrompt={text => fillPrompt(text, true)}
+          onUseAsReference={takeAsReference}
         />
       </div>
 
       {/* 历史画册 */}
-      {gallery.galleryOpen && <GalleryPanel gallery={gallery} onUsePrompt={text => fillPrompt(text, true)} />}
+      {gallery.galleryOpen && (
+        <GalleryPanel gallery={gallery} onUsePrompt={text => fillPrompt(text, true)} onUseAsReference={item => void takeGalleryAsReference(item)} />
+      )}
 
-      <GalleryOverlays gallery={gallery} pageActive={pageActive} onUsePrompt={text => fillPrompt(text, false)} />
+      <GalleryOverlays gallery={gallery} pageActive={pageActive} onUsePrompt={text => fillPrompt(text, false)}
+        onUseAsReference={src => { gallery.showPreview(null); takeAsReference(src); }} />
     </div>
   );
 }

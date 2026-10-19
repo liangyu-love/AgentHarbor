@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Download, Feather, ImagePlus, Loader2, Scroll, Square, X, ZoomIn } from "lucide-react";
+import { Download, Feather, ImagePlus, ImageUp, Loader2, Scroll, Square, X, ZoomIn } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -21,7 +21,7 @@ const previewEntries = (job: GenerationJob): PreviewEntry[] =>
   }));
 
 /** The result scroll: one canvas per generation job, with its status and images. */
-export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySave, onPreview, onSaveAs, onUsePrompt }: {
+export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySave, onPreview, onSaveAs, onUsePrompt, onUseAsReference }: {
   generationJobs: GenerationJob[];
   onCancel: (job: GenerationJob) => void;
   onRemove: (job: GenerationJob) => void;
@@ -29,6 +29,8 @@ export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySa
   onPreview: (entries: PreviewEntry[], index: number) => void;
   onSaveAs: (src: string, index: number) => Promise<void>;
   onUsePrompt: (prompt: string) => void;
+  /** Load an image as the next generation's reference. */
+  onUseAsReference: (src: string) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -167,16 +169,29 @@ export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySa
                   <span className="font-serif text-xs font-semibold text-muted-foreground">
                     图片 {index + 1}
                   </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-8 gap-1.5 border-[#b83b38]/30 bg-[#b83b38]/10 font-serif text-xs font-semibold text-[#b83b38] hover:bg-[#b83b38]/20 dark:border-[#d94f4b]/30 dark:bg-[#d94f4b]/15 dark:text-[#fca5a5]"
-                    onClick={() => void onSaveAs(src, index)}
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    {t("image.saveAs")}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1.5 font-serif text-xs font-semibold"
+                      onClick={() => onUseAsReference(src)}
+                      title="以这张图做图生图"
+                    >
+                      <ImageUp className="h-3.5 w-3.5" />
+                      用作底本
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1.5 border-[#b83b38]/30 bg-[#b83b38]/10 font-serif text-xs font-semibold text-[#b83b38] hover:bg-[#b83b38]/20 dark:border-[#d94f4b]/30 dark:bg-[#d94f4b]/15 dark:text-[#fca5a5]"
+                      onClick={() => void onSaveAs(src, index)}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      {t("image.saveAs")}
+                    </Button>
+                  </div>
                 </div>
 
                 {job.result?.revisedPrompts[index] && job.result.revisedPrompts[index] !== job.prompt && (

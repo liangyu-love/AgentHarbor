@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Download, Feather, FolderOpen, GalleryHorizontal, History, LayoutGrid, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ChevronDown, Download, Feather, FolderOpen, GalleryHorizontal, History, ImageUp, LayoutGrid, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { AnimatedSegmentedControl } from "@/components/ui/animated-segmented-control";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -82,10 +82,12 @@ function intoColumns(items: GalleryItem[], count: number) {
 }
 
 /** The history gallery section, shown once the user opens it. */
-export function GalleryPanel({ gallery, onUsePrompt }: {
+export function GalleryPanel({ gallery, onUsePrompt, onUseAsReference }: {
   gallery: ImageGallery;
   /** Put a saved prompt back in the prompt box. */
   onUsePrompt: (prompt: string) => void;
+  /** Load a saved image as the next generation's reference. */
+  onUseAsReference: (item: GalleryItem) => void;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -235,7 +237,7 @@ export function GalleryPanel({ gallery, onUsePrompt }: {
               没有提示词、模型或文件名包含「{query.trim()}」的图片
             </p>
           ) : view === "album" ? (
-            <GalleryAlbum items={shown} gallery={gallery} onUsePrompt={onUsePrompt} />
+            <GalleryAlbum items={shown} gallery={gallery} onUsePrompt={onUsePrompt} onUseAsReference={onUseAsReference} />
           ) : (
             <div className="space-y-5">
               {days.map(day => (
@@ -254,6 +256,7 @@ export function GalleryPanel({ gallery, onUsePrompt }: {
                             gallery={gallery}
                             onOpen={() => gallery.openGalleryImage(item, shown)}
                             onUsePrompt={onUsePrompt}
+                            onUseAsReference={() => onUseAsReference(item)}
                           />
                         ))}
                       </div>
@@ -270,11 +273,12 @@ export function GalleryPanel({ gallery, onUsePrompt }: {
 }
 
 /** One saved image: its thumbnail, what made it, and quick actions on hover. */
-function GalleryCard({ item, gallery, onOpen, onUsePrompt }: {
+function GalleryCard({ item, gallery, onOpen, onUsePrompt, onUseAsReference }: {
   item: GalleryItem;
   gallery: ImageGallery;
   onOpen: () => void;
   onUsePrompt: (prompt: string) => void;
+  onUseAsReference: () => void;
 }) {
   const { t } = useTranslation();
   const prompt = item.meta?.prompt;
@@ -307,6 +311,10 @@ function GalleryCard({ item, gallery, onOpen, onUsePrompt }: {
             <Feather className="h-3.5 w-3.5" />
           </Button>
         )}
+        <Button type="button" size="icon" variant="secondary" className={cn(overlayButton, "hover:bg-[#b83b38]")}
+          title="用作底本" aria-label="用作底本" onClick={onUseAsReference}>
+          <ImageUp className="h-3.5 w-3.5" />
+        </Button>
         <Button type="button" size="icon" variant="secondary" className={overlayButton}
           title={t("image.saveAs")} aria-label={t("image.saveAs")}
           onClick={() => void gallery.saveGalleryImageAs(item, gallery.galleryItems.indexOf(item))}>
@@ -323,10 +331,12 @@ function GalleryCard({ item, gallery, onOpen, onUsePrompt }: {
 }
 
 /** Delete confirmation and the zoomable full-size preview. */
-export function GalleryOverlays({ gallery, pageActive, onUsePrompt }: {
+export function GalleryOverlays({ gallery, pageActive, onUsePrompt, onUseAsReference }: {
   gallery: ImageGallery;
   pageActive: boolean;
   onUsePrompt: (prompt: string) => void;
+  /** Load the image on screen as the next generation's reference. */
+  onUseAsReference: (src: string) => void;
 }) {
   const { t } = useTranslation();
   const preview = gallery.preview;
@@ -362,6 +372,7 @@ export function GalleryOverlays({ gallery, pageActive, onUsePrompt }: {
           onStep={gallery.stepPreview}
           loading={gallery.previewLoading}
           onUsePrompt={onUsePrompt}
+          onUseAsReference={onUseAsReference}
         />,
         document.body,
       )}

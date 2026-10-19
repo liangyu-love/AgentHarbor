@@ -222,14 +222,14 @@ export function GenerationForm({
         <PromptLibrary prompt={prompt} onPromptChange={setPrompt} />
 
         {/* 图生图参考底本 */}
-        <div className="rounded-xl border border-dashed border-border/80 bg-background/50 p-3.5 transition-colors">
+        <div data-image-reference className="rounded-xl border border-dashed border-border/80 bg-background/50 p-3.5 transition-colors">
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="font-serif text-xs font-semibold text-foreground/90">
                 展卷摹画 · 载入底本 (可选)
               </p>
               <p className="font-serif text-[11px] text-muted-foreground">
-                支持 PNG / JPG / WebP 格式，单张上限 20 MB。
+                支持 PNG / JPG / WebP 格式，单张上限 20 MB；画卷与画册中的成图可点「用作底本」直接载入。
               </p>
             </div>
             <div className="flex items-center gap-2">
