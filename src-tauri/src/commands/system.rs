@@ -8,9 +8,15 @@ use tauri::{AppHandle, State};
 static UI_LANGUAGE: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
 
 #[tauri::command]
-pub fn set_ui_language(language: String) {
-    if let Ok(mut current) = UI_LANGUAGE.write() {
-        *current = language.chars().take(16).collect();
+pub fn set_ui_language(app: AppHandle, language: String) {
+    let language: String = language.chars().take(16).collect();
+    let changed = UI_LANGUAGE.write().is_ok_and(|mut current| {
+        let changed = *current != language;
+        *current = language;
+        changed
+    });
+    if changed {
+        super::tray_menu::rebuild_tray_menu(&app);
     }
 }
 

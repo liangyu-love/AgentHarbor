@@ -51,6 +51,15 @@ impl LocalUsageDirs {
     }
 }
 
+/// Today's totals, as the usage page counts them, for the tray.
+pub(crate) fn today_totals(repo: &Mutex<Repository>) -> Result<usage_ledger::UsageTotals, String> {
+    let dirs = LocalUsageDirs::of(repo)?;
+    let store = router::load_store(&dirs.paths).ok();
+    let catalog = models_dev::load(&dirs.paths.app_data_dir);
+    usage_ledger::load(&dirs.ledger(), store.as_ref(), &catalog, UsageRange::Today)
+        .map(|payload| payload.today)
+}
+
 #[tauri::command]
 pub async fn get_token_usage(
     repo: State<'_, Mutex<Repository>>,

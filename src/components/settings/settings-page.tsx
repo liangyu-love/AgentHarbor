@@ -30,6 +30,7 @@ import type { Theme } from "@/hooks/use-theme";
 const RUNTIME_STATE_DISPLAY_QUERY_KEY = queryKeys.runtimeStateDisplay;
 import { REFRESH_OPTIONS, type RefreshInterval } from "@/hooks/use-auto-refresh";
 import { useBusyAction } from "@/hooks/use-busy-action";
+import { announceUpdateCheck, type UpdateCheckResult } from "@/hooks/use-update-check";
 import { ApiProxyDialog } from "@/components/runtime/api-proxy-dialog";
 import { AvatarSettings } from "@/components/settings/avatar-settings";
 import { BackgroundSettings } from "@/components/settings/background-settings";
@@ -49,7 +50,7 @@ interface SettingsPageProps {
   setLanguage: (lang: string) => void;
   refreshInterval: RefreshInterval;
   setRefreshInterval: (v: RefreshInterval) => void;
-  onCheckUpdate: () => Promise<"available" | "up-to-date" | "error" | "unconfigured">;
+  onCheckUpdate: () => Promise<UpdateCheckResult>;
   onRefreshUsageStatus?: () => Promise<unknown>;
   openProxySettingsRequested?: boolean;
   onProxySettingsRequestHandled?: () => void;
@@ -188,30 +189,7 @@ export function SettingsPage({
   const checkingUpdate = updateCheckAction.busy;
   const handleCheckUpdate = async () => {
     await updateCheckAction.run(async () => {
-      try {
-        const result = await onCheckUpdate();
-        if (result === "up-to-date") {
-          toast({
-            title: t("settings.upToDate"),
-            description: t("settings.upToDateDesc"),
-            variant: "default",
-          });
-        } else if (result === "unconfigured") {
-          toast({ title: t("baseline.updaterUnavailable"), description: t("baseline.updaterUnavailableDesc") });
-        } else if (result === "error") {
-          toast({
-            title: t("settings.updateCheckFailed"),
-            description: t("settings.updateCheckFailedDesc"),
-            variant: "destructive",
-          });
-        }
-      } catch {
-        toast({
-          title: t("settings.updateCheckFailed"),
-          description: t("settings.updateCheckFailedDesc"),
-          variant: "destructive",
-        });
-      }
+      announceUpdateCheck(t, await onCheckUpdate().catch(() => "error" as const));
     });
   };
 

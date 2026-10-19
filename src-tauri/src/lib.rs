@@ -168,7 +168,7 @@ pub fn run() {
                 });
             }
 
-            let tray_menu = commands::tray_menu::create_bootstrap_tray_menu(app.handle())
+            let tray_menu = commands::tray_menu::create_tray_menu(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let tray_icon = load_tray_template_icon()
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -180,6 +180,12 @@ pub fn run() {
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| {
                     commands::tray_menu::handle_tray_menu_event(app, &event.id.0);
+                })
+                // The pointer reaches the icon before a click opens the menu.
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(event, tauri::tray::TrayIconEvent::Enter { .. }) {
+                        commands::tray_menu::refresh_tray_menu(tray.app_handle());
+                    }
                 })
                 .show_menu_on_left_click(true)
                 .build(app)?;

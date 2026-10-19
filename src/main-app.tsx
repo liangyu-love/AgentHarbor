@@ -7,7 +7,9 @@ import { useTheme, useThemeValue, type Theme } from "@/hooks/use-theme";
 import { AppAvatarProvider } from "@/hooks/use-app-avatar";
 import { useAccentColor } from "@/hooks/use-accent-color";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
-import { useUpdateCheck } from "@/hooks/use-update-check";
+import { announceUpdateCheck, useUpdateCheck, type UpdateCheckResult } from "@/hooks/use-update-check";
+import { toast } from "@/hooks/use-toast";
+import { formatInvokeError } from "@/lib/invoke-error";
 import { useDeferredReady } from "@/hooks/use-deferred-ready";
 import { useRouteTransition } from "@/hooks/use-route-transition";
 import { OPEN_TERMINAL_PROXY_EVENT } from "@/lib/terminal-proxy-link";
@@ -43,7 +45,7 @@ import {
   CustomBackgroundLayer,
   useCustomBackground,
 } from "@/hooks/use-custom-background";
-import type { Route } from "@/types/navigation";
+import { isAppRoute, type Route } from "@/types/navigation";
 import "./lib/i18n";
 import { queryKeys } from "@/lib/query-keys";
 import { storageKeys } from "@/lib/storage-keys";
@@ -139,6 +141,7 @@ function MainApp() {
   const clearTerminalProxyRequest = useCallback(() => setTerminalProxyRequested(false), []);
 
   useAccountsChangedListener();
+  useTrayRequests(setRoute, update.checkForUpdate);
   useEffect(() => {
     const sync = (language: string) => { void api.setUiLanguage(language).catch(() => {}); };
     sync(i18n.language);
@@ -364,6 +367,37 @@ function useAccountsChangedListener() {
       unlisten?.();
     };
   }, [queryClient]);
+}
+
+/** What the tray asks of the window: a page, an update check, or news of a switch it flipped. */
+function useTrayRequests(navigate: (route: Route) => void, checkForUpdate: () => Promise<UpdateCheckResult>) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const stops = [
+      listen<string>("tray-navigate", ({ payload }) => {
+        if (isAppRoute(payload)) navigate(payload);
+      }),
+      listen("tray-check-update", () => {
+        void checkForUpdate().then(result => announceUpdateCheck(t, result));
+      }),
+      listen<{ switch: "cursor" | "autostart"; error: string | null }>("tray-switched", ({ payload }) => {
+        const cursor = payload.switch === "cursor";
+        void queryClient.invalidateQueries({ queryKey: cursor ? queryKeys.cursorStatus : queryKeys.autostart });
+        if (payload.error) {
+          toast({
+            title: t(cursor ? "cursor.failed" : "settings.autostart.failed"),
+            description: formatInvokeError(payload.error),
+            variant: "destructive",
+          });
+        }
+      }),
+    ];
+    const removals = stops.map(stop => stop.catch(() => undefined));
+    return () => {
+      for (const removal of removals) void removal.then(remove => remove?.());
+    };
+  }, [navigate, checkForUpdate, queryClient, t]);
 }
 
 function useInstallLocationPrompt() {

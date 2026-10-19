@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
+import { toast } from "@/hooks/use-toast";
 import type { UpdateInstallabilityPayload } from "@/types";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { api } from "@/lib/api";
@@ -20,6 +22,19 @@ interface DownloadProgress {
 
 type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "installing" | "ready" | "error";
 
+export type UpdateCheckResult = "available" | "up-to-date" | "error" | "unconfigured";
+
+/** Tells the result of a check someone asked for; an available update shows its own overlay. */
+export function announceUpdateCheck(t: TFunction, result: UpdateCheckResult) {
+  if (result === "up-to-date") {
+    toast({ title: t("settings.upToDate"), description: t("settings.upToDateDesc"), variant: "default" });
+  } else if (result === "unconfigured") {
+    toast({ title: t("baseline.updaterUnavailable"), description: t("baseline.updaterUnavailableDesc") });
+  } else if (result === "error") {
+    toast({ title: t("settings.updateCheckFailed"), description: t("settings.updateCheckFailedDesc"), variant: "destructive" });
+  }
+}
+
 export function useUpdateCheck() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<UpdateStatus>("idle");
@@ -29,7 +44,7 @@ export function useUpdateCheck() {
   const updateRef = useRef<Update | null>(null);
   const installedRef = useRef(false);
 
-  const checkForUpdate = useCallback(async (): Promise<"available" | "up-to-date" | "error" | "unconfigured"> => {
+  const checkForUpdate = useCallback(async (): Promise<UpdateCheckResult> => {
     if (!isTauriRuntime()) {
       return "unconfigured";
     }
