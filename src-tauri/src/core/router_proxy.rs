@@ -207,14 +207,33 @@ async fn bind_localhost(port: u16) -> Result<tokio::net::TcpListener, String> {
             Ok(listener) => return Ok(listener),
             Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
                 if attempt == ATTEMPTS || port == 0 {
-                    return Err("newapi.errors.portBusy".to_owned());
+                    return Err(bind_error(&error));
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            Err(_) => return Err("newapi.errors.network".to_owned()),
+            Err(error) => return Err(bind_error(&error)),
         }
     }
     unreachable!("the loop returns on its last attempt")
+}
+
+/// Why a loopback port could not be bound: another program holds it, or the
+/// system reserved it (Windows keeps ranges for Hyper-V, WSL and Docker,
+/// which refuse binds as access denied and have no process to end).
+fn bind_error(error: &std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::AddrInUse => "newapi.errors.portBusy",
+        std::io::ErrorKind::PermissionDenied => "newapi.errors.portReserved",
+        _ => "newapi.errors.network",
+    }
+    .to_owned()
+}
+
+/// Whether `port` can be taken now, with [`bind_error`]'s reason when not.
+pub fn probe_port(port: u16) -> Result<(), String> {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .map(drop)
+        .map_err(|error| bind_error(&error))
 }
 
 /// Replace the global outbound client used by an already-running router.

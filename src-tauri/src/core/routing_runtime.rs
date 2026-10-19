@@ -157,13 +157,73 @@ async fn reconcile_on_startup_at(
     }
     // Cursor's settings and variable are pointed back at this process.
     let result = reconcile_with(paths, true).await;
-    if result.as_ref().err().map(String::as_str) == Some("newapi.errors.portBusy") {
+    if result.as_ref().is_err_and(|error| port_unavailable(error)) {
         release_router_clients_at(paths, clients);
     } else {
         resume_router_clients_at(paths, clients).await;
     }
     router::normalize_threads_when_stopped(paths);
     result
+}
+
+/// The router's port is held by another program or reserved by the system.
+pub fn port_unavailable(error: &str) -> bool {
+    matches!(error, "newapi.errors.portBusy" | "newapi.errors.portReserved")
+}
+
+/// The lowest port the router may be moved to; below it ports are privileged.
+pub const MIN_PORT: u16 = 1024;
+
+/// Moves the router to `port`. The port is tried first, so a busy or reserved
+/// one changes nothing. Then every client routed through the old port is
+/// withdrawn, the listener and Codex's config move, and the clients are
+/// applied again on the new port. When the router cannot start there, it goes
+/// back to the old port and the clients with it. Claude Desktop keeps the port
+/// it was set up with, so its router setup refuses the move.
+pub async fn change_port(paths: &CodexPaths, port: u16) -> Result<(), String> {
+    change_port_at(paths, client_config::ClientPaths::discover(), port).await
+}
+
+async fn change_port_at(
+    paths: &CodexPaths,
+    clients: client_config::ClientPaths,
+    port: u16,
+) -> Result<(), String> {
+    if port < MIN_PORT {
+        return Err("newapi.errors.portInvalid".into());
+    }
+    let previous = router::load_store(paths)?.router.port;
+    if previous == port {
+        return Ok(());
+    }
+    if claude_desktop::gateway::required_port(&paths.app_data_dir)
+        .map_err(|error| error.message)?
+        .is_some()
+    {
+        return Err("newapi.errors.portDesktop".into());
+    }
+    router_proxy::probe_port(port)?;
+    let manager = client_config::ConfigManager::new(&paths.app_data_dir, clients.clone())
+        .with_official_home(&paths.codex_home);
+    for (target, error) in manager.restore_router_configs_on_exit() {
+        log::warn!("{target:?} router config stays on the old port: {error}");
+    }
+    let moved = match router::set_port(paths, port) {
+        Ok(_) => reconcile_with(paths, false).await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = moved {
+        if let Err(rollback) = router::set_port(paths, previous) {
+            log::warn!("router port rollback failed: {rollback}");
+        }
+        if let Err(restart) = reconcile_with(paths, false).await {
+            log::warn!("router did not restart on its previous port: {restart}");
+        }
+        resume_router_clients_at(paths, clients).await;
+        return Err(error);
+    }
+    resume_router_clients_at(paths, clients).await;
+    Ok(())
 }
 
 pub async fn reconcile(paths: &CodexPaths) -> Result<(), String> {
@@ -506,6 +566,99 @@ mod tests {
                 store.router.port
             );
         });
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+    }
+
+    /// A store on a free port with one relay, and Claude Code routed through it.
+    fn routed_claude(temp: &std::path::Path) -> (CodexPaths, client_config::ClientPaths) {
+        let paths = CodexPaths::from_home(temp.join("codex"));
+        let clients = client_config::ClientPaths::from_home(&temp.join("home"));
+        let mut store = router::load_store(&paths).unwrap();
+        store.router.port = free_port();
+        store.providers.push(router::Provider {
+            id: "relay".into(),
+            name: "Relay".into(),
+            base_url: "https://relay.example/v1".into(),
+            enabled: true,
+            model: "claude-test".into(),
+            api_key: "upstream-secret".into(),
+            protocol: router::ModelProtocol::AnthropicMessages,
+            ..Default::default()
+        });
+        save_store(&paths, &store);
+        let store = router::load_store(&paths).unwrap();
+        crate::core::storage::write_atomic(&clients.claude, br#"{"env":{"CUSTOM":"kept"}}"#).unwrap();
+        let manager = client_config::ConfigManager::new(&paths.app_data_dir, clients.clone())
+            .with_official_home(&paths.codex_home);
+        let request = client_config::ConfigRequest {
+            target_id: crate::core::targets::TargetId::ClaudeCode,
+            provider_id: "relay".into(),
+            model: "claude-test".into(),
+            context_window: Some(200000),
+            max_output_tokens: Some(8192),
+            options: client_config::ClientOptions {
+                access_mode: client_config::ClientAccessMode::Router,
+                ..Default::default()
+            },
+        };
+        let preview = manager.preview(&store, &request).unwrap();
+        manager.apply(&store, &request, &preview.revision).unwrap();
+        (paths, clients)
+    }
+
+    #[test]
+    fn a_port_change_moves_the_listener_and_the_routed_clients() {
+        let _router = router_proxy::global_router_test_lock();
+        let _stop = Stop;
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (paths, clients) = routed_claude(temp.path());
+            let old = router::load_store(&paths).unwrap().router.port;
+            reconcile(&paths).await.unwrap();
+            assert_eq!(router_proxy::running_port(), Some(old));
+            assert!(std::fs::read_to_string(&clients.claude).unwrap().contains(&format!("127.0.0.1:{old}")));
+
+            let new = free_port();
+            change_port_at(&paths, clients.clone(), new).await.unwrap();
+            assert_eq!(router::load_store(&paths).unwrap().router.port, new);
+            assert_eq!(router_proxy::running_port(), Some(new));
+            let text = std::fs::read_to_string(&clients.claude).unwrap();
+            assert!(text.contains(&format!("127.0.0.1:{new}")), "{text}");
+            assert!(!text.contains(&format!("127.0.0.1:{old}")), "{text}");
+            assert!(text.contains("CUSTOM"));
+            assert!(client_config::has_router_configs(&paths.app_data_dir).unwrap());
+        });
+    }
+
+    #[test]
+    fn a_busy_or_invalid_port_changes_nothing() {
+        let _router = router_proxy::global_router_test_lock();
+        let _stop = Stop;
+        tauri::async_runtime::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let (paths, clients) = routed_claude(temp.path());
+            let old = router::load_store(&paths).unwrap().router.port;
+            reconcile(&paths).await.unwrap();
+            let before = std::fs::read_to_string(&clients.claude).unwrap();
+
+            let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let taken = squatter.local_addr().unwrap().port();
+            assert_eq!(change_port_at(&paths, clients.clone(), taken).await.unwrap_err(), "newapi.errors.portBusy");
+            assert_eq!(change_port_at(&paths, clients.clone(), 80).await.unwrap_err(), "newapi.errors.portInvalid");
+            assert_eq!(router::load_store(&paths).unwrap().router.port, old);
+            assert_eq!(router_proxy::running_port(), Some(old));
+            assert_eq!(std::fs::read_to_string(&clients.claude).unwrap(), before);
+        });
+    }
+
+    #[test]
+    fn a_reserved_port_is_told_apart_from_a_busy_one() {
+        assert!(port_unavailable("newapi.errors.portBusy"));
+        assert!(port_unavailable("newapi.errors.portReserved"));
+        assert!(!port_unavailable("newapi.errors.network"));
     }
 
     #[test]

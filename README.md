@@ -18,7 +18,7 @@
 
 Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness and Cursor each keep accounts, model settings, sessions, MCP servers and instructions in their own files. Switching accounts when a quota runs out, wiring in third-party relays, or cleaning up sessions usually means hand-editing TOML, JSON and SQLite.
 
-AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It runs a local model router (`127.0.0.1:43127`), writes each client's configuration as a reversible, field-level change with a backup, and shows what is actually happening on one dashboard. Codex is the primary integration; the other clients are supported through the same relays and router.
+AgentHarbor is a Tauri 2 + React + Rust desktop app that does this for you. It runs a local model router (`127.0.0.1:43127` by default, changeable in Settings), writes each client's configuration as a reversible, field-level change with a backup, and shows what is actually happening on one dashboard. Codex is the primary integration; the other clients are supported through the same relays and router.
 
 ## Features
 
@@ -61,7 +61,7 @@ Every client panel on the inject page can start its client after a change:
 
 - **Claude Code, OpenCode, Pi and DeepSeek Harness** open in a new terminal (Windows Terminal when installed, otherwise PowerShell) running the CLI in a working folder you pick once; the panel remembers it per client and keeps recent folders in the button's menu. Harness follows the injected profile: `desktop` starts or restarts Harness Desktop, `web` runs `dsh web`, and the one-shot `headless`, `sdk` and `acp` profiles offer their command to copy instead.
 - **Codex, Claude Desktop and Cursor IDE** show *Start* while they are not running and *Restart* while they are; a stopped Codex starts without the restart prompt.
-- Apps AgentHarbor starts no longer inherit its sockets, so quitting AgentHarbor while Cursor or Codex keeps running leaves the router's port free. If another program does hold that port while the router is down, the inject page names it (process and PID) and, after you confirm, ends it and starts the router again.
+- Apps AgentHarbor starts no longer inherit its sockets, so quitting AgentHarbor while Cursor or Codex keeps running leaves the router's port free. If another program does hold that port while the router is down, the inject page names it (process and PID) and, after you confirm, ends it and starts the router again. A port Windows reserved for Hyper-V, WSL or Docker is reported as such. Either way another port can be chosen right there or in Settings: the routed clients and Codex are rewritten to it, and a port that cannot be taken changes nothing.
 - **Routed clients come back.** Claude Code, OpenCode, Pi and Harness configurations in router mode are withdrawn when AgentHarbor quits, since the router stops with it, and applied again at the next start once the router holds its port, the way Cursor reconnects. While one waits (for example while another program holds the port) its panel says so and opens the configure dialog on it; restoring or releasing a client by hand, or choosing *Don't bring it back*, keeps it withdrawn.
 
 ## Combining model sources
@@ -112,7 +112,7 @@ Codex, Claude Code and Claude Desktop keep their own WebSearch. The router trans
 
 Instead of injecting a client, hand an agent the gateway from the model inject page:
 
-- **Address.** OpenAI compatible (Responses, Chat Completions): `http://127.0.0.1:43127/gateway/v1`. Anthropic Messages: `http://127.0.0.1:43127/gateway`. `/gateway/v1/models` lists every model the key can use.
+- **Address** (with the default router port). OpenAI compatible (Responses, Chat Completions): `http://127.0.0.1:43127/gateway/v1`. Anthropic Messages: `http://127.0.0.1:43127/gateway`. `/gateway/v1/models` lists every model the key can use.
 - **Keys.** Create a named key per agent; copy, regenerate or delete each on its own. Gateway keys are separate from the token injected client configs carry, and neither works in the other's place.
 - **Model names.**
   - Relay and account-source models are `short name/model`, for example `deepseek/deepseek-v4-pro` or `workbuddy/glm-5.3`. Aggregates are `prefix/public id`, `pool/gpt-5.5` by default, so they never read as a relay's model of the same name; the shared prefix is set in the gateway panel and one aggregate can name its own. A request that still sends an aggregate's bare public id keeps working.

@@ -453,11 +453,14 @@ export interface ModelCapabilities {
   catalog: ModelsDevCatalogStatus;
   models: ModelCapability[];
 }
-/** Another program listening on the router's port while the router is down. */
-export interface RouterPortOwner {
+/** What keeps the router off its port while it is down. */
+export interface RouterPortBlock {
   port: number;
-  pid: number;
-  name: string;
+  /** The program holding the port, when one can be named. */
+  pid?: number;
+  name?: string;
+  /** The system reserved the port (Hyper-V, WSL, Docker): there is no program to end. */
+  reserved: boolean;
 }
 export interface NewApiState {
   providers: NewApiProvider[];

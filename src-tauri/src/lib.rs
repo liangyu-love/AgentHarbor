@@ -264,6 +264,7 @@ pub fn run() {
             commands::newapi::load_newapi_state,
             commands::newapi::load_router_port_owner,
             commands::newapi::end_router_port_owner,
+            commands::newapi::set_router_port,
             commands::newapi::load_codex_subagents,
             commands::newapi::save_codex_subagents,
             commands::newapi::reveal_newapi_provider_api_key,

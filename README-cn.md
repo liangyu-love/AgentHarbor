@@ -19,7 +19,7 @@
 Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness 和 Cursor 各自把账号、模型设置、会话、MCP 和指令存放在不同的文件里。额度用完要切号、接入第三方中转、清理会话，往往都得手改 TOML、JSON 和 SQLite。
 
 AgentHarbor 是基于 Tauri 2 + React + Rust 的桌面应用，替你完成这些事：
-- 运行一个本地模型路由（`127.0.0.1:43127`）。
+- 运行一个本地模型路由（默认 `127.0.0.1:43127`，可在系统设置中更改）。
 - 对每个客户端的配置做可撤回的逐字段修改，改之前先备份。
 - 在一个仪表盘上展示各客户端实际的连接状态。
 
@@ -66,7 +66,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 
 - **Claude Code、OpenCode、Pi、DeepSeek Harness**：在新终端（装了 Windows Terminal 就用它，否则用 PowerShell）里运行命令行，工作目录第一次选好后按客户端记住，按钮菜单里还有最近用过的目录。Harness 按注入的 profile 决定：`desktop` 启动或重启 Harness 桌面版，`web` 运行 `dsh web`，一次性的 `headless`、`sdk`、`acp` profile 则提供命令供复制。
 - **Codex、Claude Desktop、Cursor IDE**：没在运行时按钮显示「启动」，运行中显示「重启」；Codex 没在运行时直接启动，不再弹重启确认。
-- AgentHarbor 拉起的程序不再继承它的套接字，所以 Cursor 或 Codex 还开着时退出 AgentHarbor，路由端口也会被释放。若路由没在运行而端口确实被别的程序占着，注入页会显示占用的程序名和 PID，确认后结束它并重新启动路由。
+- AgentHarbor 拉起的程序不再继承它的套接字，所以 Cursor 或 Codex 还开着时退出 AgentHarbor，路由端口也会被释放。若路由没在运行而端口确实被别的程序占着，注入页会显示占用的程序名和 PID，确认后结束它并重新启动路由。被 Windows 为 Hyper-V、WSL 或 Docker 保留的端口会单独说明。两种情况都能当场或在系统设置中换一个端口：经路由接入的客户端和 Codex 会改写到新端口，新端口不可用时什么都不改。
 - **经路由的客户端会自动接回**：Claude Code、OpenCode、Pi、Harness 的本地路由配置在 AgentHarbor 退出时会撤回（路由随它一起停止），下次启动、路由占到端口后自动重新应用，和 Cursor 的重连方式一样。等待接回期间（比如端口被别的程序占着），面板会提示，「配置」弹窗也会带上这份配置；手动恢复原配置、解除管理，或点「不再接回」，就不会再自动接回。
 
 ## 组合模型来源
@@ -117,7 +117,7 @@ Codex 与 Claude Code / Claude Desktop 保留各自原来的 WebSearch 用法，
 
 不想逐个注入时，可以把模型注入页的「通用网关」直接给 agent 用：
 
-- **地址**：OpenAI 兼容（Responses、Chat Completions）用 `http://127.0.0.1:43127/gateway/v1`，Anthropic Messages 用 `http://127.0.0.1:43127/gateway`。`/gateway/v1/models` 列出这个 key 能用的全部模型。
+- **地址**（默认路由端口下）：OpenAI 兼容（Responses、Chat Completions）用 `http://127.0.0.1:43127/gateway/v1`，Anthropic Messages 用 `http://127.0.0.1:43127/gateway`。`/gateway/v1/models` 列出这个 key 能用的全部模型。
 - **key**：可以为每个 agent 建一个命名 key，单独复制、重新生成或删除。它和注入时写进客户端配置的内部令牌是分开的，互不通用。
 - **模型名**：
   - 中转模型和账号来源是 `短名/模型`，例如 `deepseek/deepseek-v4-pro`、`workbuddy/glm-5.3`。聚合模型是 `前缀/公开名`，默认 `pool/gpt-5.5`，不会和中转里的同名模型混淆；共用前缀在网关面板里改，单个聚合也可以设自己的前缀。仍然直接写聚合公开名的请求照常可用。

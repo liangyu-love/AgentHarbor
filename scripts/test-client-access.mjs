@@ -24,6 +24,27 @@ export async function testClientAccess({ page, reset, captureDir }) {
   await notice.waitFor({ state: "detached" });
   console.log("PASS a program holding the router port is named and ended only after confirmation");
 
+  // ---- a port the system reserved has no program to end; another one is taken in place
+  await reset("access");
+  await page.evaluate(() => {
+    window.review.portOwner = { port: 43127, reserved: true };
+    window.review.mount("access");
+  });
+  await notice.getByText(await tr("newapi.portOwner.reservedTitle", { port: 43127 }), { exact: true }).waitFor();
+  assert.equal(await notice.getByRole("button", { name: await tr("newapi.portOwner.end"), exact: true }).count(), 0);
+  const portField = notice.getByRole("textbox", { name: await tr("settings.routerPort.label") });
+  const applyPort = notice.getByRole("button", { name: await tr("settings.routerPort.apply"), exact: true });
+  for (const refused of ["80", "70000", "43a"]) {
+    await portField.fill(refused);
+    assert.equal(await applyPort.isDisabled(), true, refused);
+  }
+  await portField.fill("43200");
+  await applyPort.click();
+  await page.waitForFunction(() => window.review.routerPorts?.at(-1) === 43200);
+  await page.waitForFunction(() => window.review.lastToast === window.review.t("settings.routerPort.changed", { port: 43200 }));
+  await notice.waitFor({ state: "detached" });
+  console.log("PASS a reserved router port offers another port instead of a program to end");
+
   // ---- groups are tabs: one shows at a time, and every tab keeps its summary
   await reset("access");
   const tab = id => page.locator(`[data-inject-tab="${id}"]`);

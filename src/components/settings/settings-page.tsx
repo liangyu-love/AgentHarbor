@@ -36,6 +36,7 @@ import { AvatarSettings } from "@/components/settings/avatar-settings";
 import { BackgroundSettings } from "@/components/settings/background-settings";
 import { TerminalProxySettings } from "@/components/settings/terminal-proxy-settings";
 import { AutostartSetting } from "@/components/settings/autostart-setting";
+import { RouterPortEditor } from "@/components/newapi/router-port-editor";
 import { queryKeys } from "@/lib/query-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { focusRing, pressable } from "@/lib/a11y";
@@ -325,6 +326,10 @@ export function SettingsPage({
               <Button variant="outline" size="sm" onClick={openProxyDialog}>
                 {t("common.edit")}
               </Button>
+            </SettingRow>
+            <SettingRow label={t("settings.routerPort.label")}
+              description={<p className="max-w-lg">{t("settings.routerPort.desc")}</p>}>
+              <RouterPortEditor />
             </SettingRow>
             <TerminalProxySettings currentProxy={currentProxy} focusRequested={terminalProxyRequested}
               onFocusHandled={onTerminalProxyRequestHandled} />

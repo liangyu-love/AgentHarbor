@@ -140,6 +140,11 @@ api.providers.endPortOwner = async pid => {
   controls.review.portOwner = null;
   state = { ...state, proxyRunning: true };
 };
+api.providers.setPort = async port => {
+  (controls.review.routerPorts ??= []).push(port);
+  controls.review.portOwner = null;
+  state = { ...state, router: { ...state.router, port }, proxyRunning: true };
+};
 // Aggregation fixtures reuse exact saved provider/model identities. Availability
 // changes with those same fixture providers, rather than inventing a fallback.
 const aggregateProjection = (contextWindow = 1_000_000) => ({ contextWindow, contextSource: "catalog", contextIsFallback: false,

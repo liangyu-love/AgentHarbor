@@ -224,26 +224,44 @@ pub async fn load_newapi_state(repo: State<'_, Mutex<Repository>>) -> Result<New
     ))
 }
 
+/// Why the router cannot take its port: the program holding it, when one can
+/// be named, or the system's reservation.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RouterPortOwner {
+pub struct RouterPortBlock {
     port: u16,
     #[serde(flatten)]
-    owner: crate::platform::port_owner::PortOwner,
+    owner: Option<crate::platform::port_owner::PortOwner>,
+    reserved: bool,
 }
 
-/// Another program holding the router's port while the router is down.
+/// What keeps the router off its port while it is down; none when the port is free.
 #[tauri::command]
-pub async fn load_router_port_owner(repo: State<'_, Mutex<Repository>>) -> Result<Option<RouterPortOwner>, String> {
+pub async fn load_router_port_owner(repo: State<'_, Mutex<Repository>>) -> Result<Option<RouterPortBlock>, String> {
     let paths = paths(&repo)?;
     super::blocking(move || {
         if router_proxy::is_running() {
             return Ok(None);
         }
         let port = router::load_store(&paths)?.router.port;
-        Ok(crate::platform::port_owner::listener(port).map(|owner| RouterPortOwner { port, owner }))
+        Ok(match router_proxy::probe_port(port) {
+            Ok(()) => None,
+            Err(error) => {
+                let reserved = error == "newapi.errors.portReserved";
+                let owner = if reserved { None } else { crate::platform::port_owner::listener(port) };
+                Some(RouterPortBlock { port, owner, reserved })
+            }
+        })
     })
     .await
+}
+
+/// Moves the router to `port`, with every client routed through it.
+#[tauri::command]
+pub async fn set_router_port(repo: State<'_, Mutex<Repository>>, port: u16) -> Result<(), String> {
+    let paths = paths(&repo)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    routing_runtime::change_port(&paths, port).await
 }
 
 /// Ends the program holding the router's port, then starts what needs it.

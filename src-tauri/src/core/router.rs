@@ -2460,6 +2460,25 @@ fn persist_connection_change(
     Ok(())
 }
 
+/// Saves the router's port and points Codex's routing config at it. The
+/// listener and the other clients follow in `routing_runtime::change_port`.
+pub fn set_port(paths: &CodexPaths, port: u16) -> Result<StateChange, String> {
+    let _guard = store_write_guard()?;
+    let mut store = load_store_unlocked(paths)?;
+    let previous = store.clone();
+    store.router.port = port;
+    let applied = if store.codex_access_mode == CodexAccessMode::Router {
+        apply_routing_if_enabled(paths, &store)?
+    } else {
+        None
+    };
+    persist_connection_change(paths, &previous, &store, applied.is_some())?;
+    Ok(StateChange {
+        state: state_from_store_at(&store, super::router_proxy::is_running(), Some(paths)),
+        applied,
+    })
+}
+
 pub fn set_accountless(paths: &CodexPaths, accountless: bool) -> Result<StateChange, String> {
     let _guard = store_write_guard()?;
     let mut store = load_store_unlocked(paths)?;
