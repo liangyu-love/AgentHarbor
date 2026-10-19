@@ -42,6 +42,23 @@ fn pi_provider<'a>(installed: &'a Value, protocol: &str) -> &'a Value {
 }
 
 #[test]
+fn pi_comments_survive_injection_and_the_file_stays_readable_by_pi() {
+    let (_temp, manager, store, request) = pi_fixture(ClientAccessMode::Native);
+    let original = "{\n  // user note\n  \"custom\": true\n}\n";
+    storage::write_atomic(&manager.paths.pi, original.as_bytes()).unwrap();
+    apply(&manager, &store, &request);
+    let installed = std::fs::read_to_string(&manager.paths.pi).unwrap();
+    assert!(installed.contains("// user note"));
+    // Pi strips comments and then calls JSON.parse, so the rest must be strict JSON.
+    assert!(jsonc_parser::cst::CstRootNode::parse(&installed, &jsonc::options(false)).is_ok());
+    let value: Value = json5::from_str(&installed).unwrap();
+    assert_eq!(value["custom"], true);
+    assert!(value["providers"].as_object().is_some_and(|providers| !providers.is_empty()));
+    manager.restore(request.target_id).unwrap();
+    assert_eq!(std::fs::read_to_string(&manager.paths.pi).unwrap(), original);
+}
+
+#[test]
 fn pi_direct_protocols_preserve_external_config_and_exact_restore() {
     let (_temp, manager, mut store, request) = pi_fixture(ClientAccessMode::Native);
     store.providers[0].base_url = "https://api.commandcode.ai/provider/v1".into();

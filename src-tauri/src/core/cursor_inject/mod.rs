@@ -153,7 +153,7 @@ pub async fn reconcile(paths: &CodexPaths, apply_leases: bool) -> Result<(), Str
     let port_moved = settings.port != running.port();
     settings.port = running.port();
     let applied = if apply_leases || port_moved {
-        apply_leases_now(&mut settings, &url)
+        apply_leases_now(&mut settings, &url, before.port)
     } else {
         Ok(())
     };
@@ -217,10 +217,31 @@ fn searcher(paths: &CodexPaths) -> Option<Arc<dyn cursor_engine::Searcher>> {
     }))
 }
 
-fn apply_ide_leases(settings: &mut CursorSettings, url: &str, user_dir: Option<&Path>) -> Result<(), String> {
+/// Whether `url` is the engine's own address on `port`, the port it had when
+/// it last ran: a value left behind when its lease was lost, not the user's.
+/// Port 0 is never an engine port, so it matches nothing.
+fn left_by_engine(url: &str, port: u16) -> bool {
+    port != 0
+        && reqwest::Url::parse(url).is_ok_and(|url| {
+            matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+                && url.port_or_known_default() == Some(port)
+        })
+}
+
+fn apply_ide_leases(
+    settings: &mut CursorSettings,
+    url: &str,
+    user_dir: Option<&Path>,
+    previous_port: u16,
+) -> Result<(), String> {
     if settings.ide {
         let directory = user_dir.ok_or("cursor.errors.ideMissing")?;
-        settings.ide_lease = Some(ide::apply(&directory.join("settings.json"), url, settings.ide_lease.as_ref())?);
+        settings.ide_lease = Some(ide::apply(
+            &directory.join("settings.json"),
+            url,
+            settings.ide_lease.as_ref(),
+            previous_port,
+        )?);
         let storage = directory.join("globalStorage");
         std::fs::create_dir_all(&storage).map_err(|_| "cursor.errors.accountWrite")?;
         settings.account_lease = account::apply(&storage.join("state.vscdb"), settings.account_lease.as_ref())?;
@@ -238,10 +259,10 @@ fn apply_ide_leases(settings: &mut CursorSettings, url: &str, user_dir: Option<&
     Ok(())
 }
 
-fn apply_leases_now(settings: &mut CursorSettings, url: &str) -> Result<(), String> {
-    apply_ide_leases(settings, url, ide::user_dir().as_deref())?;
+fn apply_leases_now(settings: &mut CursorSettings, url: &str, previous_port: u16) -> Result<(), String> {
+    apply_ide_leases(settings, url, ide::user_dir().as_deref(), previous_port)?;
     if settings.cli && cli::supported() {
-        match cli::apply(url, settings.cli_lease.as_ref()) {
+        match cli::apply(url, settings.cli_lease.as_ref(), previous_port) {
             Ok(lease) => settings.cli_lease = Some(lease),
             Err(error) => log::warn!("{} was not set: {error}", cli::VARIABLE),
         }
@@ -513,7 +534,7 @@ mod tests {
             ide: true,
             ..Default::default()
         };
-        apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path())).unwrap();
+        apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path()), 0).unwrap();
         assert!(settings.account_lease.is_some());
         assert!(ide::applied(&cursor_settings, "http://127.0.0.1:4567"));
         save(directory.path(), &settings).unwrap();
@@ -543,7 +564,7 @@ mod tests {
                 std::fs::create_dir(path.with_extension("json.agentharbor-tmp")).unwrap();
             }
             let mut settings = CursorSettings { ide: true, ..Default::default() };
-            let error = apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path())).unwrap_err();
+            let error = apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path()), 0).unwrap_err();
             assert_eq!(error, if malformed { "cursor.errors.settingsUnreadable" } else { "cursor.errors.settingsWrite" });
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
             assert!(!directory.path().join("globalStorage").exists());
@@ -559,7 +580,7 @@ mod tests {
         std::fs::write(&path, r#"{"http.proxy":"http://previous:8080"}"#).unwrap();
         std::fs::write(directory.path().join("globalStorage"), "occupied").unwrap();
         let mut settings = CursorSettings { ide: true, ..Default::default() };
-        assert_eq!(apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path())).unwrap_err(), "cursor.errors.accountWrite");
+        assert_eq!(apply_ide_leases(&mut settings, "http://127.0.0.1:4567", Some(directory.path()), 0).unwrap_err(), "cursor.errors.accountWrite");
         assert!(settings.account_lease.is_none());
         assert!(settings.ide_lease.is_some());
         save(directory.path(), &settings).unwrap();

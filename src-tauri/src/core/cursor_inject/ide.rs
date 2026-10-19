@@ -130,8 +130,9 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
 }
 
 /// Points Cursor at `proxy_url`. A lease already held keeps the values from
-/// before AgentHarbor's first write.
-pub fn apply(path: &Path, proxy_url: &str, held: Option<&Lease>) -> Result<Lease, String> {
+/// before AgentHarbor's first write. `previous_port` is the engine port of the
+/// last run, which tells AgentHarbor's leftovers from the user's own settings.
+pub fn apply(path: &Path, proxy_url: &str, held: Option<&Lease>, previous_port: u16) -> Result<Lease, String> {
     let text = read(path)?;
     let root = parse(&text)?;
     let object = root.object_value_or_set();
@@ -139,7 +140,7 @@ pub fn apply(path: &Path, proxy_url: &str, held: Option<&Lease>) -> Result<Lease
     let held = held.filter(|lease| lease.path == path);
     // Settings AgentHarbor wrote before a crash, with the lease lost: what
     // was there before them is unknown, so they go when the lease ends.
-    let stale = held.is_none() && leftover(&object);
+    let stale = held.is_none() && leftover(&object, previous_port);
     let mut originals = held.map(|lease| lease.originals.clone()).unwrap_or_default();
     if stale {
         originals = wanted.keys().map(|key| (key.clone(), None)).collect();
@@ -161,12 +162,13 @@ pub fn apply(path: &Path, proxy_url: &str, held: Option<&Lease>) -> Result<Lease
 }
 
 /// Whether the settings look like AgentHarbor's own, left behind: every
-/// managed key set as it writes them, the proxy on loopback.
-fn leftover(object: &CstObject) -> bool {
-    let loopback = current(object, "http.proxy")
-        .and_then(|value| value.as_str().and_then(|url| reqwest::Url::parse(url).ok()))
-        .is_some_and(|url| matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")));
-    loopback
+/// managed key set as it writes them, and the proxy the engine's address on
+/// its previous port. A loopback proxy on any other port is the user's.
+fn leftover(object: &CstObject, previous_port: u16) -> bool {
+    let ours = current(object, "http.proxy")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .is_some_and(|url| super::left_by_engine(&url, previous_port));
+    ours
         && wanted("").iter().filter(|(key, _)| *key != "http.proxy").all(|(key, value)| current(object, key).as_ref() == Some(value))
 }
 
@@ -242,7 +244,7 @@ mod tests {
         let original = "{\n    // the user's own note\n    \"editor.fontSize\": 14,\n    \"http.proxy\": \"http://corp:8080\",\n}\n";
         std::fs::write(&path, original).unwrap();
 
-        let lease = apply(&path, "http://127.0.0.1:4567", None).unwrap();
+        let lease = apply(&path, "http://127.0.0.1:4567", None, 0).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("// the user's own note"));
         assert!(text.contains("\"http.proxy\": \"http://127.0.0.1:4567\""));
@@ -251,7 +253,7 @@ mod tests {
         assert_eq!(lease.original_proxy().as_deref(), Some("http://corp:8080"));
 
         // A second apply (a new port) keeps the values from before the first.
-        let lease = apply(&path, "http://127.0.0.1:5678", Some(&lease)).unwrap();
+        let lease = apply(&path, "http://127.0.0.1:5678", Some(&lease), 4567).unwrap();
         assert_eq!(lease.original_proxy().as_deref(), Some("http://corp:8080"));
 
         release(&lease).unwrap();
@@ -267,10 +269,10 @@ mod tests {
     fn settings_left_from_a_crash_are_not_taken_for_the_users() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        let first = apply(&path, "http://127.0.0.1:4567", None).unwrap();
+        let first = apply(&path, "http://127.0.0.1:4567", None, 0).unwrap();
         assert_eq!(first.original_proxy(), None);
-        // The lease is lost; the next start finds the old values.
-        let again = apply(&path, "http://127.0.0.1:5678", None).unwrap();
+        // The lease is lost; the next start finds the old values, on the port it ran on.
+        let again = apply(&path, "http://127.0.0.1:5678", None, 4567).unwrap();
         assert_eq!(again.original_proxy(), None, "the old local port is not the user's proxy");
         release(&again).unwrap();
         let value: Value = json5::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -278,10 +280,28 @@ mod tests {
     }
 
     #[test]
+    fn a_loopback_proxy_on_another_port_is_the_users_when_the_lease_is_lost() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        // The same managed keys as AgentHarbor writes, but the proxy is the user's own tool.
+        std::fs::write(
+            &path,
+            "{\n  \"http.proxy\": \"http://127.0.0.1:7890\",\n  \"http.proxySupport\": \"on\",\n  \"cursor.general.disableHttp2\": true,\n  \"http.experimental.systemCertificatesV2\": true\n}\n",
+        )
+        .unwrap();
+        let lease = apply(&path, "http://127.0.0.1:4567", None, 4567).unwrap();
+        assert_eq!(lease.original_proxy().as_deref(), Some("http://127.0.0.1:7890"));
+        release(&lease).unwrap();
+        let value: Value = json5::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["http.proxy"], "http://127.0.0.1:7890");
+        assert_eq!(value["cursor.general.disableHttp2"], true);
+    }
+
+    #[test]
     fn a_value_the_user_changed_since_is_left_alone() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        let lease = apply(&path, "http://127.0.0.1:4567", None).unwrap();
+        let lease = apply(&path, "http://127.0.0.1:4567", None, 0).unwrap();
         let text = std::fs::read_to_string(&path).unwrap().replace("\"http.proxySupport\": \"on\"", "\"http.proxySupport\": \"off\"");
         std::fs::write(&path, text).unwrap();
         release(&lease).unwrap();

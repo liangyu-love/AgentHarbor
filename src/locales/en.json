@@ -387,6 +387,7 @@
       "harnessDuplicateRow": "The profile patch has the same entry id twice, so AgentHarbor cannot tell which one to change.",
       "harnessYamlLayout": "This YAML layout cannot be edited without risking your file, so nothing was written.",
       "harnessProviderConflict": "Harness already has a provider route with this name. Rename yours before applying.",
+      "harnessCredentialConflict": "Harness already holds a different key under this name. Nothing was written, so it is not overwritten. Rename or remove it first.",
       "harnessAnthropicBearer": "This relay's Messages endpoint takes a bearer token, which Harness does not send on its own. Use the local router for it.",
       "unsupported": "This client does not support this configuration entry. Use routing injection above for Codex.",
       "cloudMode": "CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX / CLAUDE_CODE_USE_FOUNDRY is enabled. That is your own cloud-provider setup, which AgentHarbor does not rewrite; disable it in settings.json before injecting.",

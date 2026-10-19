@@ -551,6 +551,10 @@ impl ConfigManager {
             return Err("clients.errors.harnessCredentialsMoved".into());
         }
         let current = Texts::read(&patch, &credentials)?;
+        let conflicted_fields: Vec<String> = match previous.as_ref() {
+            Some(session) => conflicts(session, &current)?.iter().map(Field::label).collect(),
+            None => Vec::new(),
+        };
         let (baseline, original) = match previous.as_mut() {
             Some(session) => {
                 let conflicted = conflicts(session, &current)?;
@@ -612,7 +616,20 @@ impl ConfigManager {
             edits.push((Field::patch(DEFAULT_ROW, &["reasoningEffort"]), None));
         }
         for (name, value) in &built.credentials {
-            edits.push((Field::Credential { name: name.clone() }, Some(json!(value))));
+            let field = Field::Credential { name: name.clone() };
+            // A key this session does not manage is the user's own under this
+            // name; a managed one is replaced under the conflict policy above.
+            let managed = previous
+                .as_ref()
+                .is_some_and(|session| session.changes.iter().any(|change| change.field == field));
+            if !managed
+                && baseline
+                    .value(&field)?
+                    .is_some_and(|existing| existing != json!(value))
+            {
+                return Err("clients.errors.harnessCredentialConflict".into());
+            }
+            edits.push((field, Some(json!(value))));
         }
         let rows_before = yaml::read(baseline.patch.as_deref())?;
         let mut texts = baseline.clone();
@@ -670,6 +687,7 @@ impl ConfigManager {
             current,
             next: texts,
             session,
+            conflicts: conflicted_fields,
             warnings,
         })
     }
@@ -758,6 +776,7 @@ impl ConfigManager {
                 .filter(|change| change.after.is_none() && change.before.is_some())
                 .map(|change| change.field.label())
                 .collect(),
+            conflict_fields: plan.conflicts,
             warnings: plan.warnings,
         })
     }
@@ -961,6 +980,8 @@ struct HarnessPlan {
     current: Texts,
     next: Texts,
     session: Session,
+    /// Labels of the managed fields the user changed since the last apply.
+    conflicts: Vec<String>,
     warnings: Vec<String>,
 }
 

@@ -40,16 +40,15 @@ mod platform {
     use super::*;
     use crate::platform::terminal_environment::{windows::UserEnvironment, Environment};
 
-    pub fn apply(url: &str, held: Option<&Lease>) -> Result<Lease, String> {
+    pub fn apply(url: &str, held: Option<&Lease>, previous_port: u16) -> Result<Lease, String> {
         let mut environment = UserEnvironment::open(true)?;
         let original = match held {
             Some(lease) => lease.original.clone(),
-            // A loopback value with no lease is AgentHarbor's own, left by a
-            // crash: there was nothing before it to put back.
+            // The engine's own address on its previous port, with no lease, is
+            // AgentHarbor's, left by a crash: there was nothing before it to
+            // put back. Any other value is the user's.
             None => environment.read(VARIABLE)?.filter(|value| {
-                !value.text().and_then(|text| reqwest::Url::parse(&text).ok()).is_some_and(|url| {
-                    matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
-                })
+                !value.text().is_some_and(|text| super::super::left_by_engine(&text, previous_port))
             }),
         };
         let value = EnvironmentValue::string(url);
@@ -80,7 +79,7 @@ mod platform {
 mod platform {
     use super::*;
 
-    pub fn apply(_url: &str, _held: Option<&Lease>) -> Result<Lease, String> {
+    pub fn apply(_url: &str, _held: Option<&Lease>, _previous_port: u16) -> Result<Lease, String> {
         Err("cursor.errors.cliUnsupported".into())
     }
 

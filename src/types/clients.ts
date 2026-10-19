@@ -102,6 +102,8 @@ export interface ClientConfigPreview {
   revision: string;
   content: string;
   removedFields?: string[];
+  /** Managed fields changed by hand since the last apply: applying replaces them. */
+  conflictFields?: string[];
   /** i18n keys for non-blocking notices about the fields being taken over. */
   warnings?: string[];
 }

@@ -436,6 +436,15 @@ fn conflicting_configuration_can_be_previewed_and_replaced_without_release() {
         .preview_with_conflicts(&store, &request, true)
         .unwrap();
     assert_eq!(read(&manager.paths.claude), changed, "preview is read-only");
+    // The preview names what the replacement overwrites, and nothing of the user's own.
+    assert!(preview.conflict_fields.contains(&"model".to_owned()));
+    assert!(preview
+        .conflict_fields
+        .contains(&"env.ANTHROPIC_BASE_URL".to_owned()));
+    assert!(preview
+        .conflict_fields
+        .iter()
+        .all(|field| field != "theme" && !field.starts_with("modelPicker")));
     let applied = manager
         .apply_with_conflicts(&store, &request, &preview.revision, true)
         .unwrap();
@@ -592,6 +601,35 @@ fn opencode_registers_each_protocol_without_removing_official_providers() {
 }
 
 #[test]
+fn opencode_enabled_providers_keep_the_users_own_entries() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.target_id = TargetId::OpenCode;
+    write(
+        &manager.paths.opencode,
+        &json!({"enabled_providers": ["openai"]}),
+    );
+    apply(&manager, &store, &request);
+    // Enabling another provider after the apply is the user's, not a conflict.
+    let mut document = read(&manager.paths.opencode);
+    document["enabled_providers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("anthropic"));
+    write(&manager.paths.opencode, &document);
+    apply(&manager, &store, &request);
+    let installed = read(&manager.paths.opencode);
+    assert!(installed["enabled_providers"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("anthropic")));
+    manager.restore(request.target_id).unwrap();
+    assert_eq!(
+        read(&manager.paths.opencode)["enabled_providers"],
+        json!(["openai", "anthropic"])
+    );
+}
+
+#[test]
 fn jsonc_comments_are_backed_up_and_restored_exactly() {
     let (temp, mut manager, store, mut request) = fixture();
     let path = temp.path().join(".config/opencode/opencode.jsonc");
@@ -601,9 +639,37 @@ fn jsonc_comments_are_backed_up_and_restored_exactly() {
     assert_eq!(manager.paths.opencode, path);
     request.target_id = TargetId::OpenCode;
     apply(&manager, &store, &request);
-    assert_eq!(read(&path)["theme"], "dark");
+    let injected = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(json5::from_str::<Value>(&injected).unwrap()["theme"], "dark");
     manager.restore(request.target_id).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn jsonc_comments_survive_injection_and_restore_keeps_independent_edits() {
+    let (temp, mut manager, store, mut request) = fixture();
+    let path = temp.path().join(".config/opencode/opencode.jsonc");
+    let original = "{\n // user comment\n \"theme\": \"dark\",\n}\n";
+    storage::write_atomic(&path, original.as_bytes()).unwrap();
+    manager.paths = ClientPaths::from_home(temp.path());
+    request.target_id = TargetId::OpenCode;
+    apply(&manager, &store, &request);
+    let injected = std::fs::read_to_string(&path).unwrap();
+    assert!(injected.contains("// user comment"));
+    assert_eq!(
+        json5::from_str::<Value>(&injected).unwrap()["provider"]["agentharbor_test-relay"]["npm"],
+        "@ai-sdk/anthropic"
+    );
+    // An edit made while injected is the user's: it survives the restore, comment included.
+    let edited = injected.replace("\"theme\": \"dark\"", "\"theme\": \"light\"");
+    storage::write_atomic(&path, edited.as_bytes()).unwrap();
+    manager.restore(request.target_id).unwrap();
+    let restored = std::fs::read_to_string(&path).unwrap();
+    assert!(restored.contains("// user comment"));
+    assert_eq!(
+        json5::from_str::<Value>(&restored).unwrap(),
+        json!({"theme": "light"})
+    );
 }
 
 #[test]

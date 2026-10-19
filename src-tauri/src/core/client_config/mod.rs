@@ -6,6 +6,7 @@ mod aggregate_models;
 mod claude;
 mod claude_official;
 mod harness;
+mod jsonc;
 mod mixed_models;
 mod model_facts;
 mod opencode;
@@ -231,6 +232,8 @@ pub struct ConfigPreview {
     /// Only the managed fields are returned; all credential values are redacted.
     pub content: String,
     pub removed_fields: Vec<String>,
+    /// Managed fields the user changed since the last apply: applying replaces them.
+    pub conflict_fields: Vec<String>,
     /// i18n keys for non-blocking notices: fields the first injection will
     /// overwrite, and higher-priority configuration that would override it.
     pub warnings: Vec<String>,
@@ -536,11 +539,7 @@ impl ConfigManager {
                     return Ok(());
                 }
                 let plan = self.prepare(store, &request, false, false)?;
-                let text = format!(
-                    "{}\n",
-                    serde_json::to_string_pretty(&plan.session.installed)
-                        .map_err(|_| "clients.errors.storage")?
-                );
+                let text = render(id, plan.current.as_deref(), &plan.session.installed)?;
                 self.commit(id, &plan.session.path, plan.current, Some(text), Some(&plan.session), plan.warnings)
                     .map(|_| ())
             })();
@@ -603,6 +602,7 @@ impl ConfigManager {
                 .filter(|change| change.after.is_none())
                 .map(|change| change.path.join("."))
                 .collect(),
+            conflict_fields: plan.conflicts,
             warnings: plan.warnings,
         })
     }
@@ -638,11 +638,7 @@ impl ConfigManager {
         if plan.revision != expected_revision {
             return Err("clients.errors.changed".into());
         }
-        let text = format!(
-            "{}\n",
-            serde_json::to_string_pretty(&plan.session.installed)
-                .map_err(|_| "clients.errors.storage")?
-        );
+        let text = render(request.target_id, plan.current.as_deref(), &plan.session.installed)?;
         let applied = self.commit(
             request.target_id,
             &plan.session.path,
@@ -736,10 +732,7 @@ impl ConfigManager {
             for (path, restored) in arrays {
                 set_field(&mut document, &path, restored)?;
             }
-            Some(format!(
-                "{}\n",
-                serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
-            ))
+            Some(render(id, current.as_deref(), &document)?)
         };
         self.commit(id, &session.path, current, restored, None, warnings)
     }
@@ -764,11 +757,7 @@ impl ConfigManager {
         adapter(id)?;
         let session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
         let plan = self.prepare(store, &session.request, rebaseline, false)?;
-        let text = format!(
-            "{}\n",
-            serde_json::to_string_pretty(&plan.session.installed)
-                .map_err(|_| "clients.errors.storage")?
-        );
+        let text = render(id, plan.current.as_deref(), &plan.session.installed)?;
         self.commit(
             id,
             &plan.session.path,
@@ -917,7 +906,22 @@ impl ConfigManager {
         let baseline_available = available_values
             .and_then(Value::as_array)
             .map(|values| owned.withdraw(&["availableModels".into()], values));
+        let enabled_values = document.get("enabled_providers");
+        let had_enabled = enabled_values.is_some();
+        let baseline_enabled = enabled_values
+            .and_then(Value::as_array)
+            .map(|keys| owned.withdraw(&["enabled_providers".into()], keys));
         let independently_changed = previous.as_ref().is_some_and(|p| document != p.installed);
+        // Read before the undo below, which puts the managed fields back.
+        let conflicts: Vec<String> = previous
+            .as_ref()
+            .map(|session| {
+                conflicting_paths(&document, session)
+                    .iter()
+                    .map(|path| path.join("."))
+                    .collect()
+            })
+            .unwrap_or_default();
         let rebaselined = rebaseline && previous.is_some();
         if let Some(previous_session) = previous.as_mut() {
             if rebaselined {
@@ -936,10 +940,7 @@ impl ConfigManager {
             undo(&mut document, previous_session)?;
         }
         let mut original = if independently_changed && !rebaselined {
-            Some(format!(
-                "{}\n",
-                serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
-            ))
+            Some(render(request.target_id, current.as_deref(), &document)?)
         } else {
             previous
                 .as_ref()
@@ -978,11 +979,21 @@ impl ConfigManager {
             }
             None => {}
         }
+        match baseline_enabled {
+            Some(keys) => set_field(
+                &mut document,
+                &["enabled_providers".into()],
+                Some(json!(keys)),
+            )?,
+            None if !had_enabled
+                && field(&document, &["enabled_providers".into()]).is_some() =>
+            {
+                set_field(&mut document, &["enabled_providers".into()], None)?
+            }
+            None => {}
+        }
         if rebaselined {
-            original = Some(format!(
-                "{}\n",
-                serde_json::to_string_pretty(&document).map_err(|_| "clients.errors.storage")?
-            ));
+            original = Some(render(request.target_id, current.as_deref(), &document)?);
         } else if independently_changed {
             // The exact-byte restore path must retain the same adopted user
             // rows as the field-merge path. Build it after withdrawing our rows.
@@ -990,6 +1001,7 @@ impl ConfigManager {
             for (present, path) in [
                 (had_picker, vec!["modelPicker".into(), "options".into()]),
                 (had_available, vec!["availableModels".into()]),
+                (had_enabled, vec!["enabled_providers".into()]),
             ] {
                 if present {
                     let value = field(&document, &path)
@@ -1001,10 +1013,7 @@ impl ConfigManager {
                     set_field(&mut baseline, &path, value)?;
                 }
             }
-            original = Some(format!(
-                "{}\n",
-                serde_json::to_string_pretty(&baseline).map_err(|_| "clients.errors.storage")?
-            ));
+            original = Some(render(request.target_id, original.as_deref(), &baseline)?);
         }
         let mut warnings = Vec::new();
         let direct_proxy = self.direct_proxy(store, request);
@@ -1087,6 +1096,7 @@ impl ConfigManager {
             revision: format!("{:x}", hasher.finalize()),
             current,
             session,
+            conflicts,
             warnings,
         })
     }
@@ -1241,6 +1251,8 @@ struct Plan {
     revision: String,
     current: Option<String>,
     session: Session,
+    /// Managed paths the user changed since the last apply, by dotted name.
+    conflicts: Vec<String>,
     /// Non-blocking notices computed while planning: first-injection takeover
     /// warnings and managed-settings overrides.
     warnings: Vec<String>,
@@ -1310,6 +1322,31 @@ fn parse(text: Option<&str>, id: TargetId) -> Result<Value, String> {
         return Err("clients.errors.invalidConfig".into());
     }
     Ok(value)
+}
+
+/// The text `next` is written as, over `base` (the text the file held when
+/// it was read). An OpenCode or Pi file with comments keeps them and its
+/// layout; everything else is written as normalized JSON.
+fn render(id: TargetId, base: Option<&str>, next: &Value) -> Result<String, String> {
+    let normalized = format!(
+        "{}\n",
+        serde_json::to_string_pretty(next).map_err(|_| "clients.errors.storage")?
+    );
+    let trailing_commas = match id {
+        TargetId::OpenCode => true,
+        TargetId::Pi => false,
+        _ => return Ok(normalized),
+    };
+    let Some(base) = base else {
+        return Ok(normalized);
+    };
+    if serde_json::from_str::<Value>(base).is_ok() {
+        return Ok(normalized);
+    }
+    let Ok(from) = parse(Some(base), id) else {
+        return Ok(normalized);
+    };
+    Ok(jsonc::patch(base, &jsonc::options(trailing_commas), &from, next).unwrap_or(normalized))
 }
 
 fn field<'a>(document: &'a Value, path: &[String]) -> Option<&'a Value> {

@@ -387,6 +387,7 @@
       "harnessDuplicateRow": "profile patch 中同一个条目 id 出现了两次，无法确定该修改哪一个。",
       "harnessYamlLayout": "这种 YAML 写法无法在保证文件安全的前提下修改，因此没有写入任何内容。",
       "harnessProviderConflict": "Harness 中已有同名的 provider 路由。请先给你自己的路由改名。",
+      "harnessCredentialConflict": "Harness 的凭据里已有同名但内容不同的密钥。为了不覆盖它，没有写入任何内容。请先改名或删除它。",
       "harnessAnthropicBearer": "该中转的 Messages 接口要求 Bearer 令牌，Harness 直连时不会这样发送。请改用本地路由。",
       "unsupported": "该客户端暂不支持此配置入口；Codex 请使用上方路由注入。",
       "cloudMode": "检测到 CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX / CLAUDE_CODE_USE_FOUNDRY 已启用。这是你自己的云接入配置，AgentHarbor 不会改写它；请先在 settings.json 中关闭后再注入。",

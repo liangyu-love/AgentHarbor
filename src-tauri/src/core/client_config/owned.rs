@@ -1,17 +1,18 @@
 //! What this app wrote into the client's element-keyed arrays, so a later
 //! apply can withdraw exactly those elements instead of guessing from row
-//! shapes. Two paths are element-keyed on Claude Code: `modelPicker.options`
-//! (keyed by the row's `model` id) and `availableModels` (keyed by the value
-//! itself). The record lives beside the session journal, survives `release`
-//! (the file keeps our rows, so a later apply must still withdraw them) and
-//! retains an empty record on `restore`. The record's presence also marks the
-//! legacy picker migration as complete, so restored user rows stay untouched
-//! on a later apply.
+//! shapes. Element-keyed paths are `modelPicker.options` (keyed by the row's
+//! `model` id) and `availableModels` on Claude Code, and OpenCode's
+//! `enabled_providers` (keyed by the provider key). The record lives beside
+//! the session journal, survives `release` (the file keeps our rows, so a
+//! later apply must still withdraw them) and retains an empty record on
+//! `restore`. The record's presence also marks the legacy picker migration as
+//! complete, so restored user rows stay untouched on a later apply.
 
 use super::*;
 
 const PICKER_OPTIONS: [&str; 2] = ["modelPicker", "options"];
 const AVAILABLE_MODELS: [&str; 1] = ["availableModels"];
+const ENABLED_PROVIDERS: [&str; 1] = ["enabled_providers"];
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -25,10 +26,12 @@ pub(super) struct OwnedRecord {
     pub picker_entries: Vec<Value>,
     /// Values this app last added to `availableModels`.
     pub available_models: Vec<String>,
+    /// Provider keys this app last added to `enabled_providers`.
+    pub enabled_providers: Vec<String>,
 }
 
 pub(super) fn is_element_array_path(path: &[String]) -> bool {
-    is_path(path, &PICKER_OPTIONS) || is_path(path, &AVAILABLE_MODELS)
+    is_path(path, &PICKER_OPTIONS) || is_path(path, &AVAILABLE_MODELS) || is_path(path, &ENABLED_PROVIDERS)
 }
 
 fn is_path(path: &[String], expected: &[&str]) -> bool {
@@ -80,6 +83,8 @@ impl OwnedRecord {
                             record.picker_models.push(key);
                             record.picker_entries.push(entry.clone());
                         }
+                    } else if is_path(&change.path, &ENABLED_PROVIDERS) {
+                        record.enabled_providers.push(key);
                     } else {
                         record.available_models.push(key);
                     }
@@ -118,7 +123,11 @@ impl OwnedRecord {
                 .cloned()
                 .collect();
         }
-        let owned = &self.available_models;
+        let owned = if is_path(path, &ENABLED_PROVIDERS) {
+            &self.enabled_providers
+        } else {
+            &self.available_models
+        };
         array
             .iter()
             .filter(|entry| {

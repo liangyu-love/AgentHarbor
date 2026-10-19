@@ -691,6 +691,15 @@ fn a_confirmed_restore_replaces_edits_and_rebaseline_adopts_them() {
     .unwrap();
     std::fs::write(fixture.credentials(), &text).unwrap();
     assert!(fixture.status().conflict);
+    assert_eq!(
+        fixture
+            .manager
+            .preview_with_conflicts(&fixture.store, &fixture.request, true)
+            .unwrap()
+            .conflict_fields,
+        fixture.status().conflict_fields
+    );
+    assert!(!fixture.status().conflict_fields.is_empty());
     fixture
         .manager
         .reapply(&fixture.store, TargetId::Harness, true)
@@ -772,6 +781,24 @@ fn reapply_follows_the_store_and_a_users_route_name_is_never_taken() {
         "clients.errors.harnessProviderConflict"
     );
     assert_eq!(fixture.patch_text(), taken);
+}
+
+#[test]
+fn a_users_own_key_under_our_name_is_never_overwritten() {
+    let taken = format!("version: 1\nrefs:\n  {ROUTER_CREDENTIAL}: someone-elses-token\n");
+    let fixture = Fixture::new(ClientAccessMode::Router, Some(DESKTOP), Some(&taken));
+    assert_eq!(
+        fixture
+            .manager
+            .preview(&fixture.store, &fixture.request)
+            .err()
+            .unwrap(),
+        "clients.errors.harnessCredentialConflict"
+    );
+    assert_eq!(
+        fixture.credentials_doc()["refs"][ROUTER_CREDENTIAL],
+        "someone-elses-token"
+    );
 }
 
 #[test]

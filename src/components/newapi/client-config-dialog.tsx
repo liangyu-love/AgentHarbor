@@ -4,7 +4,7 @@ import { aggregationQueryKey, type ModelTargetRef } from "@/types/aggregation";
 import { useTranslation } from "react-i18next";
 import { BookmarkPlus, Check, ChevronDown, Eye, Loader2, Search, Star, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
-import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, exclusionOf, knownSmallContext, effectiveContext, reloadHint } from "@/lib/client-config";
+import { claudeRoles as roles, emptyClaudeRoles as emptyRoles, claudeOneMDefaults, clientDefaults, clientModels, clientProtocols, conflictScopes, exclusionOf, knownSmallContext, effectiveContext, reloadHint } from "@/lib/client-config";
 import { ClaudeModelConfig } from "./claude-model-config";
 import { DirectProxyNote } from "./direct-proxy-note";
 import { ModelSourceSwitches, type SourceKind } from "./model-source-switches";
@@ -867,6 +867,9 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
               </ul>}
               <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 text-xs">{preview.content}</pre>
               {!!preview.removedFields?.length && <p className="break-all text-xs text-muted-foreground">{t("clients.removedFields", { fields: preview.removedFields.join(", ") })}</p>}
+              {!!preview.conflictFields?.length && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+                {t("clients.conflictScope", { fields: conflictScopes(preview.conflictFields).map(scope => t("clients.conflictScopes." + scope)).join(" · ") })}
+              </p>}
               <p className="text-xs text-muted-foreground">{t("clients.backupHint")}</p>
             </div>}
           </div>
