@@ -25,7 +25,12 @@ const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 fn max_response_bytes(count: u8) -> usize {
     usize::from(count.max(1)) * MAX_IMAGE_BYTES.div_ceil(3) * 4 + 1024 * 1024
 }
-const THUMBNAIL_EDGE: u32 = 256;
+/// Grid thumbnails stay sharp at the widest masonry column on a 2x screen.
+const THUMBNAIL_EDGE: u32 = 640;
+/// The album stage asks for more, still far below a full original.
+const MAX_THUMBNAIL_EDGE: u32 = 2048;
+/// JPEG keeps opaque previews a tenth of their PNG size in the in-memory cache.
+const THUMBNAIL_JPEG_QUALITY: u8 = 86;
 const MAX_THUMBNAIL_DIMENSION: u32 = 8192;
 const MAX_THUMBNAIL_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_THUMBNAIL_DECODE_BYTES: u64 = 128 * 1024 * 1024;
@@ -965,6 +970,9 @@ pub struct GalleryItem {
     pub modified_at: i64,
     /// How the image was made; none for images saved before records were kept.
     pub meta: Option<GalleryMeta>,
+    /// Pixel size from the file header, so the grid can lay out before thumbnails load.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1017,6 +1025,8 @@ fn list_gallery(paths: &CodexPaths) -> Result<GalleryListPayload, String> {
             size: meta.len(),
             modified_at,
             meta: None,
+            width: None,
+            height: None,
         });
     }
     items.sort_by(|a, b| {
@@ -1026,9 +1036,14 @@ fn list_gallery(paths: &CodexPaths) -> Result<GalleryListPayload, String> {
     });
     let has_more = items.len() > MAX_GALLERY_ITEMS;
     items.truncate(MAX_GALLERY_ITEMS);
-    // Records are read only for the images shown.
+    // Records and sizes are read only for the images shown.
     for item in &mut items {
-        item.meta = read_sidecar(std::path::Path::new(&item.path));
+        let path = std::path::Path::new(&item.path);
+        item.meta = read_sidecar(path);
+        if let Some((width, height)) = header_dimensions(path) {
+            item.width = Some(width);
+            item.height = Some(height);
+        }
     }
     Ok(GalleryListPayload {
         directory: directory.to_string_lossy().into_owned(),
@@ -1056,6 +1071,17 @@ fn read_gallery_image(
     // The bounded read also protects against a file growing after metadata().
     let bytes = read_limited(file, MAX_IMAGE_BYTES)?;
     Ok((target, bytes))
+}
+
+/// Only the header is read; a broken or odd file just lays out as a square.
+fn header_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    let size = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    (size.0 > 0 && size.1 > 0).then_some(size)
 }
 
 fn thumbnail_error(error: image::ImageError) -> String {
@@ -1095,22 +1121,38 @@ fn decode_bounded_image(bytes: &[u8]) -> Result<(image::ImageFormat, image::Dyna
     Ok((format, decoded))
 }
 
-fn gallery_thumbnail(paths: &CodexPaths, target: &std::path::Path) -> Result<String, String> {
+fn gallery_thumbnail(
+    paths: &CodexPaths,
+    target: &std::path::Path,
+    edge: u32,
+) -> Result<String, String> {
+    let edge = edge.clamp(1, MAX_THUMBNAIL_EDGE);
     let (_, bytes) = read_gallery_image(paths, target)?;
     let (_, decoded) = decode_bounded_image(&bytes)?;
     let (width, height) = (decoded.width(), decoded.height());
-    let thumbnail = if width > THUMBNAIL_EDGE || height > THUMBNAIL_EDGE {
-        decoded.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE)
+    let thumbnail = if width > edge || height > edge {
+        decoded.thumbnail(edge, edge)
     } else {
         decoded
     };
-    let mut png = Cursor::new(Vec::new());
-    thumbnail
-        .write_to(&mut png, image::ImageFormat::Png)
-        .map_err(thumbnail_error)?;
+    // Transparent images keep PNG; everything else becomes a much smaller JPEG.
+    let transparent = thumbnail.color().has_alpha()
+        && thumbnail.to_rgba8().pixels().any(|pixel| pixel[3] < u8::MAX);
+    let mut encoded = Cursor::new(Vec::new());
+    let mime = if transparent {
+        thumbnail
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .map_err(thumbnail_error)?;
+        "image/png"
+    } else {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, THUMBNAIL_JPEG_QUALITY)
+            .encode_image(&thumbnail.to_rgb8())
+            .map_err(thumbnail_error)?;
+        "image/jpeg"
+    };
     Ok(format!(
-        "data:image/png;base64,{}",
-        STANDARD.encode(png.into_inner())
+        "data:{mime};base64,{}",
+        STANDARD.encode(encoded.into_inner())
     ))
 }
 
@@ -1119,15 +1161,17 @@ fn gallery_thumbnail(paths: &CodexPaths, target: &std::path::Path) -> Result<Str
 pub async fn load_gallery_thumbnail(
     repo: State<'_, Mutex<Repository>>,
     path: String,
+    edge: Option<u32>,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
+    let edge = edge.unwrap_or(THUMBNAIL_EDGE);
     let permit = THUMBNAIL_JOBS
         .acquire()
         .await
         .map_err(|_| "image.errors.response")?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        gallery_thumbnail(&paths, std::path::Path::new(&path))
+        gallery_thumbnail(&paths, std::path::Path::new(&path), edge)
     })
     .await
     .map_err(|_| "image.errors.response".to_owned())?
@@ -1279,8 +1323,8 @@ mod tests {
             image::ImageFormat::Gif,
         ] {
             let path = image_fixture(&paths, 32, 16, format);
-            let preview = gallery_thumbnail(&paths, &path).unwrap();
-            let encoded = preview.strip_prefix("data:image/png;base64,").unwrap();
+            let preview = gallery_thumbnail(&paths, &path, THUMBNAIL_EDGE).unwrap();
+            let encoded = preview.strip_prefix("data:image/jpeg;base64,").unwrap();
             let thumbnail = image::load_from_memory(&STANDARD.decode(encoded).unwrap()).unwrap();
             assert_eq!(
                 (thumbnail.width(), thumbnail.height()),
@@ -1288,12 +1332,36 @@ mod tests {
                 "{format:?}"
             );
         }
-        let path = image_fixture(&paths, 640, 320, image::ImageFormat::Png);
-        let preview = gallery_thumbnail(&paths, &path).unwrap();
-        let thumbnail =
+        let decode = |preview: String| {
             image::load_from_memory(&STANDARD.decode(preview.split_once(',').unwrap().1).unwrap())
+                .unwrap()
+        };
+        let path = image_fixture(&paths, 1600, 800, image::ImageFormat::Png);
+        let thumbnail = decode(gallery_thumbnail(&paths, &path, THUMBNAIL_EDGE).unwrap());
+        assert_eq!((thumbnail.width(), thumbnail.height()), (640, 320));
+        let stage = decode(gallery_thumbnail(&paths, &path, 1200).unwrap());
+        assert_eq!((stage.width(), stage.height()), (1200, 600));
+        let capped = decode(gallery_thumbnail(&paths, &path, u32::MAX).unwrap());
+        assert_eq!((capped.width(), capped.height()), (1600, 800), "never past the original");
+    }
+
+    #[test]
+    fn gallery_thumbnails_keep_transparency_as_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let gallery = gallery_dir(&paths);
+        std::fs::create_dir_all(&gallery).unwrap();
+        let save = |name: &str, alpha: u8| {
+            let path = gallery.join(name);
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(8, 8, image::Rgba([24, 96, 160, alpha])))
+                .save(&path)
                 .unwrap();
-        assert_eq!((thumbnail.width(), thumbnail.height()), (256, 128));
+            path
+        };
+        let clear = gallery_thumbnail(&paths, &save("clear.png", 0), THUMBNAIL_EDGE).unwrap();
+        assert!(clear.starts_with("data:image/png;base64,"));
+        let opaque = gallery_thumbnail(&paths, &save("opaque.png", 255), THUMBNAIL_EDGE).unwrap();
+        assert!(opaque.starts_with("data:image/jpeg;base64,"), "an unused alpha channel is not kept");
     }
 
     #[test]
@@ -1304,19 +1372,19 @@ mod tests {
         let outside = dir.path().join("outside.png");
         std::fs::copy(&path, &outside).unwrap();
         assert_eq!(
-            gallery_thumbnail(&paths, &outside).unwrap_err(),
+            gallery_thumbnail(&paths, &outside, THUMBNAIL_EDGE).unwrap_err(),
             "image.errors.notFound"
         );
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_len(MAX_IMAGE_BYTES as u64 + 1).unwrap();
         drop(file);
         assert_eq!(
-            gallery_thumbnail(&paths, &path).unwrap_err(),
+            gallery_thumbnail(&paths, &path, THUMBNAIL_EDGE).unwrap_err(),
             "image.errors.responseTooLarge"
         );
         std::fs::write(&path, b"invalid image").unwrap();
         assert_eq!(
-            gallery_thumbnail(&paths, &path).unwrap_err(),
+            gallery_thumbnail(&paths, &path, THUMBNAIL_EDGE).unwrap_err(),
             "image.errors.response"
         );
 
@@ -1327,7 +1395,7 @@ mod tests {
             image::ImageFormat::Png,
         );
         assert_eq!(
-            gallery_thumbnail(&paths, &wide).unwrap_err(),
+            gallery_thumbnail(&paths, &wide, THUMBNAIL_EDGE).unwrap_err(),
             "image.errors.responseTooLarge"
         );
         // A tiny GIF can advertise a huge canvas without allocating it in the fixture.
@@ -1337,7 +1405,7 @@ mod tests {
         bytes[8..10].copy_from_slice(&4096_u16.to_le_bytes());
         std::fs::write(&gif, bytes).unwrap();
         assert_eq!(
-            gallery_thumbnail(&paths, &gif).unwrap_err(),
+            gallery_thumbnail(&paths, &gif, THUMBNAIL_EDGE).unwrap_err(),
             "image.errors.responseTooLarge"
         );
     }
@@ -1786,6 +1854,7 @@ mod tests {
         assert_eq!(first_meta.revised_prompt, None, "an unchanged prompt is not repeated");
         assert_eq!((first_meta.model.as_str(), first_meta.size.as_str(), first_meta.quality.as_str()), ("gpt-image-2", "1024x1024", "high"));
         assert_eq!(second.meta.as_ref().unwrap().revised_prompt.as_deref(), Some("雨夜里的一只橘猫，电影感"));
+        assert_eq!((first.width, first.height), (Some(4), Some(4)), "sizes come from the file header");
 
         delete_from_gallery(&paths, std::path::Path::new(&saved.files[0])).unwrap();
         assert!(!sidecar_path(std::path::Path::new(&saved.files[0])).exists());

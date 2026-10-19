@@ -1709,7 +1709,27 @@
     "galleryDeleteConfirm": "删除这张成图？",
     "galleryDeleteConfirmDesc": "将从本地画册永久删除该文件，可重新生成但无法从画册恢复。",
     "galleryLoadFailed": "画册读取失败",
-    "galleryLimit": "仅展示最新 200 张，打开目录查看更早的图片"
+    "galleryLimit": "仅展示最新 200 张，打开目录查看更早的图片",
+    "galleryFold": "折叠画册",
+    "galleryUnfold": "展开画册",
+    "galleryViewLabel": "画册视图",
+    "galleryView": {
+      "masonry": "瀑布流",
+      "album": "图集"
+    },
+    "album": {
+      "label": "图集",
+      "playing": "轮播中",
+      "paused": "已暂停",
+      "play": "自动轮播",
+      "pause": "暂停轮播",
+      "previous": "上一张",
+      "next": "下一张",
+      "open": "查看大图",
+      "quality": "{{quality}}画质",
+      "strip": "胶片条",
+      "goTo": "第 {{index}} 张"
+    }
   },
   "accounts": {
     "resetCredits": "重置卡",

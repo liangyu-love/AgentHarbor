@@ -25,4 +25,5 @@ export const storageKeys = {
   usageRange: "agentharbor.usage-range",
   usageMetric: "agentharbor.usage-metric",
   usageChartForm: "agentharbor.usage-chart-form",
+  galleryView: "agentharbor.gallery-view",
 } as const;

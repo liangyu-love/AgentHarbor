@@ -110,10 +110,23 @@ const galleryMetas = [
   { prompt: "窗边侧光人像，胶片质感", revisedPrompt: "A portrait lit by soft window light, film grain", model: "gpt-image-2", size: "1024x1536", quality: "high" },
   { prompt: "雨夜霓虹街头的橘猫", revisedPrompt: null, model: "gpt-image-2.5-flare", size: "1536x1024", quality: "max" },
 ];
+// Portrait, landscape and unknown sizes, so the masonry and album meet every shape.
+const gallerySizes = [[1024, 1536], [1536, 1024], [1024, 1024], [null, null]];
 const galleryItems = Array.from({ length: 100 }, (_, i) => ({
   name: "gallery-" + i + ".png", path: "C:/synthetic/gallery-" + i + ".png", size: 100, modifiedAt: Date.now() - i * 3_600_000,
-  meta: galleryMetas[i] ?? null,
+  meta: galleryMetas[i] ?? null, width: gallerySizes[i % 4][0], height: gallerySizes[i % 4][1],
 }));
+// A gradient at the item's own proportions stands in for its thumbnail.
+const galleryArt = (path: string) => {
+  const i = Number(path.match(/gallery-(\d+)/)?.[1] ?? 0);
+  const [width, height] = (gallerySizes[i % 4][0] ? gallerySizes[i % 4] : [800, 800]) as number[];
+  const hue = (i * 47) % 360;
+  return "data:image/svg+xml;utf8," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width / 4}" height="${height / 4}"><defs><linearGradient id="g" x2="1" y2="1">`
+    + `<stop offset="0" stop-color="hsl(${hue} 70% 62%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360} 60% 32%)"/></linearGradient></defs>`
+    + `<rect width="100%" height="100%" fill="url(#g)"/><circle cx="50%" cy="42%" r="18%" fill="hsl(${(hue + 180) % 360} 70% 80% / 0.8)"/>`
+    + `<text x="50%" y="84%" font-family="sans-serif" font-size="${width / 24}" fill="#fff" text-anchor="middle">${i}</text></svg>`);
+};
 // A full-size original large enough to zoom into and pan around.
 const largeOriginal = "data:image/svg+xml;utf8," + encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600"><rect width="2400" height="1600" fill="#c8844a"/>'
@@ -787,11 +800,12 @@ api.openPath = async path => {
   controls.review.openedPath = path;
   if (controls.review.failOpenPath) throw new Error("synthetic open path failure");
 };
-api.image.loadGalleryThumbnail = path => {
+api.image.loadGalleryThumbnail = (path, edge) => {
   controls.review.thumbnailCalls.push(path);
+  controls.review.thumbnailEdges.push(edge ?? null);
   return controls.review.holdThumbnails
     ? new Promise(resolve => controls.review.thumbnailResolvers.push(() => resolve(pixel)))
-    : Promise.resolve(pixel);
+    : Promise.resolve(galleryArt(path));
 };
 api.image.loadGalleryImage = path => {
   controls.review.originalCalls.push(path);
@@ -1345,7 +1359,7 @@ controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?
       ? { ...provider, balance: { ...provider.balance, remaining } } : provider) };
     for (const callback of controls.review.balanceUpdateListeners ?? []) callback();
   },
-  realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], originalCalls: [], thumbnailResolvers: [],
+  realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], thumbnailEdges: [], originalCalls: [], thumbnailResolvers: [],
   modelResolutionFixture, modelResolutionRequests: [], modelResolutionResolvers: [], modelResolutionRejectors: [], holdModelResolutions: false, modelResolutionPatches: {},
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,

@@ -1709,7 +1709,27 @@
     "galleryDeleteConfirm": "Delete this image?",
     "galleryDeleteConfirmDesc": "This permanently removes the file from the local gallery. Generate again to recreate it.",
     "galleryLoadFailed": "Could not load gallery",
-    "galleryLimit": "Showing the latest 200; open the folder to view older images"
+    "galleryLimit": "Showing the latest 200; open the folder to view older images",
+    "galleryFold": "Fold gallery",
+    "galleryUnfold": "Unfold gallery",
+    "galleryViewLabel": "Gallery view",
+    "galleryView": {
+      "masonry": "Masonry",
+      "album": "Album"
+    },
+    "album": {
+      "label": "Album",
+      "playing": "ON AIR",
+      "paused": "PAUSED",
+      "play": "Play slideshow",
+      "pause": "Pause slideshow",
+      "previous": "Previous image",
+      "next": "Next image",
+      "open": "View full size",
+      "quality": "{{quality}} quality",
+      "strip": "Film strip",
+      "goTo": "Image {{index}}"
+    }
   },
   "accounts": {
     "resetCredits": "Reset credits",

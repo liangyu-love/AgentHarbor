@@ -230,6 +230,9 @@ export interface GalleryItem {
   modifiedAt: number;
   /** Absent for images saved before records were kept. */
   meta?: GalleryMeta | null;
+  /** Pixel size from the file header; absent when it could not be read. */
+  width?: number | null;
+  height?: number | null;
 }
 
 export interface GalleryListPayload {
@@ -299,7 +302,8 @@ const imageApi = {
     invoke<string>("set_gallery_directory", { directory }),
   listGallery: () => invoke<GalleryListPayload>("list_gallery_images"),
   loadGalleryImage: (path: string) => invoke<string>("load_gallery_image", { path }),
-  loadGalleryThumbnail: (path: string) => invoke<string>("load_gallery_thumbnail", { path }),
+  /** A downscaled copy no wider or taller than `edge` (640 when omitted). */
+  loadGalleryThumbnail: (path: string, edge?: number) => invoke<string>("load_gallery_thumbnail", { path, edge }),
   deleteGalleryImage: (path: string) => invoke<void>("delete_gallery_image", { path }),
   loadPromptLibrary: () => invoke<PromptLibrary>("load_image_prompt_library"),
   savePromptLibrary: (library: PromptLibrary) =>

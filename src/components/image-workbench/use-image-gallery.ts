@@ -60,8 +60,9 @@ export function useImageGallery(pageActive: boolean) {
     thumbnailLoads.current.clear();
   }, [galleryOpen]);
 
-  const loadGalleryThumbnail = useCallback((item: GalleryItem) => {
-    const key = JSON.stringify([item.path, item.modifiedAt, item.size]);
+  /** A cached downscale of `item`; `edge` asks for a larger one than the grid's. */
+  const loadGalleryThumbnail = useCallback((item: GalleryItem, edge?: number) => {
+    const key = JSON.stringify([item.path, item.modifiedAt, item.size, edge ?? null]);
     const cache = thumbnailCache.current;
     const cached = cache.get(key);
     if (cached) {
@@ -72,7 +73,7 @@ export function useImageGallery(pageActive: boolean) {
     const pending = thumbnailLoads.current.get(key);
     if (pending) return pending;
     const session = gallerySession.current;
-    const request = api.image.loadGalleryThumbnail(item.path).then(src => {
+    const request = api.image.loadGalleryThumbnail(item.path, edge).then(src => {
       if (session === gallerySession.current) {
         cache.set(key, src);
         while (cache.size > GALLERY_THUMBNAIL_CACHE_LIMIT) {
