@@ -50,6 +50,7 @@ yaml-edit = { version = "0.3", default-features = false }
 # An independent reading of every Harness edit before it is written.
 serde_yaml = "0.9"
 rquickjs = "0.11"
+percent-encoding = "2"
 toml = "0.8"
 toml_edit = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }

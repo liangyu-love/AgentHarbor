@@ -1,6 +1,7 @@
 //! Small, isolated JS extractor. No host functions, filesystem or network are
 //! exposed to JS. Requests are executed by Rust with the provider's proxy policy.
 use super::{models::ApiProxyConfigPayload, newapi, router_balance};
+use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use rquickjs::{Context, Runtime};
 use serde::Deserialize;
 use serde_json::Value;
@@ -105,8 +106,26 @@ pub fn query(
                     .unwrap_or_default(),
             ))
     };
-    // The parser percent-encodes `{{…}}`, so expand decoded pairs and let the
-    // serializer encode secrets such as `&`, `+` or `#` as plain values.
+    // The parser percent-encodes `{{…}}`, so expand decoded segments and pairs
+    // and re-encode them; secrets with `/`, `&`, `+` or `#` stay plain values.
+    if url.path().contains("%7B%7B") {
+        let path = url
+            .path_segments()
+            .into_iter()
+            .flatten()
+            .map(|segment| {
+                if !segment.contains("%7B%7B") {
+                    return Ok(segment.to_owned());
+                }
+                let decoded = percent_decode_str(segment)
+                    .decode_utf8()
+                    .map_err(|_| "newapi.errors.url")?;
+                Ok(utf8_percent_encode(&expand(&decoded)?, NON_ALPHANUMERIC).to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?
+            .join("/");
+        url.set_path(&format!("/{path}"));
+    }
     if url
         .query_pairs()
         .any(|(k, v)| k.contains("{{") || v.contains("{{"))
@@ -200,7 +219,7 @@ mod tests {
         );
     }
     #[test]
-    fn custom_query_encodes_secrets_in_query_parameters() {
+    fn custom_query_encodes_secrets_in_path_and_query() {
         use std::{
             io::{Read, Write},
             net::TcpListener,
@@ -219,20 +238,42 @@ mod tests {
         });
         let connection = newapi::Connection {
             base_url: format!("http://{address}"),
-            api_key: "sk-a&b+c#d=e".into(),
+            api_key: "sk-a/b&c+d#e=f?g".into(),
+            user_id: Some(42),
             ..Default::default()
         };
         let proxy = newapi::effective_proxy("direct", &ApiProxyConfigPayload::default());
-        let script = "({request:{url:'{{baseUrl}}/usage?tag=a&key={{apiKey}}&tag=b&empty='},extractor:r=>({remaining:r.balance})})";
+        let script = "({request:{url:'{{baseUrl}}/v%41/users/{{userId}}/keys/{{apiKey}}/usage?tag=a&key={{apiKey}}&tag=b&empty='},extractor:r=>({remaining:r.balance})})";
         assert_eq!(query(&connection, &proxy, script).unwrap().remaining, 3.0);
         let target = server.join().unwrap();
+        // Segments without placeholders keep their original encoding.
+        assert!(target.starts_with("/v%41/users/42/keys/"));
         let url = reqwest::Url::parse(&format!("http://{address}{target}")).unwrap();
+        let segments: Vec<String> = url
+            .path_segments()
+            .unwrap()
+            .map(|segment| {
+                percent_decode_str(segment)
+                    .decode_utf8()
+                    .unwrap()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            segments,
+            ["v%41", "users", "42", "keys", "sk-a/b&c+d#e=f?g", "usage"].map(|segment| {
+                percent_decode_str(segment)
+                    .decode_utf8()
+                    .unwrap()
+                    .into_owned()
+            })
+        );
         let pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
         assert_eq!(
             pairs,
             [
                 ("tag", "a"),
-                ("key", "sk-a&b+c#d=e"),
+                ("key", "sk-a/b&c+d#e=f?g"),
                 ("tag", "b"),
                 ("empty", "")
             ]
