@@ -49,13 +49,28 @@ fn pi_comments_survive_injection_and_the_file_stays_readable_by_pi() {
     apply(&manager, &store, &request);
     let installed = std::fs::read_to_string(&manager.paths.pi).unwrap();
     assert!(installed.contains("// user note"));
-    // Pi strips comments and then calls JSON.parse, so the rest must be strict JSON.
-    assert!(jsonc_parser::cst::CstRootNode::parse(&installed, &jsonc::options(false)).is_ok());
-    let value: Value = json5::from_str(&installed).unwrap();
+    // Pi strips line comments and trailing commas, then calls JSON.parse.
+    let value = jsonc::read(&installed, jsonc::Syntax::Pi).unwrap();
     assert_eq!(value["custom"], true);
     assert!(value["providers"].as_object().is_some_and(|providers| !providers.is_empty()));
     manager.restore(request.target_id).unwrap();
     assert_eq!(std::fs::read_to_string(&manager.paths.pi).unwrap(), original);
+}
+
+#[test]
+fn pi_keeps_trailing_commas_and_repairs_block_comments_it_cannot_read() {
+    for (original, kept) in [
+        ("{\n  // user note\n  \"custom\": true,\n}\n", true),
+        ("{\n  /* user note */\n  \"custom\": true\n}\n", false),
+    ] {
+        let (_temp, manager, store, request) = pi_fixture(ClientAccessMode::Native);
+        storage::write_atomic(&manager.paths.pi, original.as_bytes()).unwrap();
+        apply(&manager, &store, &request);
+        let installed = std::fs::read_to_string(&manager.paths.pi).unwrap();
+        assert_eq!(installed.contains("user note"), kept);
+        let value = jsonc::read(&installed, jsonc::Syntax::Pi).unwrap();
+        assert_eq!(value["custom"], true);
+    }
 }
 
 #[test]

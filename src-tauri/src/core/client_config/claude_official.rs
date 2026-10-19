@@ -139,7 +139,7 @@ impl ConfigManager {
                     .map(owned::OwnedRecord::seed_from_session)
                     .unwrap_or_default()
             });
-        owned.recover_picker_entries(session.as_ref());
+        owned.recover_from_session(session.as_ref());
         let mut removed = Vec::new();
         for name in ENV_FIELDS {
             clean_field(&mut next, &["env", name], &mut removed)?;

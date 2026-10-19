@@ -2,7 +2,9 @@
 //! apply can withdraw exactly those elements instead of guessing from row
 //! shapes. Element-keyed paths are `modelPicker.options` (keyed by the row's
 //! `model` id) and `availableModels` on Claude Code, and OpenCode's
-//! `enabled_providers` (keyed by the provider key). The record lives beside
+//! `enabled_providers` and `disabled_providers` (keyed by the provider key;
+//! from the latter this app takes keys out rather than adding them, and
+//! withdrawing puts them back). The record lives beside
 //! the session journal, survives `release` (the file keeps our rows, so a
 //! later apply must still withdraw them) and retains an empty record on
 //! `restore`. The record's presence also marks the legacy picker migration as
@@ -13,6 +15,15 @@ use super::*;
 const PICKER_OPTIONS: [&str; 2] = ["modelPicker", "options"];
 const AVAILABLE_MODELS: [&str; 1] = ["availableModels"];
 const ENABLED_PROVIDERS: [&str; 1] = ["enabled_providers"];
+const DISABLED_PROVIDERS: [&str; 1] = ["disabled_providers"];
+
+/// Every element-keyed path, so callers handle them all alike.
+pub(super) const ELEMENT_PATHS: [&[&str]; 4] = [
+    &PICKER_OPTIONS,
+    &AVAILABLE_MODELS,
+    &ENABLED_PROVIDERS,
+    &DISABLED_PROVIDERS,
+];
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -28,10 +39,12 @@ pub(super) struct OwnedRecord {
     pub available_models: Vec<String>,
     /// Provider keys this app last added to `enabled_providers`.
     pub enabled_providers: Vec<String>,
+    /// Provider keys this app last took out of `disabled_providers`.
+    pub disabled_providers: Vec<String>,
 }
 
 pub(super) fn is_element_array_path(path: &[String]) -> bool {
-    is_path(path, &PICKER_OPTIONS) || is_path(path, &AVAILABLE_MODELS) || is_path(path, &ENABLED_PROVIDERS)
+    ELEMENT_PATHS.iter().any(|expected| is_path(path, expected))
 }
 
 fn is_path(path: &[String], expected: &[&str]) -> bool {
@@ -74,6 +87,12 @@ impl OwnedRecord {
                 .and_then(Value::as_array)
                 .map(|before| element_keys(&change.path, before))
                 .unwrap_or_default();
+            if is_path(&change.path, &DISABLED_PROVIDERS) {
+                record
+                    .disabled_providers
+                    .extend(existing.into_iter().filter(|key| !added.contains(key)));
+                continue;
+            }
             for key in added {
                 if !existing.contains(&key) {
                     if is_path(&change.path, &PICKER_OPTIONS) {
@@ -98,21 +117,26 @@ impl OwnedRecord {
         Self::from_changes(&session.changes)
     }
 
-    /// Upgrade older key-only ownership records from their session journal.
-    /// A released legacy session has no snapshots to recover, so its rows are
-    /// conservatively treated as user data rather than risking edits being lost.
-    pub(super) fn recover_picker_entries(&mut self, session: Option<&Session>) {
-        if !self.picker_entries.is_empty() {
-            return;
-        }
+    /// Upgrade records written by older versions from their session journal:
+    /// key-only picker records, and records from before `disabled_providers`
+    /// was tracked. A released legacy session has nothing to recover, so its
+    /// rows are conservatively treated as user data rather than risking edits
+    /// being lost.
+    pub(super) fn recover_from_session(&mut self, session: Option<&Session>) {
         let Some(session) = session else {
             return;
         };
         let recovered = Self::seed_from_session(session);
-        self.picker_entries = recovered.picker_entries;
+        if self.picker_entries.is_empty() {
+            self.picker_entries = recovered.picker_entries;
+        }
+        if self.disabled_providers.is_empty() {
+            self.disabled_providers = recovered.disabled_providers;
+        }
     }
 
-    /// A copy of the array without the elements this app owns; everything the
+    /// A copy of the array without the elements this app owns (with the keys
+    /// it took out of `disabled_providers` back in); everything the
     /// user added, edited or kept — including rows whose shape we no longer
     /// recognize — stays exactly as it is.
     pub(super) fn withdraw(&self, path: &[String], array: &[Value]) -> Vec<Value> {
@@ -122,6 +146,15 @@ impl OwnedRecord {
                 .filter(|entry| !self.picker_entries.contains(entry))
                 .cloned()
                 .collect();
+        }
+        if is_path(path, &DISABLED_PROVIDERS) {
+            let mut restored = array.to_vec();
+            for key in &self.disabled_providers {
+                if !element_keys(path, array).contains(key) {
+                    restored.push(json!(key));
+                }
+            }
+            return restored;
         }
         let owned = if is_path(path, &ENABLED_PROVIDERS) {
             &self.enabled_providers

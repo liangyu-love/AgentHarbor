@@ -630,6 +630,49 @@ fn opencode_enabled_providers_keep_the_users_own_entries() {
 }
 
 #[test]
+fn opencode_disabled_providers_keep_the_users_own_entries() {
+    let (_temp, manager, store, mut request) = fixture();
+    request.target_id = TargetId::OpenCode;
+    apply(&manager, &store, &request);
+    let ours = read(&manager.paths.opencode)["model"]
+        .as_str()
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned();
+    // The user had disabled our provider before the first apply.
+    manager.restore(request.target_id).unwrap();
+    write(
+        &manager.paths.opencode,
+        &json!({"disabled_providers": [ours.clone(), "unrelated"]}),
+    );
+    apply(&manager, &store, &request);
+    assert_eq!(
+        read(&manager.paths.opencode)["disabled_providers"],
+        json!(["unrelated"])
+    );
+    // Disabling another provider after the apply is the user's, not a conflict.
+    let mut document = read(&manager.paths.opencode);
+    document["disabled_providers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("openai"));
+    write(&manager.paths.opencode, &document);
+    apply(&manager, &store, &request);
+    assert_eq!(
+        read(&manager.paths.opencode)["disabled_providers"],
+        json!(["unrelated", "openai"])
+    );
+    // Restoring keeps the user's addition and disables ours again.
+    manager.restore(request.target_id).unwrap();
+    assert_eq!(
+        read(&manager.paths.opencode)["disabled_providers"],
+        json!(["unrelated", "openai", ours])
+    );
+}
+
+#[test]
 fn jsonc_comments_are_backed_up_and_restored_exactly() {
     let (temp, mut manager, store, mut request) = fixture();
     let path = temp.path().join(".config/opencode/opencode.jsonc");

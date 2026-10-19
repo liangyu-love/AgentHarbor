@@ -551,13 +551,13 @@ impl ConfigManager {
             return Err("clients.errors.harnessCredentialsMoved".into());
         }
         let current = Texts::read(&patch, &credentials)?;
-        let conflicted_fields: Vec<String> = match previous.as_ref() {
-            Some(session) => conflicts(session, &current)?.iter().map(Field::label).collect(),
+        let conflicted = match previous.as_ref() {
+            Some(session) => conflicts(session, &current)?,
             None => Vec::new(),
         };
+        let conflicted_fields: Vec<String> = conflicted.iter().map(Field::label).collect();
         let (baseline, original) = match previous.as_mut() {
             Some(session) => {
-                let conflicted = conflicts(session, &current)?;
                 if rebaseline {
                     // The user's values become the rollback point.
                     for change in &mut session.changes {

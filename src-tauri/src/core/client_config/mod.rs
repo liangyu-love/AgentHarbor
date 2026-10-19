@@ -709,7 +709,7 @@ impl ConfigManager {
             } else {
                 owned::OwnedRecord::seed_from_session(&session)
             };
-            owned.recover_picker_entries(Some(&session));
+            owned.recover_from_session(Some(&session));
             // Element arrays may contain independent user edits. Withdraw our
             // exact rows, instead of replacing the array with the old snapshot.
             let arrays: Vec<_> = session
@@ -891,26 +891,21 @@ impl ConfigManager {
                 .map(owned::OwnedRecord::seed_from_session)
                 .unwrap_or_default()
         };
-        owned.recover_picker_entries(previous.as_ref());
-        let picker_options = document
-            .get("modelPicker")
-            .and_then(|picker| picker.get("options"));
-        let available_values = document.get("availableModels");
-        let had_picker = picker_options.is_some();
-        let had_available = available_values.is_some();
-        // A key holding something that is not an array has no baseline: it is
-        // left untouched for the adapter's validation to reject.
-        let baseline_picker = picker_options
-            .and_then(Value::as_array)
-            .map(|entries| owned.withdraw(&["modelPicker".into(), "options".into()], entries));
-        let baseline_available = available_values
-            .and_then(Value::as_array)
-            .map(|values| owned.withdraw(&["availableModels".into()], values));
-        let enabled_values = document.get("enabled_providers");
-        let had_enabled = enabled_values.is_some();
-        let baseline_enabled = enabled_values
-            .and_then(Value::as_array)
-            .map(|keys| owned.withdraw(&["enabled_providers".into()], keys));
+        owned.recover_from_session(previous.as_ref());
+        // Each path: whether the file has it, and its baseline. A key holding
+        // something that is not an array has no baseline: it is left
+        // untouched for the adapter's validation to reject.
+        let arrays: Vec<(Vec<String>, bool, Option<Vec<Value>>)> = owned::ELEMENT_PATHS
+            .iter()
+            .map(|path| {
+                let path: Vec<String> = path.iter().map(|key| (*key).to_owned()).collect();
+                let values = field(&document, &path);
+                let baseline = values
+                    .and_then(Value::as_array)
+                    .map(|entries| owned.withdraw(&path, entries));
+                (path, values.is_some(), baseline)
+            })
+            .collect();
         let independently_changed = previous.as_ref().is_some_and(|p| document != p.installed);
         // Read before the undo below, which puts the managed fields back.
         let conflicts: Vec<String> = previous
@@ -951,46 +946,14 @@ impl ConfigManager {
         // without this app's previous elements. undo may have re-created a
         // deleted key from the journal, which the None-with-absent branches
         // reverse.
-        match baseline_picker {
-            Some(entries) => set_field(
-                &mut document,
-                &["modelPicker".into(), "options".into()],
-                Some(json!(entries)),
-            )?,
-            None if !had_picker
-                && field(&document, &["modelPicker".into(), "options".into()]).is_some() =>
-            {
-                set_field(
-                    &mut document,
-                    &["modelPicker".into(), "options".into()],
-                    None,
-                )?
+        for (path, present, baseline) in &arrays {
+            match baseline {
+                Some(entries) => set_field(&mut document, path, Some(json!(entries)))?,
+                None if !present && field(&document, path).is_some() => {
+                    set_field(&mut document, path, None)?
+                }
+                None => {}
             }
-            None => {}
-        }
-        match baseline_available {
-            Some(values) => set_field(
-                &mut document,
-                &["availableModels".into()],
-                Some(json!(values)),
-            )?,
-            None if !had_available && field(&document, &["availableModels".into()]).is_some() => {
-                set_field(&mut document, &["availableModels".into()], None)?
-            }
-            None => {}
-        }
-        match baseline_enabled {
-            Some(keys) => set_field(
-                &mut document,
-                &["enabled_providers".into()],
-                Some(json!(keys)),
-            )?,
-            None if !had_enabled
-                && field(&document, &["enabled_providers".into()]).is_some() =>
-            {
-                set_field(&mut document, &["enabled_providers".into()], None)?
-            }
-            None => {}
         }
         if rebaselined {
             original = Some(render(request.target_id, current.as_deref(), &document)?);
@@ -998,20 +961,14 @@ impl ConfigManager {
             // The exact-byte restore path must retain the same adopted user
             // rows as the field-merge path. Build it after withdrawing our rows.
             let mut baseline = parse(original.as_deref(), request.target_id)?;
-            for (present, path) in [
-                (had_picker, vec!["modelPicker".into(), "options".into()]),
-                (had_available, vec!["availableModels".into()]),
-                (had_enabled, vec!["enabled_providers".into()]),
-            ] {
-                if present {
-                    let value = field(&document, &path)
-                        .filter(|value| {
-                            !value.as_array().is_some_and(Vec::is_empty)
-                                || field(&baseline, &path).is_some()
-                        })
-                        .cloned();
-                    set_field(&mut baseline, &path, value)?;
-                }
+            for (path, _, _) in arrays.iter().filter(|(_, present, _)| *present) {
+                let value = field(&document, path)
+                    .filter(|value| {
+                        !value.as_array().is_some_and(Vec::is_empty)
+                            || field(&baseline, path).is_some()
+                    })
+                    .cloned();
+                set_field(&mut baseline, path, value)?;
             }
             original = Some(render(request.target_id, original.as_deref(), &baseline)?);
         }
@@ -1332,21 +1289,16 @@ fn render(id: TargetId, base: Option<&str>, next: &Value) -> Result<String, Stri
         "{}\n",
         serde_json::to_string_pretty(next).map_err(|_| "clients.errors.storage")?
     );
-    let trailing_commas = match id {
-        TargetId::OpenCode => true,
-        TargetId::Pi => false,
+    let syntax = match id {
+        TargetId::OpenCode => jsonc::Syntax::OpenCode,
+        TargetId::Pi => jsonc::Syntax::Pi,
         _ => return Ok(normalized),
     };
-    let Some(base) = base else {
-        return Ok(normalized);
-    };
-    if serde_json::from_str::<Value>(base).is_ok() {
-        return Ok(normalized);
-    }
-    let Ok(from) = parse(Some(base), id) else {
-        return Ok(normalized);
-    };
-    Ok(jsonc::patch(base, &jsonc::options(trailing_commas), &from, next).unwrap_or(normalized))
+    // Strict JSON has no comments to keep: it stays normalized as before.
+    let kept = base
+        .filter(|base| serde_json::from_str::<Value>(base.trim_start_matches('\u{feff}')).is_err())
+        .and_then(|base| jsonc::patch(base, syntax, next));
+    Ok(kept.unwrap_or(normalized))
 }
 
 fn field<'a>(document: &'a Value, path: &[String]) -> Option<&'a Value> {
