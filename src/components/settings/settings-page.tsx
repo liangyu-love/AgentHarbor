@@ -328,7 +328,12 @@ export function SettingsPage({
               </Button>
             </SettingRow>
             <SettingRow label={t("settings.routerPort.label")}
-              description={<p className="max-w-lg">{t("settings.routerPort.desc")}</p>}>
+              description={
+                <div className="max-w-lg space-y-1">
+                  <p>{t("settings.routerPort.desc")}</p>
+                  <p className="text-[11px] text-foreground/60">{t("settings.routerPort.note")}</p>
+                </div>
+              }>
               <RouterPortEditor />
             </SettingRow>
             <TerminalProxySettings currentProxy={currentProxy} focusRequested={terminalProxyRequested}

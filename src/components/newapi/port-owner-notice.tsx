@@ -51,19 +51,19 @@ export function PortOwnerNotice({ routerRunning }: { routerRunning: boolean | un
   const hint = kind ? t(`newapi.portOwner.${kind}Hint`) : t("newapi.portOwner.hint");
   return (
     <div role="alert" data-port-owner
-      className="flex flex-col gap-3 rounded-xl border border-amber-500/35 bg-amber-500/[0.07] p-4 sm:flex-row sm:items-center">
-      <Unplug aria-hidden className="hidden h-5 w-5 shrink-0 text-amber-600 sm:block dark:text-amber-400" />
+      className="flex flex-col gap-3 rounded-xl border border-amber-500/35 bg-amber-500/[0.07] p-4 sm:flex-row sm:items-start">
+      <Unplug aria-hidden className="mt-0.5 hidden h-5 w-5 shrink-0 text-amber-600 sm:block dark:text-amber-400" />
       <div className="min-w-0 flex-1 space-y-0.5">
         <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">{title}</p>
         <p className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/90">{hint}</p>
-        <div className="flex flex-wrap items-center gap-2 pt-2 text-xs text-amber-800 dark:text-amber-200">
-          <span>{t("newapi.portOwner.change")}</span>
-          <RouterPortEditor />
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pt-2.5 text-xs font-medium text-amber-900 dark:text-amber-100">
+          <span>{t(pid !== null ? "newapi.portOwner.changeInstead" : "newapi.portOwner.change")}</span>
+          <RouterPortEditor replacing />
         </div>
       </div>
       {pid !== null && (
         <Button type="button" size="sm" variant="outline" disabled={ending} onClick={() => setConfirming(true)}
-          className="h-8 shrink-0 gap-1.5 border-amber-500/50 bg-background/70 text-xs text-amber-800 hover:bg-amber-500/10 dark:text-amber-200">
+          className="h-8 shrink-0 gap-1.5 border-amber-500/50 bg-background/70 text-xs text-amber-800 hover:bg-amber-500/10 sm:mt-0.5 dark:text-amber-200">
           {ending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {t("newapi.portOwner.end")}
         </Button>

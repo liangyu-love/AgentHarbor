@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
 import { Brush, ImagePlus, Palette, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +42,14 @@ export function GenerationForm({
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const [assistOpen, setAssistOpen] = useState(false);
+  // A newly loaded reference glows briefly, so a load from the canvas or gallery is seen.
+  const [freshReference, setFreshReference] = useState(false);
+  useEffect(() => {
+    if (!imageData) return;
+    setFreshReference(true);
+    const timer = window.setTimeout(() => setFreshReference(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [imageData]);
   const selectedQuality = connection.qualityOptions.find(item => item.value === connection.quality);
   return (
     <div className="ink-scroll-frame min-w-0 p-4 transition-all duration-300 sm:p-5 sm:p-6">
@@ -222,14 +231,18 @@ export function GenerationForm({
         <PromptLibrary prompt={prompt} onPromptChange={setPrompt} />
 
         {/* 图生图参考底本 */}
-        <div data-image-reference className="rounded-xl border border-dashed border-border/80 bg-background/50 p-3.5 transition-colors">
+        <div data-image-reference data-fresh={freshReference || undefined} className={cn(
+          "rounded-xl border bg-background/50 p-3.5 transition-[border-color,background-color,box-shadow] duration-500 motion-reduce:transition-none",
+          imageData ? "border-solid border-border" : "border-dashed border-border/80",
+          freshReference && "border-[#b83b38]/55 bg-[#b83b38]/[0.04] shadow-[0_0_0_3px_rgba(184,59,56,0.12)] dark:border-[#d94f4b]/55",
+        )}>
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="font-serif text-xs font-semibold text-foreground/90">
                 展卷摹画 · 载入底本 (可选)
               </p>
               <p className="font-serif text-[11px] text-muted-foreground">
-                支持 PNG / JPG / WebP 格式，单张上限 20 MB；画卷与画册中的成图可点「用作底本」直接载入。
+                PNG / JPG / WebP，单张 ≤ 20 MB；成图可点「用作底本」载入。
               </p>
             </div>
             <div className="flex items-center gap-2">

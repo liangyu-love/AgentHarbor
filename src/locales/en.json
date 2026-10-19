@@ -992,7 +992,8 @@
       "reservedHint": "Windows reserved a range that includes this port for Hyper-V, WSL or Docker, so there is no program to end. Choose another port and the routed clients move to it.",
       "unknownTitle": "Router port {{port}} cannot be used",
       "unknownHint": "Another program holds the port, but it cannot be named. Choose another port and the routed clients move to it.",
-      "change": "Use another port:",
+      "change": "Use another port",
+      "changeInstead": "Or use another port",
       "ended": "Port freed and routing restored"
     },
     "backup": "Config backup",
@@ -2542,7 +2543,9 @@
     "networkAndProxy": "Network & Proxy",
     "routerPort": {
       "label": "Local router port",
-      "desc": "Codex, Claude Code, OpenCode, Pi, Harness and Cursor reach the local router on this port (43127 by default). Changing it rewrites their configuration; running clients pick it up after a restart, and gateway addresses copied into other tools need updating by hand.",
+      "desc": "Clients reach the local router on this port (43127 by default).",
+      "note": "Connected clients are rewritten for you; copied gateway addresses need updating by hand.",
+      "placeholder": "43200",
       "apply": "Apply",
       "reset": "Reset to default",
       "changed": "Router port changed to {{port}}",

@@ -260,9 +260,10 @@ export function ImageViewer({ src, alt, onClose, meta, takenAt, position, onStep
         {onUseAsReference && (
           <>
             <span className="mx-1 h-4 w-px bg-white/20" aria-hidden />
-            <button type="button" className={toolButton} onClick={() => onUseAsReference(src)} disabled={loading}
-              aria-label="用作底本" title="用作底本（图生图）">
+            <button type="button" onClick={() => onUseAsReference(src)} disabled={loading} title="以这张图做图生图"
+              className="inline-flex h-8 items-center gap-1.5 rounded-full px-3 font-serif text-xs font-semibold text-white/85 transition-colors hover:bg-[#b83b38]/80 hover:text-white disabled:opacity-35 disabled:hover:bg-transparent">
               <ImageUp className="h-4 w-4" />
+              用作底本
             </button>
           </>
         )}

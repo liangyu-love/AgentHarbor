@@ -992,7 +992,8 @@
       "reservedHint": "Windows 为 Hyper-V、WSL 或 Docker 保留了包含这个端口的范围，没有可以结束的程序。换一个端口后，经路由接入的客户端会自动改用新端口。",
       "unknownTitle": "路由端口 {{port}} 无法使用",
       "unknownHint": "端口已被占用，但无法确认是哪个程序。换一个端口后，经路由接入的客户端会自动改用新端口。",
-      "change": "换一个端口：",
+      "change": "换一个端口",
+      "changeInstead": "或换一个端口",
       "ended": "已释放端口，路由已恢复"
     },
     "backup": "原配置备份",
@@ -2542,7 +2543,9 @@
     "networkAndProxy": "网络与代理",
     "routerPort": {
       "label": "本地路由端口",
-      "desc": "Codex、Claude Code、OpenCode、Pi、Harness 和 Cursor 经这个端口连接本地路由，默认 43127。更改后会自动改写这些客户端的配置；正在运行的客户端需重启后生效，手动复制到其他工具里的网关地址需自行更新。",
+      "desc": "客户端经这个端口连接本地路由，默认 43127。",
+      "note": "更改后自动改写已接入的客户端；手动复制的网关地址需自行更新。",
+      "placeholder": "43200",
       "apply": "应用",
       "reset": "恢复默认",
       "changed": "路由端口已改为 {{port}}",

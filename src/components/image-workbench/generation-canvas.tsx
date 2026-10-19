@@ -174,7 +174,7 @@ export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySa
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-8 gap-1.5 font-serif text-xs font-semibold"
+                      className="h-8 gap-1.5 border-border/80 bg-background/70 font-serif text-xs font-semibold text-foreground/80 hover:border-[#b83b38]/35 hover:bg-[#b83b38]/[0.06] hover:text-[#b83b38] dark:hover:border-[#d94f4b]/40 dark:hover:bg-[#d94f4b]/10 dark:hover:text-[#fca5a5]"
                       onClick={() => onUseAsReference(src)}
                       title="以这张图做图生图"
                     >

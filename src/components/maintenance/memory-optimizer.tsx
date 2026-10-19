@@ -122,61 +122,72 @@ export function MemoryOptimizer() {
 
   return (
     <BentoCard className="p-5 sm:col-span-2" data-memory-optimizer={busy ? "running" : "idle"}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-inset ring-primary/15">
-            <MemoryStick className="h-4 w-4" />
-          </div>
+      <div className="flex items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-inset ring-primary/15">
+          <MemoryStick className="h-4 w-4" />
+        </div>
+        <div className="min-w-0">
           <span className="text-[15px] font-semibold tracking-tight">{t(PREFIX + "title")}</span>
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{t(PREFIX + "description")}</p>
         </div>
-        <Button size="sm" onClick={() => optimize.mutate()} disabled={busy || chosen.length === 0} className="shrink-0">
-          {busy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : !elevated && <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />}
-          {busy ? t(PREFIX + (elevated ? "running" : "waitingConsent")) : t(PREFIX + "action")}
-        </Button>
       </div>
-      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-        {t(PREFIX + "description")} {t(PREFIX + (elevated ? "elevated" : "needsAdmin"))}
-      </p>
 
-      {memory && <MemoryMeter memory={memory} />}
-
-      <div className="mt-5">
-        <div className="flex items-center justify-between gap-3">
-          <p className="poster-kicker text-[10px] text-muted-foreground" aria-hidden>Release</p>
-          <button type="button" className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
-            disabled={busy || DEFAULT_AREAS.join() === chosen.join()} onClick={() => saveAreas.mutate(DEFAULT_AREAS)}>
-            {t(PREFIX + "restoreDefaults")}
-          </button>
+      {/* The gauge and the action that moves it on the left; what a run releases on the right. */}
+      <div className="mt-5 grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-8">
+        <div className="flex min-w-0 flex-col">
+          <p className="poster-kicker mb-2 text-[10px] text-muted-foreground" aria-hidden>Memory</p>
+          {memory && <MemoryMeter memory={memory} />}
+          <Button onClick={() => optimize.mutate()} disabled={busy || chosen.length === 0} className="mt-4 h-10 w-full">
+            {busy ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : !elevated && <ShieldCheck className="mr-1.5 h-4 w-4" />}
+            {busy ? t(PREFIX + (elevated ? "running" : "waitingConsent")) : t(PREFIX + "action")}
+          </Button>
+          <p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">
+            {t(PREFIX + (elevated ? "elevated" : "needsAdmin"))}
+          </p>
+          {result && (
+            <div role="status" className={cn(
+              "mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs",
+              result.tone === "success" && "border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400",
+              result.tone === "error" && "border-destructive/20 bg-destructive/5 text-destructive",
+              result.tone === "info" && "border-border bg-muted/40 text-muted-foreground",
+            )}>
+              {result.tone === "success" ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                : result.tone === "error" ? <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                : <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+              <span className="leading-relaxed">{result.message}</span>
+            </div>
+          )}
         </div>
-        <div className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2" role="group" aria-label={t(PREFIX + "areasTitle")}>
-          {AREAS.map(({ id, stalls }) => (
-            <label key={id} className="flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-muted/50" data-memory-area={id}>
-              <Checkbox className="mt-0.5" checked={chosen.includes(id)} disabled={busy} onCheckedChange={on => toggle(id, on === true)} />
-              <span className="min-w-0">
-                <span className="flex flex-wrap items-center gap-x-2 text-[13px] font-medium">
-                  {t(`${PREFIX}areas.${id}.label`)}
-                  {stalls && <span className="text-[11px] font-normal text-amber-700 dark:text-amber-300">{t(PREFIX + "mayStall")}</span>}
+
+        <div className="min-w-0">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="poster-kicker text-[10px] text-muted-foreground" aria-hidden>Release</p>
+            <button type="button" className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50 disabled:hover:no-underline"
+              disabled={busy || DEFAULT_AREAS.join() === chosen.join()} onClick={() => saveAreas.mutate(DEFAULT_AREAS)}>
+              {t(PREFIX + "restoreDefaults")}
+            </button>
+          </div>
+          <div className="grid gap-x-4 gap-y-0.5 sm:grid-cols-2 lg:grid-cols-1" role="group" aria-label={t(PREFIX + "areasTitle")}>
+            {AREAS.map(({ id, stalls }) => (
+              <label key={id} data-memory-area={id} data-on={chosen.includes(id) || undefined}
+                className="-mx-2 flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-muted/50">
+                <Checkbox className="mt-0.5" checked={chosen.includes(id)} disabled={busy} onCheckedChange={on => toggle(id, on === true)} />
+                <span className="min-w-0">
+                  <span className="flex flex-wrap items-center gap-x-2 text-[13px] font-medium">
+                    {t(`${PREFIX}areas.${id}.label`)}
+                    {stalls && (
+                      <span className="rounded-full bg-amber-500/10 px-1.5 py-px text-[10.5px] font-normal text-amber-700 dark:text-amber-300">
+                        {t(PREFIX + "mayStall")}
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{t(`${PREFIX}areas.${id}.hint`)}</span>
                 </span>
-                <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{t(`${PREFIX}areas.${id}.hint`)}</span>
-              </span>
-            </label>
-          ))}
+              </label>
+            ))}
+          </div>
         </div>
       </div>
-
-      {result && (
-        <div role="status" className={cn(
-          "mt-4 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs",
-          result.tone === "success" && "border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400",
-          result.tone === "error" && "border-destructive/20 bg-destructive/5 text-destructive",
-          result.tone === "info" && "border-border bg-muted/40 text-muted-foreground",
-        )}>
-          {result.tone === "success" ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            : result.tone === "error" ? <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            : <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-          <span className="leading-relaxed">{result.message}</span>
-        </div>
-      )}
     </BentoCard>
   );
 }
@@ -186,28 +197,26 @@ function MemoryMeter({ memory }: { memory: MemorySnapshot }) {
   const used = memory.inUse + memory.modified;
   const percent = memory.total > 0 ? (used / memory.total) * 100 : 0;
   return (
-    <div className="harbor-well mt-4 p-4" data-memory-meter>
-      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
-        <div className="flex items-baseline gap-1">
-          <CountUp value={percent} className="poster-number text-4xl font-semibold leading-none tracking-tight" />
-          <span className="text-sm font-medium text-muted-foreground">%</span>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {t(PREFIX + "usedOfTotal", { used: formatMemory(used), total: formatMemory(memory.total) })}
-        </p>
+    <div className="harbor-well p-5" data-memory-meter>
+      <div className="flex items-baseline gap-1">
+        <CountUp value={percent} className="poster-number text-6xl font-semibold leading-none tracking-tight" />
+        <span className="text-lg font-medium text-muted-foreground">%</span>
       </div>
-      <div className="mt-3 flex h-2.5 overflow-hidden rounded-full bg-muted-foreground/15" aria-hidden>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {t(PREFIX + "usedOfTotal", { used: formatMemory(used), total: formatMemory(memory.total) })}
+      </p>
+      <div className="mt-4 flex h-3 gap-px overflow-hidden rounded-full bg-muted-foreground/15" aria-hidden>
         {SEGMENTS.map(({ key, tone }) => (
           <div key={key} className={cn("h-full transition-[width] duration-700 ease-out motion-reduce:transition-none", tone)}
             style={{ width: `${memory.total > 0 ? (memory[key] / memory.total) * 100 : 0}%` }} />
         ))}
       </div>
-      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-4">
+      <dl className="mt-4 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2 lg:grid-cols-1">
         {SEGMENTS.map(({ key, tone }) => (
           <div key={key} className="flex items-center gap-2">
             <span className={cn("h-2 w-2 shrink-0 rounded-full", tone)} aria-hidden />
             <dt className="text-muted-foreground">{t(`${PREFIX}lists.${key}`)}</dt>
-            <dd className="ml-auto font-medium tabular-nums sm:ml-0">{formatMemory(memory[key])}</dd>
+            <dd className="ml-auto font-medium tabular-nums">{formatMemory(memory[key])}</dd>
           </div>
         ))}
       </dl>
