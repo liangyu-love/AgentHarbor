@@ -18,6 +18,8 @@ mod chat_sse;
 pub mod history;
 pub mod message_history;
 #[cfg(test)]
+mod malformed_response_tests;
+#[cfg(test)]
 mod performance_tests;
 #[cfg(test)]
 mod search_compat_tests;

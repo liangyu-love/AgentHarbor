@@ -188,7 +188,12 @@ impl Reply {
                     .as_array()
                     .cloned()
                     .unwrap_or_default();
+                self.arguments.clear();
                 self.bytes = self.blocks.iter().map(|v| v.to_string().len()).sum();
+                // Blocks are edited by key below; a relay's other shapes are not.
+                if !self.blocks.iter().all(Value::is_object) {
+                    self.invalid = true;
+                }
             }
             Some("content_block_start") => {
                 let Some(index) = value["index"]
@@ -200,6 +205,10 @@ impl Reply {
                     return;
                 };
                 let block = value["content_block"].clone();
+                if !block.is_object() {
+                    self.invalid = true;
+                    return;
+                }
                 self.bytes = self.bytes.saturating_add(block.to_string().len());
                 self.blocks.push(block);
                 debug_assert_eq!(index + 1, self.blocks.len());
@@ -273,10 +282,9 @@ impl Reply {
                     .and_then(|v| usize::try_from(v).ok())
                 {
                     if let Some(arguments) = self.arguments.remove(&index) {
-                        if let Ok(input) = serde_json::from_str::<Value>(&arguments) {
-                            self.blocks[index]["input"] = input;
-                        } else {
-                            self.invalid = true;
+                        match (serde_json::from_str::<Value>(&arguments), self.blocks.get_mut(index)) {
+                            (Ok(input), Some(block)) => block["input"] = input,
+                            _ => self.invalid = true,
                         }
                     }
                 }
@@ -432,6 +440,35 @@ mod tests {
                 .1,
             None
         );
+    }
+
+    #[test]
+    fn a_relay_stream_of_unexpected_shapes_disables_the_reply_instead_of_panicking() {
+        let start = |content: Value| json!({"type":"message_start","message":{"content":content}});
+        let block = |block: Value| json!({"type":"content_block_start","index":0,"content_block":block});
+        let delta = |kind: &str, field: &str| json!({"type":"content_block_delta","index":0,"delta":{"type":kind,field:"x"}});
+        let citation = json!({"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"char_location"}}});
+        let stop = json!({"type":"content_block_stop","index":0});
+        for events in [
+            // A content block that is not an object, from message_start or content_block_start.
+            vec![start(json!(["text"])), delta("text_delta", "text")],
+            vec![start(json!([])), block(json!("text")), delta("text_delta", "text")],
+            vec![start(json!([])), block(json!(1)), citation.clone()],
+            // A second message_start shortens the blocks while a tool's arguments are open.
+            vec![
+                start(json!([])),
+                block(json!({"type":"tool_use","id":"a","name":"lookup","input":{}})),
+                delta("input_json_delta", "partial_json"),
+                start(json!([])),
+                stop.clone(),
+            ],
+        ] {
+            let mut reply = Reply::default();
+            for event in &events {
+                reply.event(event);
+            }
+            assert!(reply.assistant().is_none(), "{events:?}");
+        }
     }
 
     #[test]

@@ -985,6 +985,10 @@ impl Execution {
             let mut client_calls = false;
             let mut search_failed = false;
             for item in canonical["output"].as_array().ok_or(INVALID_RESPONSE)? {
+                // Items are replayed and streamed by key: a relay's other shapes are refused.
+                if !item.is_object() {
+                    return Err(INVALID_RESPONSE);
+                }
                 if item["type"] != "function_call" {
                     append_output(&mut output, &mut output_bytes, item.clone())?;
                     continue;

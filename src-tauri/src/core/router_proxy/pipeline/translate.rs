@@ -534,3 +534,113 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod malformed_bodies {
+    use super::*;
+    use crate::core::router_proxy::hosted_search::Plan;
+    use router::ModelProtocol::{self, *};
+
+    fn shapes() -> Vec<Value> {
+        let mut shapes = vec![
+            json!(null), json!(true), json!(1), json!(-1), json!(1.5), json!("s"), json!(""),
+            json!([]), json!({}), json!([null]), json!([1]), json!(["s"]), json!([{}]), json!([[]]),
+            json!({"type":1}), json!({"type":"text"}), json!({"type":"text","text":1}),
+            json!({"type":"web_search"}), json!({"type":"web_search_20250305","name":1}),
+            json!({"role":1}), json!({"role":"user"}), json!({"role":"assistant","content":1}),
+            json!({"role":"user","content":[1]}), json!({"role":"user","content":[{"type":1}]}),
+            json!({"role":"assistant","tool_calls":[1]}), json!({"role":"assistant","tool_calls":[{"function":1}]}),
+            json!({"role":"tool","content":[1]}), json!({"type":"function","name":1}),
+            json!({"type":"function","function":1}), json!({"type":"function","function":{"name":"f","parameters":1}}),
+            json!({"type":"tool","name":"x"}), json!({"type":"allowed_tools","tools":1}),
+            json!({"type":"function_call","call_id":1,"arguments":1}), json!({"type":"function_call_output","output":[1]}),
+            json!({"type":"image","source":1}), json!({"type":"image_url","image_url":1}),
+            json!({"type":"input_image","image_url":1}), json!({"type":"tool_use","input":1}),
+            json!({"type":"tool_result","content":[1]}), json!({"type":"reasoning","summary":1}),
+            json!({"type":"thinking","thinking":1}), json!({"type":"message","content":"s"}),
+            json!({"type":"message","role":"user","content":[1]}), json!({"effort":1}), json!({"format":1}),
+        ];
+        let objects: Vec<Value> = shapes.iter().filter(|shape| shape.is_object()).cloned().collect();
+        shapes.extend(objects.into_iter().map(|shape| json!([shape])));
+        shapes
+    }
+
+    fn base(protocol: ModelProtocol) -> Value {
+        match protocol {
+            Responses => json!({"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}),
+            ChatCompletions => json!({"model":"m","messages":[{"role":"user","content":"hi"}]}),
+            AnthropicMessages => json!({"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}),
+        }
+    }
+
+    /// Every body: each top-level field, item, content part and tool replaced by each shape.
+    fn bodies(protocol: ModelProtocol) -> Vec<Value> {
+        const KEYS: [&str; 28] = ["model","messages","input","tools","tool_choice","system","instructions","max_tokens",
+            "max_output_tokens","max_completion_tokens","stream","stream_options","reasoning","thinking","text",
+            "response_format","stop","metadata","temperature","include","previous_response_id","parallel_tool_calls",
+            "user","store","prompt_cache_key","max_tool_calls","n","output_config"];
+        let list = if protocol == Responses { "input" } else { "messages" };
+        let mut bodies = vec![json!([]), json!("s"), json!(1), json!(null)];
+        for shape in shapes() {
+            for key in KEYS {
+                let mut body = base(protocol);
+                body[key] = shape.clone();
+                bodies.push(body);
+            }
+            let mut body = base(protocol);
+            body[list][0] = shape.clone();
+            bodies.push(body);
+            let mut body = base(protocol);
+            body[list][0]["content"] = shape.clone();
+            bodies.push(body);
+            let mut body = base(protocol);
+            body[list][0]["content"] = json!([shape.clone()]);
+            bodies.push(body);
+            for tool in [json!({"type":"web_search"}), json!({"type":"web_search_20250305","name":"web_search"}),
+                json!({"type":"function","name":"f","parameters":{}})] {
+                for field in ["filters","allowed_domains","user_location","max_uses","parameters","name"] {
+                    let mut body = base(protocol);
+                    let mut tool = tool.clone();
+                    tool[field] = shape.clone();
+                    body["tools"] = json!([tool]);
+                    bodies.push(body.clone());
+                    body["tool_choice"] = shape.clone();
+                    bodies.push(body);
+                }
+            }
+        }
+        bodies
+    }
+
+    #[test]
+    fn malformed_client_bodies_are_refused_without_panicking() {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let mut panics = Vec::new();
+        for from in [Responses, ChatCompletions, AnthropicMessages] {
+            let all = bodies(from);
+            for to in [Responses, ChatCompletions, AnthropicMessages] {
+                let destination = Destination::Provider {
+                    provider: Box::new(router::Provider::default()),
+                    upstream_protocol: to,
+                    model_override: Some("relay-model".into()),
+                    translation: protocol::Translation::between(from, to),
+                };
+                for body in &all {
+                    let bytes = Bytes::from(body.to_string());
+                    let run = std::panic::catch_unwind(|| {
+                        let _ = upstream_body(&destination, Some(bytes.clone()));
+                        let _ = Plan::history_only(&destination, Some(bytes.clone()));
+                        let _ = Plan::for_destination(&destination, Some(&bytes));
+                        let _ = Plan::native(from, Some(&bytes));
+                    });
+                    if run.is_err() {
+                        panics.push(format!("{from:?}->{to:?}: {body}"));
+                    }
+                }
+            }
+        }
+        std::panic::set_hook(hook);
+        assert!(panics.is_empty(), "{} panics:\n{}", panics.len(), panics.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+    }
+}
