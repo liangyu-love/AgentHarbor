@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, RotateCw, Settings2, Undo2, Wand2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
@@ -24,6 +25,25 @@ const KINDS: { kind: PromptAssistModel["kind"]; label: string }[] = [
 ];
 const MAX_REQUEST_CHARS = 500;
 const MAX_INSTRUCTION_CHARS = 8000;
+/** Long edge of the reference copy a polishing model sees; generation still uses the original. */
+const REFERENCE_EDGE = 1568;
+
+/** A JPEG copy of the reference small enough for any relay, flattened onto white. */
+async function shrinkReference(src: string): Promise<string> {
+  const image = new Image();
+  image.src = src;
+  await image.decode();
+  const scale = Math.min(1, REFERENCE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("无法读取底本");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.88);
+}
 
 /** The 「AI 润色」 switch beside the prompt label. */
 export function PromptAssistToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
@@ -47,8 +67,10 @@ export function PromptAssistToggle({ open, onToggle }: { open: boolean; onToggle
 }
 
 /** Rewrites the prompt with a text model AgentHarbor offers; the result is compared before it is used. */
-export function PromptAssistPanel({ prompt, onPromptChange, onClose }: {
+export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }: {
   prompt: string;
+  /** The image-to-image reference, which the model may see to polish against. */
+  reference: string | null;
   onPromptChange: (prompt: string) => void;
   onClose: () => void;
 }) {
@@ -64,16 +86,20 @@ export function PromptAssistPanel({ prompt, onPromptChange, onClose }: {
   const settings = state.data?.settings;
   const [picked, setPicked] = useState("");
   const [request, setRequest] = useState("");
-  const [result, setResult] = useState<{ text: string; from: string } | null>(null);
+  const [result, setResult] = useState<{ text: string; from: string; withReference: boolean } | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adopted, setAdopted] = useState<{ before: string; after: string } | null>(null);
   const [instructionOpen, setInstructionOpen] = useState(false);
   const attempt = useRef(0);
+  // The shrunk copy of the reference last sent, so a retry does not redraw it.
+  const shrunk = useRef<{ src: string; data: string } | null>(null);
 
   // This session's pick, else the model used last time, else the first one offered.
   const model = [picked, settings?.model].find(id => id && models.some(item => item.id === id)) ?? models[0]?.id ?? "";
   const chosen = models.find(item => item.id === model);
+  // A loaded reference goes along unless the user once unticked it.
+  const withReference = Boolean(reference) && !settings?.skipReference;
 
   useEffect(() => () => { attempt.current += 1; }, []);
 
@@ -100,8 +126,13 @@ export function PromptAssistPanel({ prompt, onPromptChange, onClose }: {
     setError(null);
     setAdopted(null);
     try {
-      const text = await api.image.optimizePrompt(model, prompt, request.trim());
-      if (id === attempt.current) setResult({ text, from: prompt });
+      let image: string | null = null;
+      if (withReference && reference) {
+        if (shrunk.current?.src !== reference) shrunk.current = { src: reference, data: await shrinkReference(reference) };
+        image = shrunk.current.data;
+      }
+      const text = await api.image.optimizePrompt(model, prompt, request.trim(), image);
+      if (id === attempt.current) setResult({ text, from: prompt, withReference: image !== null });
     } catch (cause) {
       if (id === attempt.current) setError(formatInvokeError(cause));
     } finally {
@@ -212,10 +243,29 @@ export function PromptAssistPanel({ prompt, onPromptChange, onClose }: {
           )}
         </div>
 
+        {reference && settings && (
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border/60 bg-background/60 p-1.5 pr-2.5">
+            <img src={reference} alt="" className="h-9 w-9 shrink-0 rounded bg-card object-cover ring-1 ring-border/60" />
+            <Checkbox
+              checked={withReference}
+              disabled={running}
+              aria-label="附带底本"
+              onCheckedChange={on => void saveSettings({ ...settings, skipReference: on !== true })}
+              className="border-[#b83b38]/60 data-[state=checked]:border-[#b83b38] data-[state=checked]:bg-[#b83b38] data-[state=checked]:text-white"
+            />
+            <span className="min-w-0 font-serif text-xs leading-snug">
+              <span className="text-foreground/90">附带底本</span>
+              <span className="block text-[11px] text-muted-foreground">
+                让模型看着底本润色，写成「保留什么、改成什么」的改图指令；模型需支持识图
+              </span>
+            </span>
+          </label>
+        )}
+
         {running && (
           <p className="flex items-center gap-1.5 font-serif text-xs text-muted-foreground" aria-live="polite">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            正在请求 {chosen?.label ?? model}，推理模型可能要多等一会儿…
+            正在请求 {chosen?.label ?? model}{withReference && "（附带底本）"}，推理模型可能要多等一会儿…
           </p>
         )}
         {error && !running && (
@@ -246,7 +296,10 @@ export function PromptAssistPanel({ prompt, onPromptChange, onClose }: {
               </p>
             </details>
             <div className="flex items-center justify-between">
-              <span className="font-serif text-[11px] font-semibold text-foreground/90">润色后（可以先改再采用）</span>
+              <span className="font-serif text-[11px] font-semibold text-foreground/90">
+                润色后（可以先改再采用）
+                {result.withReference && <span className="font-normal text-muted-foreground"> · 已对照底本</span>}
+              </span>
               <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{charCount(result.text)} 字</span>
             </div>
             <Textarea

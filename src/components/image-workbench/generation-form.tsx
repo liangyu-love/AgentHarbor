@@ -225,7 +225,7 @@ export function GenerationForm({
         </div>
 
         {assistOpen && (
-          <PromptAssistPanel prompt={prompt} onPromptChange={setPrompt} onClose={() => setAssistOpen(false)} />
+          <PromptAssistPanel prompt={prompt} reference={imageData} onPromptChange={setPrompt} onClose={() => setAssistOpen(false)} />
         )}
 
         <PromptLibrary prompt={prompt} onPromptChange={setPrompt} />

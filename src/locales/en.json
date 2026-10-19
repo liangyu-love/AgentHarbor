@@ -1699,6 +1699,7 @@
       "assistSettings": "Could not save the polishing settings. The instruction can be 8000 characters at most.",
       "assistModel": "Choose a model to polish with.",
       "assistRequest": "The extra requirement can be 500 characters at most.",
+      "assistReference": "The reference image cannot be sent to the polishing model. Use a PNG, JPG or WebP image, or untick sending the reference.",
       "assistRouter": "The local router is not running, so the polishing model cannot be reached.",
       "assistEmpty": "The model returned nothing. Try again or choose another model."
     },

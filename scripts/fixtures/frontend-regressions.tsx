@@ -795,8 +795,8 @@ api.image.savePromptAssistSettings = async settings => {
   return { ...settings };
 };
 // Each polish waits until the test answers or fails it.
-api.image.optimizePrompt = (model, prompt, request) => new Promise((resolve, reject) => {
-  controls.review.assistRequests.push({ model, prompt, request, resolve, reject });
+api.image.optimizePrompt = (model, prompt, request, reference) => new Promise((resolve, reject) => {
+  controls.review.assistRequests.push({ model, prompt, request, reference: reference ?? null, resolve, reject });
 });
 api.image.savePromptLibrary = async library => {
   if (controls.review.failPromptSave) throw "image.errors.promptLibrary";
@@ -1375,7 +1375,7 @@ controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
   promptLibrary: { groups: [] }, promptSaves: 0, failPromptSave: false,
-  promptAssist: { settings: { model: "", instruction: "" }, defaultInstruction: "默认润色指令", models: [
+  promptAssist: { settings: { model: "", instruction: "", skipReference: false }, defaultInstruction: "默认润色指令", models: [
     { id: "relay-a/glm-5", label: "GLM 5", sourceName: "Relay A", kind: "relay" },
     { id: "codex/gpt-5.5", label: "GPT-5.5", sourceName: "Codex", kind: "account" },
     { id: "smart", label: "Smart", sourceName: "Smart", kind: "aggregate" },

@@ -274,6 +274,8 @@ export interface PromptAssistSettings {
   model: string;
   /** "" means the built-in instruction. */
   instruction: string;
+  /** The user unticked sending the image-to-image reference along. */
+  skipReference: boolean;
 }
 
 export interface PromptAssistState {
@@ -316,8 +318,9 @@ const imageApi = {
   loadPromptAssist: () => invoke<PromptAssistState>("load_prompt_assist"),
   savePromptAssistSettings: (settings: PromptAssistSettings) =>
     invoke<PromptAssistSettings>("save_prompt_assist_settings", { settings }),
-  optimizePrompt: (model: string, prompt: string, request: string) =>
-    invoke<string>("optimize_image_prompt", { model, prompt, request }),
+  /** `reference` is a data URL the model sees beside the prompt. */
+  optimizePrompt: (model: string, prompt: string, request: string, reference?: string | null) =>
+    invoke<string>("optimize_image_prompt", { model, prompt, request, reference: reference ?? null }),
 };
 
 const targetsApi = {

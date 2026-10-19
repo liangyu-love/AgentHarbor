@@ -1699,6 +1699,7 @@
       "assistSettings": "润色设置保存失败，指令最多 8000 字。",
       "assistModel": "请选择一个用于润色的模型。",
       "assistRequest": "额外要求最多 500 字。",
+      "assistReference": "底本无法发给润色模型，请换一张 PNG / JPG / WebP 图片，或取消勾选附带底本。",
       "assistRouter": "本地路由没有启动，无法请求润色模型。",
       "assistEmpty": "模型没有返回内容，请换个模型或重试。"
     },

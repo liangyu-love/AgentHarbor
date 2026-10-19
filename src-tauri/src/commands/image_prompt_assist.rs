@@ -16,6 +16,9 @@ const MAX_INSTRUCTION_CHARS: usize = 8_000;
 const MAX_REQUEST_CHARS: usize = 500;
 const MAX_MODEL_ID_CHARS: usize = 300;
 const MAX_OUTPUT_TOKENS: u64 = 4096;
+/// The workbench sends a downscaled copy; this only stops something far larger.
+const MAX_REFERENCE_CHARS: usize = 8 * 1024 * 1024;
+const REFERENCE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 /// Reasoning models can think for a while before they answer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// Image models cannot rewrite text, so they are not offered.
@@ -28,7 +31,8 @@ pub const DEFAULT_INSTRUCTION: &str = "你是 GPT Image 生图提示词优化助
 - 使用与用户输入相同的语言，写成连贯的描述，不要列表、标题或解释。
 - 只输出优化后的提示词本身。";
 
-/// What the user chose: the model last used and their own instruction ("" for the default).
+/// What the user chose: the model last used, their own instruction ("" for the default)
+/// and whether the reference image is left out of polishing.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistSettings {
@@ -36,6 +40,8 @@ pub struct AssistSettings {
     pub model: String,
     #[serde(default)]
     pub instruction: String,
+    #[serde(default)]
+    pub skip_reference: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,6 +76,7 @@ fn write_settings(paths: &CodexPaths, settings: AssistSettings) -> Result<Assist
     let settings = AssistSettings {
         model: settings.model.trim().to_owned(),
         instruction: settings.instruction.trim().to_owned(),
+        skip_reference: settings.skip_reference,
     };
     if settings.model.chars().count() > MAX_MODEL_ID_CHARS
         || settings.instruction.chars().count() > MAX_INSTRUCTION_CHARS
@@ -114,16 +121,49 @@ fn load_state(paths: &CodexPaths) -> Result<AssistState, String> {
     })
 }
 
-/// The user turn: the prompt to rewrite, and the one-off requirement if any.
-fn user_message(prompt: &str, request: &str) -> String {
-    let mut message = format!(
-        "请优化下面的生图提示词：\n<prompt>\n{}\n</prompt>",
-        prompt.trim()
-    );
+/// The user turn's text: the prompt to rewrite, and the one-off requirement if any.
+/// With a reference image the prompt becomes an edit of it, as image-to-image expects.
+fn user_message(prompt: &str, request: &str, with_reference: bool) -> String {
+    let lead = if with_reference {
+        "附图是这次图生图的底本。请对照底本优化下面的生图提示词，写成改图指令：\
+         说明要保留底本的哪些部分（如主体、构图、画风），以及要改成什么样；\
+         不要重复描述底本里不变的细节，也不要和底本的实际内容矛盾。"
+    } else {
+        "请优化下面的生图提示词："
+    };
+    let mut message = format!("{lead}\n<prompt>\n{}\n</prompt>", prompt.trim());
     if !request.trim().is_empty() {
         message.push_str(&format!("\n这次的额外要求：{}", request.trim()));
     }
     message
+}
+
+/// The reference image as a Messages image block; only a base64 data URL is accepted.
+fn reference_block(data_url: &str) -> Result<Value, String> {
+    let (media_type, data) = data_url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,"))
+        .filter(|(media_type, data)| {
+            REFERENCE_TYPES.contains(media_type)
+                && !data.is_empty()
+                && data.len() <= MAX_REFERENCE_CHARS
+        })
+        .ok_or("image.errors.assistReference")?;
+    Ok(json!({
+        "type": "image",
+        "source": { "type": "base64", "media_type": media_type, "data": data },
+    }))
+}
+
+/// The user turn: the text alone, or the reference image before it.
+fn user_content(prompt: &str, request: &str, reference: Option<&str>) -> Result<Value, String> {
+    let Some(reference) = reference else {
+        return Ok(json!(user_message(prompt, request, false)));
+    };
+    Ok(json!([
+        reference_block(reference)?,
+        { "type": "text", "text": user_message(prompt, request, true) },
+    ]))
 }
 
 /// The text of a Messages reply, without a code fence a model may wrap it in.
@@ -163,8 +203,10 @@ async fn polish(
     model: String,
     prompt: String,
     request: String,
+    reference: Option<String>,
 ) -> Result<String, String> {
     check_input(&model, &prompt, &request)?;
+    let content = user_content(&prompt, &request, reference.as_deref())?;
     {
         let _guard = routing_runtime::mutation_guard().await;
         routing_runtime::ensure_available(&paths).await?;
@@ -192,7 +234,7 @@ async fn polish(
             "model": model.trim(),
             "max_tokens": MAX_OUTPUT_TOKENS,
             "system": instruction,
-            "messages": [{ "role": "user", "content": user_message(&prompt, &request) }],
+            "messages": [{ "role": "user", "content": content }],
         }))
         .send()
         .await
@@ -244,9 +286,10 @@ pub async fn optimize_image_prompt(
     model: String,
     prompt: String,
     request: String,
+    reference: Option<String>,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
-    polish(paths, model, prompt, request).await
+    polish(paths, model, prompt, request, reference).await
 }
 
 #[cfg(test)]
@@ -263,6 +306,7 @@ mod tests {
             AssistSettings {
                 model: " relay/glm-5 ".into(),
                 instruction: "  只输出英文  ".into(),
+                skip_reference: true,
             },
         )
         .unwrap();
@@ -270,13 +314,14 @@ mod tests {
             saved,
             AssistSettings {
                 model: "relay/glm-5".into(),
-                instruction: "只输出英文".into()
+                instruction: "只输出英文".into(),
+                skip_reference: true,
             }
         );
         assert_eq!(read_settings(&paths), saved);
         let long = AssistSettings {
-            model: String::new(),
             instruction: "长".repeat(MAX_INSTRUCTION_CHARS + 1),
+            ..Default::default()
         };
         assert_eq!(
             write_settings(&paths, long).unwrap_err(),
@@ -296,10 +341,40 @@ mod tests {
     #[test]
     fn the_user_turn_carries_the_prompt_and_a_one_off_requirement() {
         assert_eq!(
-            user_message("  雨夜橘猫 ", ""),
+            user_message("  雨夜橘猫 ", "", false),
             "请优化下面的生图提示词：\n<prompt>\n雨夜橘猫\n</prompt>"
         );
-        assert!(user_message("雨夜橘猫", " 赛博朋克 ").ends_with("\n这次的额外要求：赛博朋克"));
+        assert!(
+            user_message("雨夜橘猫", " 赛博朋克 ", false).ends_with("\n这次的额外要求：赛博朋克")
+        );
+    }
+
+    #[test]
+    fn a_reference_goes_before_the_text_and_asks_for_an_edit() {
+        assert_eq!(
+            user_content("猫", "", None).unwrap(),
+            json!(user_message("猫", "", false))
+        );
+        let content = user_content("把猫换成狗", "", Some("data:image/jpeg;base64,/9j/")).unwrap();
+        assert_eq!(
+            content[0],
+            json!({ "type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg", "data": "/9j/" } })
+        );
+        let text = content[1]["text"].as_str().unwrap();
+        assert!(text.starts_with("附图是这次图生图的底本"), "{text}");
+        assert!(text.contains("<prompt>\n把猫换成狗\n</prompt>"));
+        for bad in [
+            "https://example.test/cat.png",
+            "data:image/svg+xml;base64,PHN2Zz4=",
+            "data:image/png;base64,",
+        ] {
+            assert_eq!(
+                user_content("猫", "", Some(bad)).unwrap_err(),
+                "image.errors.assistReference",
+                "{bad}"
+            );
+        }
     }
 
     #[test]

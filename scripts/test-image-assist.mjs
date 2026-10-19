@@ -69,4 +69,35 @@ export async function testImageAssist({ page, reset, captureDir }) {
   assert.equal(await page.evaluate(() => window.review.promptAssist.settings.instruction), "");
   await panel.getByRole("button", { name: "润色指令" }).waitFor();
   console.log("PASS the polishing instruction can be customised and restored to the default");
+
+  // A loaded reference goes along by default as a shrunk copy; leaving it out is remembered.
+  const large = await page.evaluate(() => {
+    const canvas = Object.assign(document.createElement("canvas"), { width: 2400, height: 1200 });
+    canvas.getContext("2d").fillRect(0, 0, 10, 10);
+    return canvas.toDataURL("image/png").split(",")[1];
+  });
+  await page.locator("[data-image-reference] input[type=file]")
+    .setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: Buffer.from(large, "base64") });
+  const attach = panel.getByRole("checkbox", { name: "附带底本" });
+  await eventually(async () => assert.equal(await attach.getAttribute("aria-checked"), "true"));
+  await panel.getByRole("button", { name: "润色", exact: true }).click();
+  await eventually(async () => assert.equal((await requests(page)).length, 4));
+  const sent = await page.evaluate(() => window.review.assistRequests[3].reference);
+  assert.match(sent, /^data:image\/jpeg;base64,/);
+  const size = await page.evaluate(async src => {
+    const image = new Image();
+    image.src = src;
+    await image.decode();
+    return [image.naturalWidth, image.naturalHeight];
+  }, sent);
+  assert.deepEqual(size, [1568, 784]);
+  await answer(page, 3, "保留橘猫和构图，把背景换成霓虹雨夜");
+  await panel.getByText("已对照底本", { exact: false }).waitFor();
+  if (captureDir) await panel.screenshot({ path: path.join(captureDir, "image-assist-reference.png"), animations: "disabled" });
+  await attach.click();
+  await page.waitForFunction(() => window.review.promptAssist.settings.skipReference === true);
+  await panel.getByRole("button", { name: "重新润色", exact: true }).click();
+  await eventually(async () => assert.equal((await requests(page)).length, 5));
+  assert.equal(await page.evaluate(() => window.review.assistRequests[4].reference), null);
+  console.log("PASS AI polish sends a shrunk reference by default and remembers when it is left out");
 }
