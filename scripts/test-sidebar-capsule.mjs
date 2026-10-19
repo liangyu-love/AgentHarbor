@@ -128,6 +128,8 @@ export async function testSidebarCapsule({ page, reset, captureDir }) {
   await navButton("usage").click();
   assert.equal(await indicator.evaluate(element => element.getAnimations().length), 0, "The highlight jumps");
   await assertIndicatorUnder("usage");
-  await page.emulateMedia({ reducedMotion: null });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  assert.equal(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches), false,
+    "Restore the suite's motion setting rather than the host OS preference");
   console.log("PASS sidebar is a centred capsule with a gliding highlight, springy width, scrollable items and wallpaper glass");
 }

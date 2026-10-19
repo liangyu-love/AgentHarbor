@@ -88,9 +88,11 @@ let browser;
 let openPage;
 try {
   const executablePath = argument("--browser-executable") ?? process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
-  browser = await playwright.chromium.launch({ headless: true, ...(executablePath ? { executablePath } : { channel: "chromium" }) });
+  // A reduced-motion host catches tests that accidentally restore OS defaults.
+  browser = await playwright.chromium.launch({ headless: true, args: ["--force-prefers-reduced-motion"], ...(executablePath ? { executablePath } : { channel: "chromium" }) });
   const page = await browser.newPage({ viewport: { width: 1200, height: 700 } });
   openPage = page;
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   // FRONTEND_QA_CPU_THROTTLE=4 runs as slowly as a CI runner, to reproduce its timing.
   if (Number(process.env.FRONTEND_QA_CPU_THROTTLE) > 1) {
     const cdp = await page.context().newCDPSession(page);
