@@ -4,23 +4,41 @@ import { api, type PromptGroup, type PromptLibrary, type PromptLibraryKind, type
 import { toast } from "@/hooks/use-toast";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
+import { storageKeys } from "@/lib/storage-keys";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 
 /** What each book of the 画谱 is called, and where it is kept in the query cache. */
 export const LIBRARY_BOOKS = {
   prompts: {
     key: queryKeys.imagePromptLibrary, name: "画谱", item: "模版", unit: "个", group: "分组",
-    note: "备注", content: "提示词", file: "agentharbor-prompts.json",
+    note: "备注", content: "提示词", file: "agentharbor-prompts.json", presets: "预置模版",
     notePlaceholder: "用途、适合的模型、要避开的坑…",
     contentPlaceholder: "描述画面主体、构图、光线和风格…",
   },
   materials: {
     key: queryKeys.imagePromptMaterials, name: "素材", item: "素材", unit: "条", group: "分类",
-    note: "简介", content: "内容", file: "agentharbor-materials.json",
+    note: "简介", content: "内容", file: "agentharbor-materials.json", presets: "预置素材",
     notePlaceholder: "适合什么画面，AI 挑选时会参考",
     contentPlaceholder: "写进提示词的描述片段，如：藏青色水手服上衣，白色水手领，深色百褶短裙",
   },
 } as const;
+
+/** The book the 画谱 last showed. */
+export function rememberedBook(): PromptLibraryKind {
+  try {
+    return localStorage.getItem(storageKeys.imagePromptBook) === "materials" ? "materials" : "prompts";
+  } catch {
+    return "prompts";
+  }
+}
+
+export function rememberBook(kind: PromptLibraryKind) {
+  try {
+    localStorage.setItem(storageKeys.imagePromptBook, kind);
+  } catch {
+    // Storage unavailable; the 画谱 opens on the templates next time.
+  }
+}
 
 /** Mirrors the limits `image_prompts.rs` enforces. */
 export const PROMPT_LIMITS = {
@@ -197,6 +215,20 @@ export function usePromptLibrary(kind: PromptLibraryKind = "prompts") {
     }
   }, [queryClient, kind]);
 
+  /** Bring in what AgentHarbor ships for this book; what is already there is skipped. */
+  const addPresets = useCallback(async () => {
+    try {
+      await saveChains[kind];
+      const result = await api.image.addPromptPresets(kind);
+      queryClient.setQueryData(libraryKey, result.library);
+      toast(result.templates > 0
+        ? { title: `已添加 ${result.templates} ${book.unit}${book.presets}`, description: result.groups > 0 ? `新增 ${result.groups} 个${book.group}` : undefined, variant: "success" }
+        : { title: `${book.presets}都已在${book.name}里了`, variant: "success" });
+    } catch (cause) {
+      toast({ title: `添加${book.presets}失败`, description: formatInvokeError(cause), variant: "destructive" });
+    }
+  }, [queryClient, kind]);
+
   const exportLibrary = useCallback(async () => {
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
@@ -229,6 +261,7 @@ export function usePromptLibrary(kind: PromptLibraryKind = "prompts") {
     togglePin,
     importLibrary,
     exportLibrary,
+    addPresets,
   };
 }
 

@@ -193,4 +193,13 @@ export async function testImagePrompts({ page, reset, captureDir }) {
   await panel.getByRole("tab", { name: "提示词灵感" }).click();
   await panel.getByText("画谱还是空白的", { exact: false }).waitFor();
   console.log("PASS the materials book keeps its own categories and appends a material to the prompt");
+
+  // The shipped presets join the book on request, and only once.
+  await panel.getByRole("button", { name: "添加预置模版" }).click();
+  await card("芭蕾风仙女").waitFor();
+  await page.waitForFunction(() => window.review.lastToast === "已添加 1 个预置模版");
+  await panel.getByRole("button", { name: "预置", exact: true }).click();
+  await page.waitForFunction(() => window.review.lastToast === "预置模版都已在画谱里了");
+  assert.equal(await page.evaluate(() => window.review.promptLibrary.groups[0].templates.length), 1);
+  console.log("PASS preset templates are added on request and never twice");
 }

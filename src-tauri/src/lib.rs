@@ -314,6 +314,7 @@ pub fn run() {
             commands::image_prompts::save_image_prompt_library,
             commands::image_prompts::import_image_prompt_library,
             commands::image_prompts::export_image_prompt_library,
+            commands::image_prompts::add_image_prompt_presets,
             commands::image_prompt_assist::load_prompt_assist,
             commands::image_prompt_assist::save_prompt_assist_settings,
             commands::image_prompt_assist::optimize_image_prompt,

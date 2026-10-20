@@ -799,6 +799,21 @@ api.image.savePromptAssistSettings = async settings => {
 api.image.optimizePrompt = (model, prompt, request, materials, reference) => new Promise((resolve, reject) => {
   controls.review.assistRequests.push({ model, prompt, request, materials, reference: reference ?? null, resolve, reject });
 });
+// Like add_presets in image_prompts.rs: same-named groups join, what is there is skipped.
+api.image.addPromptPresets = async kind => {
+  const key = promptBook(kind);
+  const preset = kind === "materials"
+    ? { name: "服装", templates: [{ id: "p1", title: "JK 制服", note: "日系校园", prompt: "水手服，百褶裙", pinned: false }] }
+    : { name: "成套穿搭", templates: [{ id: "p2", title: "芭蕾风仙女", note: "", prompt: "芭蕾风少女，粉色纱裙", pinned: false }] };
+  const library = structuredClone(controls.review[key]);
+  let group = library.groups.find(item => item.name === preset.name);
+  const created = group ? 0 : 1;
+  if (!group) library.groups.push(group = { id: "preset-" + key, name: preset.name, templates: [] });
+  const fresh = preset.templates.filter(item => !group.templates.some(have => have.title === item.title && have.prompt === item.prompt));
+  group.templates.push(...fresh);
+  controls.review[key] = library;
+  return { library: structuredClone(library), groups: created, templates: fresh.length, skipped: preset.templates.length - fresh.length };
+};
 api.image.savePromptLibrary = async (library, kind) => {
   if (controls.review.failPromptSave) throw "image.errors.promptLibrary";
   controls.review[promptBook(kind)] = structuredClone(library);

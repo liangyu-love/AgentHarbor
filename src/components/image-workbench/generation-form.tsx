@@ -18,6 +18,7 @@ import { InkModelCombobox } from "./ink-model-combobox";
 import { PromptLibrary } from "./prompt-library";
 import { PromptAssistPanel, PromptAssistToggle } from "./prompt-assist";
 import { SaveAsTemplateButton } from "./prompt-template-dialog";
+import { rememberedBook } from "./use-prompt-library";
 import type { ImageConnection } from "./use-image-connection";
 import { SIZES, type GenerationJob } from "./workbench-types";
 
@@ -42,6 +43,7 @@ export function GenerationForm({
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const [assistOpen, setAssistOpen] = useState(false);
+  const [libraryKind, setLibraryKind] = useState(rememberedBook);
   // A newly loaded reference glows briefly, so a load from the canvas or gallery is seen.
   const [freshReference, setFreshReference] = useState(false);
   useEffect(() => {
@@ -225,10 +227,15 @@ export function GenerationForm({
         </div>
 
         {assistOpen && (
-          <PromptAssistPanel prompt={prompt} reference={imageData} onPromptChange={setPrompt} onClose={() => setAssistOpen(false)} />
+          <PromptAssistPanel prompt={prompt} reference={imageData} onPromptChange={setPrompt} onClose={() => setAssistOpen(false)}
+            onManageMaterials={() => {
+              setLibraryKind("materials");
+              const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+              document.querySelector("[data-prompt-library]")?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+            }} />
         )}
 
-        <PromptLibrary prompt={prompt} onPromptChange={setPrompt} />
+        <PromptLibrary kind={libraryKind} onKindChange={setLibraryKind} prompt={prompt} onPromptChange={setPrompt} />
 
         {/* 图生图参考底本 */}
         <div data-image-reference data-fresh={freshReference || undefined} className={cn(

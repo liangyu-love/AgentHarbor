@@ -123,5 +123,16 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await panel.getByRole("button", { name: "重新润色", exact: true }).click();
   await eventually(async () => assert.equal((await requests(page)).length, 7));
   assert.deepEqual(await page.evaluate(() => window.review.assistRequests[6].materials), ["m-pose"]);
+  await answer(page, 6, "回眸的少女");
+  await materials.getByRole("button", { name: "清空" }).click();
+  await page.waitForFunction(() => window.review.promptAssist.settings.materials.length === 0);
   console.log("PASS AI polish sends only the ticked material categories and remembers them");
+
+  // The materials are one click away from the polishing panel.
+  await materials.getByRole("button", { name: "管理素材" }).click();
+  const library = page.locator("[data-prompt-library]");
+  await eventually(async () => assert.equal(await library.getByRole("tab", { name: "素材" }).getAttribute("aria-selected"), "true"));
+  await page.locator('[data-prompt-template="JK 制服"]').waitFor();
+  await library.getByRole("tab", { name: "提示词灵感" }).click();
+  console.log("PASS managing materials opens the materials book of the 画谱");
 }

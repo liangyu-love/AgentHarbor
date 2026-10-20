@@ -17,6 +17,7 @@ export const storageKeys = {
   wallpaperSettings: "agentharbor_wallpaper_settings_v1",
   imageWorkbenchConfig: "image-workbench-config",
   imagePromptGroup: "agentharbor.image-prompt-group",
+  imagePromptBook: "agentharbor.image-prompt-book",
   claudeCodeProfiles: "agentharbor.claude-code-profiles.v1",
   claudeDesktopProfiles: "agentharbor.claude-desktop-profiles.v1",
   relayGroupAliases: "newapi-relay-group-aliases",

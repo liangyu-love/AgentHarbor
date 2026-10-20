@@ -1,7 +1,7 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, ChevronUp, Copy, Feather, GripVertical,
-  ListPlus, Maximize2, Pencil, Pin, PinOff, Plus, RotateCw, Search, Sparkles, Star, Trash2, X,
+  ListPlus, Maximize2, PackagePlus, Pencil, Pin, PinOff, Plus, RotateCw, Search, Sparkles, Star, Trash2, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
@@ -13,7 +13,9 @@ import {
   PromptTemplateDialog, charCount, editorKeys, rememberGroup, rememberedGroup, type TemplateEditorRequest,
 } from "./prompt-template-dialog";
 import { usePointerSort } from "./use-pointer-sort";
-import { PROMPT_LIMITS, usePromptLibrary, type PromptLibraryState, type TemplateDraft } from "./use-prompt-library";
+import {
+  PROMPT_LIMITS, rememberBook, usePromptLibrary, type PromptLibraryState, type TemplateDraft,
+} from "./use-prompt-library";
 
 const iconButton = "h-7 w-7 text-muted-foreground";
 // Secondary card actions appear while the card is hovered or focused.
@@ -41,15 +43,22 @@ const withMaterial = (prompt: string, material: string) => {
 };
 
 /** The 画谱: the user's own prompt templates, and the materials AI polishing draws on. */
-export function PromptLibrary({ prompt, onPromptChange }: {
+export function PromptLibrary({ kind, onKindChange, prompt, onPromptChange }: {
+  /** The book shown; the polishing panel can open the materials from outside. */
+  kind: PromptLibraryKind;
+  onKindChange: (kind: PromptLibraryKind) => void;
   prompt: string;
   onPromptChange: (prompt: string) => void;
 }) {
-  const [kind, setKind] = useState<PromptLibraryKind>("prompts");
   const [collapsed, setCollapsed] = useState(false);
+  // Opening a book, from its tab or from elsewhere, shows it.
+  useEffect(() => {
+    setCollapsed(false);
+    rememberBook(kind);
+  }, [kind]);
   // Each book starts with its own search, selection and editors.
   return (
-    <PromptBook key={kind} kind={kind} onKindChange={setKind} collapsed={collapsed} onCollapsedChange={setCollapsed}
+    <PromptBook key={kind} kind={kind} onKindChange={onKindChange} collapsed={collapsed} onCollapsedChange={setCollapsed}
       prompt={prompt} onPromptChange={onPromptChange} />
   );
 }
@@ -325,9 +334,14 @@ function PromptBook({ kind, onKindChange, collapsed, onCollapsedChange: setColla
                 ? "素材库是空的。先建一个分类（如服装、动作、视角），再把常用的描述片段收进来；也可以导入之前导出的素材。"
                 : "画谱还是空白的。先建一个分组，再把常用的生图提示词收进来；也可以导入之前导出的画谱。"}
             </p>
-            <Button type="button" variant="ghost" size="xs" className="gap-1 font-serif text-[11px]" onClick={() => void library.importLibrary()}>
-              <ArrowDownToLine className="h-3 w-3" /> 导入{book.name}
-            </Button>
+            <div className="flex flex-wrap items-center justify-center gap-1">
+              <Button type="button" variant="ghost" size="xs" className="gap-1 font-serif text-[11px]" onClick={() => void library.addPresets()}>
+                <PackagePlus className="h-3 w-3" /> 添加{book.presets}
+              </Button>
+              <Button type="button" variant="ghost" size="xs" className="gap-1 font-serif text-[11px]" onClick={() => void library.importLibrary()}>
+                <ArrowDownToLine className="h-3 w-3" /> 导入{book.name}
+              </Button>
+            </div>
           </div>
         ) : (
           <>
@@ -460,6 +474,11 @@ function PromptBook({ kind, onKindChange, collapsed, onCollapsedChange: setColla
         <div className="flex items-center gap-0.5">
           {library.ready && !collapsed && (
             <>
+              <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                title={`把 AgentHarbor 自带的${book.presets}加进来：同名${book.group}合并，已有的跳过，删掉的可以找回`}
+                onClick={() => void library.addPresets()}>
+                <PackagePlus className="h-3.5 w-3.5" /> 预置
+              </Button>
               <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
                 title={`从 JSON 文件导入${book.group}和${book.item}（同名${book.group}合并，重复${book.item}跳过）`} onClick={() => void library.importLibrary()}>
                 <ArrowDownToLine className="h-3.5 w-3.5" /> 导入

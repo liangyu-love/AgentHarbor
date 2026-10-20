@@ -13,6 +13,8 @@ const MATERIALS_FILE: &str = "image-prompt-materials.json";
 /// The materials a new install starts with. Their ids are fixed so that what the
 /// polishing panel ticks still matches before the user first saves the materials.
 const MATERIALS_SEED: &str = include_str!("image_materials_seed.json");
+/// Whole prompts the user can add to their templates; never added unasked.
+const PROMPTS_PRESET: &str = include_str!("image_prompts_seed.json");
 const LIBRARY_VERSION: u32 = 1;
 const MAX_GROUPS: usize = 100;
 const MAX_TEMPLATES: usize = 2000;
@@ -98,10 +100,20 @@ fn library_path(paths: &CodexPaths, kind: LibraryKind) -> std::path::PathBuf {
     })
 }
 
+/// What AgentHarbor ships for the book: its starting materials, or its preset templates.
+fn preset_groups(kind: LibraryKind) -> Vec<PromptGroup> {
+    let preset = match kind {
+        LibraryKind::Prompts => PROMPTS_PRESET,
+        LibraryKind::Materials => MATERIALS_SEED,
+    };
+    serde_json::from_str(preset).unwrap_or_default()
+}
+
+/// What a book holds before its first save: the materials start seeded, the templates empty.
 fn seed_groups(kind: LibraryKind) -> Vec<PromptGroup> {
     match kind {
         LibraryKind::Prompts => Vec::new(),
-        LibraryKind::Materials => serde_json::from_str(MATERIALS_SEED).unwrap_or_default(),
+        LibraryKind::Materials => preset_groups(kind),
     }
 }
 
@@ -317,6 +329,14 @@ fn import_library(
     if incoming.is_empty() {
         return Err("image.errors.promptImport".into());
     }
+    merge_into(paths, kind, incoming)
+}
+
+fn merge_into(
+    paths: &CodexPaths,
+    kind: LibraryKind,
+    incoming: Vec<PromptGroup>,
+) -> Result<PromptImportResult, String> {
     let _guard = LIBRARY_LOCK
         .lock()
         .map_err(|_| "image.errors.promptLibrary".to_owned())?;
@@ -324,6 +344,12 @@ fn import_library(
     let (groups, mut result) = merge(current.groups, incoming);
     result.library = write_library(paths, kind, groups)?;
     Ok(result)
+}
+
+/// Add what AgentHarbor ships for the book, as an import would: same-named groups
+/// are joined and what is already there is skipped, so a deleted preset comes back.
+fn add_presets(paths: &CodexPaths, kind: LibraryKind) -> Result<PromptImportResult, String> {
+    merge_into(paths, kind, preset_groups(kind))
 }
 
 fn export_target(path: &str) -> Result<std::path::PathBuf, String> {
@@ -377,6 +403,15 @@ pub async fn import_image_prompt_library(
     let paths = paths(&repo)?;
     let kind = kind.unwrap_or_default();
     super::blocking(move || import_library(&paths, kind, Path::new(&path))).await
+}
+
+#[tauri::command]
+pub async fn add_image_prompt_presets(
+    repo: State<'_, Mutex<Repository>>,
+    kind: Option<LibraryKind>,
+) -> Result<PromptImportResult, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || add_presets(&paths, kind.unwrap_or_default())).await
 }
 
 #[tauri::command]
@@ -463,6 +498,36 @@ mod tests {
             .groups
             .is_empty());
         assert!(!library_path(&paths, P).exists());
+    }
+
+    #[test]
+    fn presets_join_the_library_once_and_bring_back_what_was_deleted() {
+        let (_dir, paths) = temp_paths();
+        let presets: Vec<PromptGroup> = serde_json::from_str(PROMPTS_PRESET).unwrap();
+        let count = presets
+            .iter()
+            .map(|group| group.templates.len())
+            .sum::<usize>();
+        assert_eq!(sanitize(presets).1, 0);
+
+        let first = add_presets(&paths, P).unwrap();
+        assert_eq!((first.templates, first.skipped), (count, 0));
+        let again = add_presets(&paths, P).unwrap();
+        assert_eq!(
+            (again.groups, again.templates, again.skipped),
+            (0, 0, count)
+        );
+
+        // A material category the user deleted comes back; the rest is left as it is.
+        let mut materials = read_library(&paths, LibraryKind::Materials).unwrap();
+        let removed = materials.groups.remove(1);
+        save_library(&paths, LibraryKind::Materials, materials).unwrap();
+        let restored = add_presets(&paths, LibraryKind::Materials).unwrap();
+        assert_eq!(
+            (restored.groups, restored.templates),
+            (1, removed.templates.len())
+        );
+        assert_eq!(restored.library.groups.last().unwrap().name, removed.name);
     }
 
     #[test]

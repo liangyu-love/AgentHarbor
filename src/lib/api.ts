@@ -322,6 +322,9 @@ const imageApi = {
     invoke<PromptImportResult>("import_image_prompt_library", { path, kind }),
   exportPromptLibrary: (path: string, kind: PromptLibraryKind = "prompts") =>
     invoke<void>("export_image_prompt_library", { path, kind }),
+  /** Merge what AgentHarbor ships for the book into it, skipping what is already there. */
+  addPromptPresets: (kind: PromptLibraryKind) =>
+    invoke<PromptImportResult>("add_image_prompt_presets", { kind }),
   loadPromptAssist: () => invoke<PromptAssistState>("load_prompt_assist"),
   savePromptAssistSettings: (settings: PromptAssistSettings) =>
     invoke<PromptAssistSettings>("save_prompt_assist_settings", { settings }),

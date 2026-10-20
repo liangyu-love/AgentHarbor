@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, RotateCw, Settings2, Undo2, Wand2, X } from "lucide-react";
+import { BookOpen, Check, Loader2, RotateCw, Settings2, Undo2, Wand2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -68,12 +68,14 @@ export function PromptAssistToggle({ open, onToggle }: { open: boolean; onToggle
 }
 
 /** Rewrites the prompt with a text model AgentHarbor offers; the result is compared before it is used. */
-export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }: {
+export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, onManageMaterials }: {
   prompt: string;
   /** The image-to-image reference, which the model may see to polish against. */
   reference: string | null;
   onPromptChange: (prompt: string) => void;
   onClose: () => void;
+  /** Open the materials book of the 画谱. */
+  onManageMaterials: () => void;
 }) {
   const queryClient = useQueryClient();
   const state = useQuery({
@@ -106,8 +108,10 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
   const categories = materialBook.groups.filter(group => group.templates.length > 0);
   const tickedIds = settings?.materials ?? [];
   const ticked = categories.filter(group => tickedIds.includes(group.id));
-  const tickedChars = ticked.reduce((sum, group) => sum + group.templates.reduce(
-    (size, item) => size + charCount(item.title + item.note + item.prompt) + 5, charCount(group.name) + 4), 0);
+  // About what the model reads for a category, as image_prompt_assist.rs writes it.
+  const categoryChars = (group: (typeof categories)[number]) => group.templates.reduce(
+    (size, item) => size + charCount(item.title + item.note + item.prompt) + 5, charCount(group.name) + 4);
+  const tickedChars = ticked.reduce((sum, group) => sum + categoryChars(group), 0);
 
   useEffect(() => () => { attempt.current += 1; }, []);
 
@@ -279,7 +283,7 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
           </label>
         )}
 
-        {settings && categories.length > 0 && (
+        {settings && materialBook.ready && (
           <div data-prompt-assist-materials className="flex flex-wrap items-center gap-1.5 font-serif text-xs">
             <span className="text-muted-foreground" title="勾选的分类会发给模型，由它按画面挑选合适的素材写进提示词；勾得越多，每次润色用的 token 越多。素材在下方画谱的「素材」页管理">
               参考素材{ticked.length > 0 && <span className="font-sans text-[10px] tabular-nums"> · 约 {tickedChars} 字</span>}
@@ -287,7 +291,7 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
             {categories.map(group => {
               const on = tickedIds.includes(group.id);
               return (
-                <label key={group.id} className={cn(
+                <label key={group.id} title={`${group.templates.length} 条素材 · 约 ${categoryChars(group)} 字`} className={cn(
                   "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 transition-colors",
                   on ? "border-[#b83b38]/35 bg-[#b83b38]/[0.05] dark:border-[#d94f4b]/35" : "border-border/60 bg-background/60 text-muted-foreground",
                 )}>
@@ -303,6 +307,17 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
                 </label>
               );
             })}
+            {categories.length === 0 && <span className="text-[11px] text-muted-foreground">素材库是空的</span>}
+            {ticked.length > 0 && (
+              <button type="button" disabled={running} onClick={() => void saveSettings({ ...settings, materials: [] })}
+                className="rounded px-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50">
+                清空
+              </button>
+            )}
+            <button type="button" onClick={onManageMaterials} title="在下方画谱的素材页增删、修改素材和分类"
+              className="inline-flex items-center gap-1 rounded px-1 text-[11px] text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]">
+              <BookOpen className="h-3 w-3" /> 管理素材
+            </button>
           </div>
         )}
 
