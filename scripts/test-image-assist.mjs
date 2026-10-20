@@ -133,7 +133,7 @@ export async function testImageAssist({ page, reset, captureDir }) {
   const outfitItems = materials.locator('[data-prompt-assist-category="服装"]');
   await outfitItems.getByRole("checkbox", { name: "参考素材：服装 · 老钱静奢" }).click();
   await page.waitForFunction(() => JSON.stringify(window.review.promptAssist.settings.materials) === '["m3"]');
-  assert.equal(await outfits.getAttribute("aria-checked"), "mixed");
+  await eventually(async () => assert.equal(await outfits.getAttribute("aria-checked"), "mixed"));
   await materials.getByText("1/2").waitFor();
   await materials.getByRole("checkbox", { name: "参考素材：动作", exact: true }).click();
   await panel.getByRole("button", { name: "重新润色", exact: true }).click();
@@ -144,7 +144,7 @@ export async function testImageAssist({ page, reset, captureDir }) {
   if (captureDir) await panel.screenshot({ path: path.join(captureDir, "image-assist-material-items.png"), animations: "disabled" });
   await outfitItems.getByRole("checkbox", { name: "参考素材：服装 · JK 制服" }).click();
   await page.waitForFunction(() => JSON.stringify(window.review.promptAssist.settings.materials) === '["m-pose","m-outfit"]');
-  assert.equal(await outfits.getAttribute("aria-checked"), "true");
+  await eventually(async () => assert.equal(await outfits.getAttribute("aria-checked"), "true"));
   await outfitItems.getByRole("button", { name: "全不选" }).click();
   await page.waitForFunction(() => JSON.stringify(window.review.promptAssist.settings.materials) === '["m-pose"]');
   await materials.getByRole("button", { name: "清空" }).click();
