@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "agent-harbor"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "aes",
  "base64 0.22.1",
