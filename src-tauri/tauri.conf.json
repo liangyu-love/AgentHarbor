@@ -45,6 +45,7 @@
         "minHeight": 640,
         "center": true,
         "acceptFirstMouse": true,
+        "dragDropEnabled": false,
         "resizable": true,
         "decorations": true,
         "titleBarStyle": "Overlay",

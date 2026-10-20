@@ -240,9 +240,13 @@ export function PromptAssistPanel({ prompt, references, onPromptChange, onClose,
     }
     if (models.length === 0) {
       return (
-        <p className="font-serif text-xs leading-relaxed text-muted-foreground">
-          没有可用的文本模型。先在「中转站」添加中转，或在「账号」页登录账号，再回来润色。
-        </p>
+        <div className="flex items-center gap-2 font-serif text-xs leading-relaxed text-muted-foreground">
+          <span>没有可用的文本模型。先在「中转站」添加中转，或在「账号」页登录账号，再回来润色。</span>
+          <Button type="button" variant="outline" size="xs" className="h-6 shrink-0 gap-1" disabled={state.isFetching}
+            onClick={() => void state.refetch()}>
+            <RotateCw className={cn("h-3 w-3", state.isFetching && "animate-spin motion-reduce:animate-none")} /> 刷新
+          </Button>
+        </div>
       );
     }
     return (
@@ -272,6 +276,18 @@ export function PromptAssistPanel({ prompt, references, onPromptChange, onClose,
               })}
             </SelectContent>
           </Select>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-9 w-9 shrink-0"
+            disabled={running || state.isFetching}
+            title="重新读取中转、账号和聚合里的模型"
+            aria-label="刷新润色模型"
+            onClick={() => void state.refetch()}
+          >
+            <RotateCw className={cn("h-3.5 w-3.5", state.isFetching && "animate-spin motion-reduce:animate-none")} />
+          </Button>
           <Input
             value={request}
             maxLength={MAX_REQUEST_CHARS}
