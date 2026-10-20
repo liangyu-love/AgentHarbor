@@ -1,12 +1,26 @@
 import { useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type PromptGroup, type PromptLibrary, type PromptTemplate } from "@/lib/api";
+import { api, type PromptGroup, type PromptLibrary, type PromptLibraryKind, type PromptTemplate } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 
-const LIBRARY_KEY = queryKeys.imagePromptLibrary;
+/** What each book of the 画谱 is called, and where it is kept in the query cache. */
+export const LIBRARY_BOOKS = {
+  prompts: {
+    key: queryKeys.imagePromptLibrary, name: "画谱", item: "模版", unit: "个", group: "分组",
+    note: "备注", content: "提示词", file: "agentharbor-prompts.json",
+    notePlaceholder: "用途、适合的模型、要避开的坑…",
+    contentPlaceholder: "描述画面主体、构图、光线和风格…",
+  },
+  materials: {
+    key: queryKeys.imagePromptMaterials, name: "素材", item: "素材", unit: "条", group: "分类",
+    note: "简介", content: "内容", file: "agentharbor-materials.json",
+    notePlaceholder: "适合什么画面，AI 挑选时会参考",
+    contentPlaceholder: "写进提示词的描述片段，如：藏青色水手服上衣，白色水手领，深色百褶短裙",
+  },
+} as const;
 
 /** Mirrors the limits `image_prompts.rs` enforces. */
 export const PROMPT_LIMITS = {
@@ -49,15 +63,20 @@ const cleanDraft = (draft: TemplateDraft): TemplateDraft => {
   return { prompt, note: draft.note.trim(), title: draft.title.trim() || titleFromPrompt(prompt) };
 };
 
-// Saves run one after another so an older write never lands after a newer one.
-let saveChain: Promise<unknown> = Promise.resolve();
+// Each book's saves run one after another so an older write never lands after a newer one.
+const saveChains: Record<PromptLibraryKind, Promise<unknown>> = {
+  prompts: Promise.resolve(),
+  materials: Promise.resolve(),
+};
 
-/** The user's prompt groups and templates, saved to the app data folder on every change. */
-export function usePromptLibrary() {
+/** The user's prompt groups and templates (or material categories and materials), saved to the app data folder on every change. */
+export function usePromptLibrary(kind: PromptLibraryKind = "prompts") {
   const queryClient = useQueryClient();
+  const book = LIBRARY_BOOKS[kind];
+  const libraryKey = book.key;
   const query = useQuery({
-    queryKey: LIBRARY_KEY,
-    queryFn: () => api.image.loadPromptLibrary(),
+    queryKey: libraryKey,
+    queryFn: () => api.image.loadPromptLibrary(kind),
     enabled: isTauriRuntime(),
     // The UI holds the newest state; a background refetch would undo unsaved edits.
     staleTime: Infinity,
@@ -70,26 +89,26 @@ export function usePromptLibrary() {
 
   /** Apply a change now and persist it; resolves false when nothing was saved. */
   const commit = useCallback((change: (groups: PromptGroup[]) => PromptGroup[]) => {
-    const current = queryClient.getQueryData<PromptLibrary>(LIBRARY_KEY);
+    const current = queryClient.getQueryData<PromptLibrary>(libraryKey);
     // Never write over a library that failed to load.
     if (!current) return Promise.resolve(false);
     const next: PromptLibrary = { groups: change(current.groups) };
-    queryClient.setQueryData(LIBRARY_KEY, next);
-    const save = saveChain.then(() => api.image.savePromptLibrary(next));
-    saveChain = save.catch(() => undefined);
+    queryClient.setQueryData(libraryKey, next);
+    const save = saveChains[kind].then(() => api.image.savePromptLibrary(next, kind));
+    saveChains[kind] = save.catch(() => undefined);
     return save.then(
       saved => {
         // A newer change is already showing and its own save will follow.
-        if (queryClient.getQueryData(LIBRARY_KEY) === next) queryClient.setQueryData(LIBRARY_KEY, saved);
+        if (queryClient.getQueryData(libraryKey) === next) queryClient.setQueryData(libraryKey, saved);
         return true;
       },
       cause => {
-        toast({ title: "画谱保存失败", description: formatInvokeError(cause), variant: "destructive" });
-        void queryClient.invalidateQueries({ queryKey: LIBRARY_KEY });
+        toast({ title: `${book.name}保存失败`, description: formatInvokeError(cause), variant: "destructive" });
+        void queryClient.invalidateQueries({ queryKey: libraryKey });
         return false;
       },
     );
-  }, [queryClient]);
+  }, [queryClient, kind]);
 
   const addGroup = useCallback(async (name: string) => {
     const id = crypto.randomUUID();
@@ -165,33 +184,35 @@ export function usePromptLibrary() {
       const path = await open({ multiple: false, directory: false, filters: [{ name: "JSON", extensions: ["json"] }] });
       if (typeof path !== "string") return;
       // Earlier edits must be on disk before the import merges into the file.
-      await saveChain;
-      const result = await api.image.importPromptLibrary(path);
-      queryClient.setQueryData(LIBRARY_KEY, result.library);
+      await saveChains[kind];
+      const result = await api.image.importPromptLibrary(path, kind);
+      queryClient.setQueryData(libraryKey, result.library);
       const extra = [
-        result.groups > 0 && `新增 ${result.groups} 个分组`,
+        result.groups > 0 && `新增 ${result.groups} 个${book.group}`,
         result.skipped > 0 && `跳过 ${result.skipped} 条重复或无效内容`,
       ].filter(Boolean).join(" · ");
-      toast({ title: `已导入 ${result.templates} 个模版`, description: extra || undefined, variant: "success" });
+      toast({ title: `已导入 ${result.templates} ${book.unit}${book.item}`, description: extra || undefined, variant: "success" });
     } catch (cause) {
       toast({ title: "导入失败", description: formatInvokeError(cause), variant: "destructive" });
     }
-  }, [queryClient]);
+  }, [queryClient, kind]);
 
   const exportLibrary = useCallback(async () => {
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({ defaultPath: "agentharbor-prompts.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+      const path = await save({ defaultPath: book.file, filters: [{ name: "JSON", extensions: ["json"] }] });
       if (typeof path !== "string") return;
-      await saveChain;
-      await api.image.exportPromptLibrary(path);
-      toast({ title: "画谱已导出", description: path, variant: "success" });
+      await saveChains[kind];
+      await api.image.exportPromptLibrary(path, kind);
+      toast({ title: `${book.name}已导出`, description: path, variant: "success" });
     } catch (cause) {
       toast({ title: "导出失败", description: formatInvokeError(cause), variant: "destructive" });
     }
-  }, []);
+  }, [kind]);
 
   return {
+    kind,
+    book,
     groups,
     templateCount,
     loading: query.isPending && query.fetchStatus !== "idle",

@@ -1,4 +1,5 @@
-//! The image workbench's prompt library: groups of prompt templates the user keeps.
+//! The image workbench's prompt library: groups of prompt templates the user keeps,
+//! and beside it the materials (outfits, poses, angles) prompt polishing draws on.
 
 use super::image::{paths, MAX_PROMPT_CHARS};
 use crate::core::{repository::Repository, storage};
@@ -8,6 +9,10 @@ use std::{collections::HashSet, path::Path, sync::Mutex};
 use tauri::State;
 
 const LIBRARY_FILE: &str = "image-prompt-library.json";
+const MATERIALS_FILE: &str = "image-prompt-materials.json";
+/// The materials a new install starts with. Their ids are fixed so that what the
+/// polishing panel ticks still matches before the user first saves the materials.
+const MATERIALS_SEED: &str = include_str!("image_materials_seed.json");
 const LIBRARY_VERSION: u32 = 1;
 const MAX_GROUPS: usize = 100;
 const MAX_TEMPLATES: usize = 2000;
@@ -22,6 +27,16 @@ const DERIVED_TITLE_CHARS: usize = 16;
 
 /// Read-modify-write of the library file (saves and imports) happens one at a time.
 static LIBRARY_LOCK: Mutex<()> = Mutex::new(());
+
+/// Which book of the 画谱: whole prompts to fill in, or materials to polish with.
+/// Both share one shape: a material is a template, its category a group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LibraryKind {
+    #[default]
+    Prompts,
+    Materials,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,8 +91,18 @@ enum ImportFile {
     Groups(Vec<PromptGroup>),
 }
 
-fn library_path(paths: &CodexPaths) -> std::path::PathBuf {
-    paths.app_data_dir.join(LIBRARY_FILE)
+fn library_path(paths: &CodexPaths, kind: LibraryKind) -> std::path::PathBuf {
+    paths.app_data_dir.join(match kind {
+        LibraryKind::Prompts => LIBRARY_FILE,
+        LibraryKind::Materials => MATERIALS_FILE,
+    })
+}
+
+fn seed_groups(kind: LibraryKind) -> Vec<PromptGroup> {
+    match kind {
+        LibraryKind::Prompts => Vec::new(),
+        LibraryKind::Materials => serde_json::from_str(MATERIALS_SEED).unwrap_or_default(),
+    }
 }
 
 fn clipped(value: &str, limit: usize) -> String {
@@ -153,10 +178,16 @@ fn sanitize(groups: Vec<PromptGroup>) -> (Vec<PromptGroup>, usize) {
     (clean, skipped)
 }
 
-fn read_library(paths: &CodexPaths) -> Result<PromptLibrary, String> {
-    let bytes = match std::fs::read(library_path(paths)) {
+pub(crate) fn read_library(paths: &CodexPaths, kind: LibraryKind) -> Result<PromptLibrary, String> {
+    let bytes = match std::fs::read(library_path(paths, kind)) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Never saved: the seed, until the first save writes the file.
+            return Ok(PromptLibrary {
+                version: LIBRARY_VERSION,
+                groups: sanitize(seed_groups(kind)).0,
+            });
+        }
         Err(_) => return Err("image.errors.promptLibrary".into()),
     };
     if bytes.is_empty() {
@@ -175,21 +206,29 @@ fn read_library(paths: &CodexPaths) -> Result<PromptLibrary, String> {
     })
 }
 
-fn write_library(paths: &CodexPaths, groups: Vec<PromptGroup>) -> Result<PromptLibrary, String> {
+fn write_library(
+    paths: &CodexPaths,
+    kind: LibraryKind,
+    groups: Vec<PromptGroup>,
+) -> Result<PromptLibrary, String> {
     let library = PromptLibrary {
         version: LIBRARY_VERSION,
         groups,
     };
     let contents =
         serde_json::to_vec_pretty(&library).map_err(|_| "image.errors.promptLibrary".to_owned())?;
-    storage::write_atomic(&library_path(paths), &contents)
+    storage::write_atomic(&library_path(paths, kind), &contents)
         .map_err(|_| "image.errors.promptLibrary".to_owned())?;
     Ok(library)
 }
 
 /// Save the whole library as the UI holds it. Nothing is dropped silently: a
 /// library that does not fit the limits is refused instead of trimmed.
-fn save_library(paths: &CodexPaths, library: PromptLibrary) -> Result<PromptLibrary, String> {
+fn save_library(
+    paths: &CodexPaths,
+    kind: LibraryKind,
+    library: PromptLibrary,
+) -> Result<PromptLibrary, String> {
     let (groups, skipped) = sanitize(library.groups);
     if skipped > 0 {
         return Err("image.errors.promptInvalid".into());
@@ -197,7 +236,7 @@ fn save_library(paths: &CodexPaths, library: PromptLibrary) -> Result<PromptLibr
     let _guard = LIBRARY_LOCK
         .lock()
         .map_err(|_| "image.errors.promptLibrary".to_owned())?;
-    write_library(paths, groups)
+    write_library(paths, kind, groups)
 }
 
 /// Merge imported groups into the library: same-named groups are joined, a
@@ -258,7 +297,11 @@ fn merge(
     (groups, result)
 }
 
-fn import_library(paths: &CodexPaths, source: &Path) -> Result<PromptImportResult, String> {
+fn import_library(
+    paths: &CodexPaths,
+    kind: LibraryKind,
+    source: &Path,
+) -> Result<PromptImportResult, String> {
     let size = std::fs::metadata(source)
         .map_err(|_| "image.errors.promptImport".to_owned())?
         .len();
@@ -277,9 +320,9 @@ fn import_library(paths: &CodexPaths, source: &Path) -> Result<PromptImportResul
     let _guard = LIBRARY_LOCK
         .lock()
         .map_err(|_| "image.errors.promptLibrary".to_owned())?;
-    let current = read_library(paths)?;
+    let current = read_library(paths, kind)?;
     let (groups, mut result) = merge(current.groups, incoming);
-    result.library = write_library(paths, groups)?;
+    result.library = write_library(paths, kind, groups)?;
     Ok(result)
 }
 
@@ -298,9 +341,9 @@ fn export_target(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(target)
 }
 
-fn export_library(paths: &CodexPaths, path: &str) -> Result<(), String> {
+fn export_library(paths: &CodexPaths, kind: LibraryKind, path: &str) -> Result<(), String> {
     let target = export_target(path)?;
-    let library = read_library(paths)?;
+    let library = read_library(paths, kind)?;
     let contents =
         serde_json::to_vec_pretty(&library).map_err(|_| "image.errors.promptExport".to_owned())?;
     storage::write_atomic(&target, &contents).map_err(|_| "image.errors.promptExport".to_owned())
@@ -309,41 +352,48 @@ fn export_library(paths: &CodexPaths, path: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn load_image_prompt_library(
     repo: State<'_, Mutex<Repository>>,
+    kind: Option<LibraryKind>,
 ) -> Result<PromptLibrary, String> {
     let paths = paths(&repo)?;
-    super::blocking(move || read_library(&paths)).await
+    super::blocking(move || read_library(&paths, kind.unwrap_or_default())).await
 }
 
 #[tauri::command]
 pub async fn save_image_prompt_library(
     repo: State<'_, Mutex<Repository>>,
     library: PromptLibrary,
+    kind: Option<LibraryKind>,
 ) -> Result<PromptLibrary, String> {
     let paths = paths(&repo)?;
-    super::blocking(move || save_library(&paths, library)).await
+    super::blocking(move || save_library(&paths, kind.unwrap_or_default(), library)).await
 }
 
 #[tauri::command]
 pub async fn import_image_prompt_library(
     repo: State<'_, Mutex<Repository>>,
     path: String,
+    kind: Option<LibraryKind>,
 ) -> Result<PromptImportResult, String> {
     let paths = paths(&repo)?;
-    super::blocking(move || import_library(&paths, Path::new(&path))).await
+    let kind = kind.unwrap_or_default();
+    super::blocking(move || import_library(&paths, kind, Path::new(&path))).await
 }
 
 #[tauri::command]
 pub async fn export_image_prompt_library(
     repo: State<'_, Mutex<Repository>>,
     path: String,
+    kind: Option<LibraryKind>,
 ) -> Result<(), String> {
     let paths = paths(&repo)?;
-    super::blocking(move || export_library(&paths, &path)).await
+    super::blocking(move || export_library(&paths, kind.unwrap_or_default(), &path)).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const P: LibraryKind = LibraryKind::Prompts;
 
     fn template(id: &str, title: &str, prompt: &str, pinned: bool) -> PromptTemplate {
         PromptTemplate {
@@ -372,7 +422,7 @@ mod tests {
     #[test]
     fn a_missing_library_reads_as_empty_and_saves_round_trip() {
         let (_dir, paths) = temp_paths();
-        assert!(read_library(&paths).unwrap().groups.is_empty());
+        assert!(read_library(&paths, P).unwrap().groups.is_empty());
 
         let library = PromptLibrary {
             version: 0,
@@ -382,11 +432,37 @@ mod tests {
                 vec![template("t1", "侧光", "  窗边侧光人像  ", false)],
             )],
         };
-        let saved = save_library(&paths, library).unwrap();
+        let saved = save_library(&paths, P, library).unwrap();
         assert_eq!(saved.version, LIBRARY_VERSION);
         assert_eq!(saved.groups[0].name, "人像");
         assert_eq!(saved.groups[0].templates[0].prompt, "窗边侧光人像");
-        assert_eq!(read_library(&paths).unwrap(), saved);
+        assert_eq!(read_library(&paths, P).unwrap(), saved);
+    }
+
+    #[test]
+    fn materials_start_from_the_seed_and_keep_their_own_file() {
+        let (_dir, paths) = temp_paths();
+        let seeded: Vec<PromptGroup> = serde_json::from_str(MATERIALS_SEED).unwrap();
+        let (clean, skipped) = sanitize(seeded.clone());
+        assert_eq!(skipped, 0);
+        assert_eq!(clean, seeded, "the seed is already clean, so its ids hold");
+        let first = read_library(&paths, LibraryKind::Materials).unwrap();
+        let names: Vec<_> = first
+            .groups
+            .iter()
+            .map(|group| group.name.as_str())
+            .collect();
+        assert_eq!(names[..3], ["服装", "动作", "视角"]);
+        assert_eq!(read_library(&paths, LibraryKind::Materials).unwrap(), first);
+        assert!(read_library(&paths, P).unwrap().groups.is_empty());
+
+        // Emptied by the user, the materials stay empty.
+        save_library(&paths, LibraryKind::Materials, PromptLibrary::default()).unwrap();
+        assert!(read_library(&paths, LibraryKind::Materials)
+            .unwrap()
+            .groups
+            .is_empty());
+        assert!(!library_path(&paths, P).exists());
     }
 
     #[test]
@@ -424,10 +500,10 @@ mod tests {
             .map(|index| group(&format!("g{index}"), "组", Vec::new()))
             .collect();
         assert_eq!(
-            save_library(&paths, PromptLibrary { version: 1, groups }).unwrap_err(),
+            save_library(&paths, P, PromptLibrary { version: 1, groups }).unwrap_err(),
             "image.errors.promptInvalid"
         );
-        assert!(!library_path(&paths).exists());
+        assert!(!library_path(&paths, P).exists());
     }
 
     #[test]
@@ -435,6 +511,7 @@ mod tests {
         let (dir, paths) = temp_paths();
         save_library(
             &paths,
+            P,
             PromptLibrary {
                 version: 1,
                 groups: vec![group(
@@ -459,18 +536,18 @@ mod tests {
         )
         .unwrap();
 
-        let result = import_library(&paths, &source).unwrap();
+        let result = import_library(&paths, P, &source).unwrap();
         assert_eq!((result.groups, result.templates, result.skipped), (1, 2, 1));
         let posters = &result.library.groups[0];
         assert_eq!(posters.id, "g1");
         assert_eq!(posters.templates[0].title, "极简");
         assert_eq!(posters.templates[1].id, "t1");
         assert_eq!(result.library.groups[1].templates[0].title, "胶片人像");
-        assert_eq!(read_library(&paths).unwrap(), result.library);
+        assert_eq!(read_library(&paths, P).unwrap(), result.library);
 
         std::fs::write(&source, b"not json").unwrap();
         assert_eq!(
-            import_library(&paths, &source).unwrap_err(),
+            import_library(&paths, P, &source).unwrap_err(),
             "image.errors.promptImport"
         );
     }
@@ -480,6 +557,7 @@ mod tests {
         let (dir, paths) = temp_paths();
         save_library(
             &paths,
+            P,
             PromptLibrary {
                 version: 1,
                 groups: vec![group("g1", "海报", Vec::new())],
@@ -487,7 +565,7 @@ mod tests {
         )
         .unwrap();
         let target = dir.path().join("out.json");
-        export_library(&paths, target.to_str().unwrap()).unwrap();
+        export_library(&paths, P, target.to_str().unwrap()).unwrap();
         let exported: PromptLibrary =
             serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
         assert_eq!(exported.groups[0].name, "海报");
@@ -498,7 +576,7 @@ mod tests {
             dir.path().join("out.txt").to_str().unwrap(),
         ] {
             assert_eq!(
-                export_library(&paths, bad).unwrap_err(),
+                export_library(&paths, P, bad).unwrap_err(),
                 "image.errors.promptExport"
             );
         }

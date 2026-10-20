@@ -262,6 +262,9 @@ export interface PromptLibrary {
   groups: PromptGroup[];
 }
 
+/** The 画谱's two books: whole prompts, and the materials (outfits, poses, angles) polishing draws on. */
+export type PromptLibraryKind = "prompts" | "materials";
+
 export interface PromptAssistModel {
   /** The gateway id the router resolves, `<short name>/<model>` or an aggregate. */
   id: string;
@@ -276,6 +279,8 @@ export interface PromptAssistSettings {
   instruction: string;
   /** The user unticked sending the image-to-image reference along. */
   skipReference: boolean;
+  /** Material categories the user ticked to go along to polishing. */
+  materials: string[];
 }
 
 export interface PromptAssistState {
@@ -309,18 +314,20 @@ const imageApi = {
   /** A downscaled copy no wider or taller than `edge` (640 when omitted). */
   loadGalleryThumbnail: (path: string, edge?: number) => invoke<string>("load_gallery_thumbnail", { path, edge }),
   deleteGalleryImage: (path: string) => invoke<void>("delete_gallery_image", { path }),
-  loadPromptLibrary: () => invoke<PromptLibrary>("load_image_prompt_library"),
-  savePromptLibrary: (library: PromptLibrary) =>
-    invoke<PromptLibrary>("save_image_prompt_library", { library }),
-  importPromptLibrary: (path: string) =>
-    invoke<PromptImportResult>("import_image_prompt_library", { path }),
-  exportPromptLibrary: (path: string) => invoke<void>("export_image_prompt_library", { path }),
+  loadPromptLibrary: (kind: PromptLibraryKind = "prompts") =>
+    invoke<PromptLibrary>("load_image_prompt_library", { kind }),
+  savePromptLibrary: (library: PromptLibrary, kind: PromptLibraryKind = "prompts") =>
+    invoke<PromptLibrary>("save_image_prompt_library", { library, kind }),
+  importPromptLibrary: (path: string, kind: PromptLibraryKind = "prompts") =>
+    invoke<PromptImportResult>("import_image_prompt_library", { path, kind }),
+  exportPromptLibrary: (path: string, kind: PromptLibraryKind = "prompts") =>
+    invoke<void>("export_image_prompt_library", { path, kind }),
   loadPromptAssist: () => invoke<PromptAssistState>("load_prompt_assist"),
   savePromptAssistSettings: (settings: PromptAssistSettings) =>
     invoke<PromptAssistSettings>("save_prompt_assist_settings", { settings }),
-  /** `reference` is a data URL the model sees beside the prompt. */
-  optimizePrompt: (model: string, prompt: string, request: string, reference?: string | null) =>
-    invoke<string>("optimize_image_prompt", { model, prompt, request, reference: reference ?? null }),
+  /** `materials` are the ticked material category ids; `reference` is a data URL the model sees beside the prompt. */
+  optimizePrompt: (model: string, prompt: string, request: string, materials: string[], reference?: string | null) =>
+    invoke<string>("optimize_image_prompt", { model, prompt, request, materials, reference: reference ?? null }),
 };
 
 const targetsApi = {

@@ -1700,6 +1700,7 @@
       "assistModel": "Choose a model to polish with.",
       "assistRequest": "The extra requirement can be 500 characters at most.",
       "assistReference": "The reference image cannot be sent to the polishing model. Use a PNG, JPG or WebP image, or untick sending the reference.",
+      "assistMaterials": "Too many materials are ticked. Untick a few categories and polish again.",
       "assistRouter": "The local router is not running, so the polishing model cannot be reached.",
       "assistEmpty": "The model returned nothing. Try again or choose another model."
     },

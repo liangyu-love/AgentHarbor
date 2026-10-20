@@ -100,4 +100,28 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await eventually(async () => assert.equal((await requests(page)).length, 5));
   assert.equal(await page.evaluate(() => window.review.assistRequests[4].reference), null);
   console.log("PASS AI polish sends a shrunk reference by default and remembers when it is left out");
+
+  // Material categories go along only once ticked, and the ticks are remembered.
+  const materials = panel.locator("[data-prompt-assist-materials]");
+  const outfits = materials.getByRole("checkbox", { name: "参考素材：服装" });
+  await outfits.waitFor();
+  assert.equal(await materials.getByRole("checkbox").count(), 2, "an empty category is not offered");
+  assert.deepEqual(await page.evaluate(() => window.review.assistRequests[4].materials), [], "nothing goes along unticked");
+  await answer(page, 4, "保留橘猫，背景换成霓虹雨夜");
+  await materials.getByRole("checkbox", { name: "参考素材：动作" }).click();
+  await outfits.click();
+  await page.waitForFunction(() => window.review.promptAssist.settings.materials.length === 2);
+  await materials.getByText(/约 \d+ 字/).waitFor();
+  await panel.getByRole("button", { name: "重新润色", exact: true }).click();
+  await eventually(async () => assert.equal((await requests(page)).length, 6));
+  assert.deepEqual(await page.evaluate(() => window.review.assistRequests[5].materials), ["m-outfit", "m-pose"], "in library order");
+  await answer(page, 5, "雨夜里回眸的少女，水手服");
+  await panel.getByText("参考了服装、动作素材", { exact: false }).waitFor();
+  if (captureDir) await panel.screenshot({ path: path.join(captureDir, "image-assist-materials.png"), animations: "disabled" });
+  await outfits.click();
+  await page.waitForFunction(() => JSON.stringify(window.review.promptAssist.settings.materials) === '["m-pose"]');
+  await panel.getByRole("button", { name: "重新润色", exact: true }).click();
+  await eventually(async () => assert.equal((await requests(page)).length, 7));
+  assert.deepEqual(await page.evaluate(() => window.review.assistRequests[6].materials), ["m-pose"]);
+  console.log("PASS AI polish sends only the ticked material categories and remembers them");
 }

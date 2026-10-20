@@ -169,4 +169,28 @@ export async function testImagePrompts({ page, reset, captureDir }) {
     assert.deepEqual(groups[1].templates.map(template => template.title), ["雪山晨光，航拍"]);
   });
   console.log("PASS the dialog creates a group for a new template and refuses a taken name");
+
+  // The materials book sits beside the templates; a material joins the end of the prompt.
+  await reset("image");
+  await mainPrompt.fill("雨夜少女");
+  await panel.getByRole("tab", { name: "素材" }).click();
+  await card("JK 制服").getByRole("button", { name: "追加到提示词" }).click();
+  assert.equal(await mainPrompt.inputValue(), "雨夜少女，水手服，百褶裙");
+  await card("JK 制服").getByRole("button", { name: "已在提示词中" }).waitFor();
+  await capture("materials", panel);
+  await tab("视角").click();
+  await panel.getByText("这个分类还没有素材", { exact: false }).waitFor();
+  await panel.getByRole("button", { name: "新建素材" }).click();
+  const materialDialog = page.getByRole("dialog", { name: "新建素材" });
+  await materialDialog.getByRole("textbox", { name: "内容" }).fill("低机位仰拍，天空作背景");
+  await materialDialog.getByRole("button", { name: "保存素材" }).click();
+  await materialDialog.waitFor({ state: "detached" });
+  await eventually(async () => assert.deepEqual(
+    await page.evaluate(() => window.review.promptMaterials.groups[2].templates.map(template => template.prompt)),
+    ["低机位仰拍，天空作背景"],
+  ));
+  assert.equal(await page.evaluate(() => window.review.promptSaves), 0, "the templates were not touched");
+  await panel.getByRole("tab", { name: "提示词灵感" }).click();
+  await panel.getByText("画谱还是空白的", { exact: false }).waitFor();
+  console.log("PASS the materials book keeps its own categories and appends a material to the prompt");
 }

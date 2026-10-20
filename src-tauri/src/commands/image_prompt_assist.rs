@@ -2,6 +2,7 @@
 //! router to any text model a relay, account or aggregate offers.
 
 use super::image::{paths, MAX_PROMPT_CHARS};
+use super::image_prompts::{read_library, LibraryKind, PromptGroup};
 use crate::core::{
     gateway, models_dev, repository::Repository, router, router_proxy, routing_runtime, storage,
 };
@@ -15,6 +16,10 @@ const SETTINGS_FILE: &str = "image-prompt-assist.json";
 const MAX_INSTRUCTION_CHARS: usize = 8_000;
 const MAX_REQUEST_CHARS: usize = 500;
 const MAX_MODEL_ID_CHARS: usize = 300;
+/// Material categories sent along; past this the user is asked to tick fewer.
+const MAX_MATERIAL_CHARS: usize = 24_000;
+const MAX_MATERIAL_IDS: usize = 100;
+const MAX_MATERIAL_ID_CHARS: usize = 64;
 const MAX_OUTPUT_TOKENS: u64 = 4096;
 /// The workbench sends a downscaled copy; this only stops something far larger.
 const MAX_REFERENCE_CHARS: usize = 8 * 1024 * 1024;
@@ -31,8 +36,9 @@ pub const DEFAULT_INSTRUCTION: &str = "你是 GPT Image 生图提示词优化助
 - 使用与用户输入相同的语言，写成连贯的描述，不要列表、标题或解释。
 - 只输出优化后的提示词本身。";
 
-/// What the user chose: the model last used, their own instruction ("" for the default)
-/// and whether the reference image is left out of polishing.
+/// What the user chose: the model last used, their own instruction ("" for the default),
+/// whether the reference image is left out of polishing, and the material categories
+/// ticked to go along (none until the user ticks one: materials cost tokens).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistSettings {
@@ -42,6 +48,8 @@ pub struct AssistSettings {
     pub instruction: String,
     #[serde(default)]
     pub skip_reference: bool,
+    #[serde(default)]
+    pub materials: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,9 +85,11 @@ fn write_settings(paths: &CodexPaths, settings: AssistSettings) -> Result<Assist
         model: settings.model.trim().to_owned(),
         instruction: settings.instruction.trim().to_owned(),
         skip_reference: settings.skip_reference,
+        materials: settings.materials,
     };
     if settings.model.chars().count() > MAX_MODEL_ID_CHARS
         || settings.instruction.chars().count() > MAX_INSTRUCTION_CHARS
+        || !material_ids_fit(&settings.materials)
     {
         return Err("image.errors.assistSettings".into());
     }
@@ -88,6 +98,36 @@ fn write_settings(paths: &CodexPaths, settings: AssistSettings) -> Result<Assist
     storage::write_atomic(&settings_path(paths), &contents)
         .map_err(|_| "image.errors.assistSettings".to_owned())?;
     Ok(settings)
+}
+
+fn material_ids_fit(ids: &[String]) -> bool {
+    ids.len() <= MAX_MATERIAL_IDS
+        && ids
+            .iter()
+            .all(|id| id.chars().count() <= MAX_MATERIAL_ID_CHARS)
+}
+
+/// The ticked material categories, in the library's order, as the model reads them;
+/// "" when none is ticked or the ticked ones are empty.
+fn materials_text(groups: &[PromptGroup], ids: &[String]) -> Result<String, String> {
+    let mut text = String::new();
+    for group in groups.iter().filter(|group| ids.contains(&group.id)) {
+        if group.templates.is_empty() {
+            continue;
+        }
+        text.push_str(&format!("## {}\n", group.name));
+        for item in &group.templates {
+            let content = item.prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+            match item.note.as_str() {
+                "" => text.push_str(&format!("- {}：{content}\n", item.title)),
+                note => text.push_str(&format!("- {}（{note}）：{content}\n", item.title)),
+            }
+        }
+    }
+    if text.chars().count() > MAX_MATERIAL_CHARS {
+        return Err("image.errors.assistMaterials".into());
+    }
+    Ok(text)
 }
 
 fn is_image_model(model_id: &str) -> bool {
@@ -121,9 +161,10 @@ fn load_state(paths: &CodexPaths) -> Result<AssistState, String> {
     })
 }
 
-/// The user turn's text: the prompt to rewrite, and the one-off requirement if any.
-/// With a reference image the prompt becomes an edit of it, as image-to-image expects.
-fn user_message(prompt: &str, request: &str, with_reference: bool) -> String {
+/// The user turn's text: the prompt to rewrite, the materials to draw on, and the
+/// one-off requirement if any. With a reference image the prompt becomes an edit
+/// of it, as image-to-image expects.
+fn user_message(prompt: &str, request: &str, materials: &str, with_reference: bool) -> String {
     let lead = if with_reference {
         "附图是这次图生图的底本。请对照底本优化下面的生图提示词，写成改图指令：\
          说明要保留底本的哪些部分（如主体、构图、画风），以及要改成什么样；\
@@ -132,6 +173,15 @@ fn user_message(prompt: &str, request: &str, with_reference: bool) -> String {
         "请优化下面的生图提示词："
     };
     let mut message = format!("{lead}\n<prompt>\n{}\n</prompt>", prompt.trim());
+    if !materials.is_empty() {
+        message.push_str(&format!(
+            "\n下面是用户的素材库（服装、动作、视角等），按分类列出。\
+             根据画面需要从中选用：每个分类最多取一两条，条目列出多个单品时只取需要的，自然地写进提示词；\
+             提示词已经写明的不要替换，与画面不搭的分类就不用，不要堆砌，也不要提到素材库。\
+             写服装时按外套、上衣、下装、袜子、鞋、配饰的顺序，一套穿搭的亮点不超过三个，配色保持统一。\
+             \n<materials>\n{materials}</materials>"
+        ));
+    }
     if !request.trim().is_empty() {
         message.push_str(&format!("\n这次的额外要求：{}", request.trim()));
     }
@@ -156,13 +206,18 @@ fn reference_block(data_url: &str) -> Result<Value, String> {
 }
 
 /// The user turn: the text alone, or the reference image before it.
-fn user_content(prompt: &str, request: &str, reference: Option<&str>) -> Result<Value, String> {
+fn user_content(
+    prompt: &str,
+    request: &str,
+    materials: &str,
+    reference: Option<&str>,
+) -> Result<Value, String> {
     let Some(reference) = reference else {
-        return Ok(json!(user_message(prompt, request, false)));
+        return Ok(json!(user_message(prompt, request, materials, false)));
     };
     Ok(json!([
         reference_block(reference)?,
-        { "type": "text", "text": user_message(prompt, request, true) },
+        { "type": "text", "text": user_message(prompt, request, materials, true) },
     ]))
 }
 
@@ -203,10 +258,23 @@ async fn polish(
     model: String,
     prompt: String,
     request: String,
+    materials: Vec<String>,
     reference: Option<String>,
 ) -> Result<String, String> {
     check_input(&model, &prompt, &request)?;
-    let content = user_content(&prompt, &request, reference.as_deref())?;
+    if !material_ids_fit(&materials) {
+        return Err("image.errors.assistMaterials".into());
+    }
+    let materials = match materials.is_empty() {
+        true => String::new(),
+        false => {
+            let paths = paths.clone();
+            let library =
+                super::blocking(move || read_library(&paths, LibraryKind::Materials)).await?;
+            materials_text(&library.groups, &materials)?
+        }
+    };
+    let content = user_content(&prompt, &request, &materials, reference.as_deref())?;
     {
         let _guard = routing_runtime::mutation_guard().await;
         routing_runtime::ensure_available(&paths).await?;
@@ -286,10 +354,19 @@ pub async fn optimize_image_prompt(
     model: String,
     prompt: String,
     request: String,
+    materials: Option<Vec<String>>,
     reference: Option<String>,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
-    polish(paths, model, prompt, request, reference).await
+    polish(
+        paths,
+        model,
+        prompt,
+        request,
+        materials.unwrap_or_default(),
+        reference,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -307,6 +384,7 @@ mod tests {
                 model: " relay/glm-5 ".into(),
                 instruction: "  只输出英文  ".into(),
                 skip_reference: true,
+                materials: vec!["seed-pose".into()],
             },
         )
         .unwrap();
@@ -316,6 +394,7 @@ mod tests {
                 model: "relay/glm-5".into(),
                 instruction: "只输出英文".into(),
                 skip_reference: true,
+                materials: vec!["seed-pose".into()],
             }
         );
         assert_eq!(read_settings(&paths), saved);
@@ -341,21 +420,87 @@ mod tests {
     #[test]
     fn the_user_turn_carries_the_prompt_and_a_one_off_requirement() {
         assert_eq!(
-            user_message("  雨夜橘猫 ", "", false),
+            user_message("  雨夜橘猫 ", "", "", false),
             "请优化下面的生图提示词：\n<prompt>\n雨夜橘猫\n</prompt>"
         );
-        assert!(
-            user_message("雨夜橘猫", " 赛博朋克 ", false).ends_with("\n这次的额外要求：赛博朋克")
+        assert!(user_message("雨夜橘猫", " 赛博朋克 ", "", false)
+            .ends_with("\n这次的额外要求：赛博朋克"));
+    }
+
+    #[test]
+    fn every_seeded_material_fits_one_polish() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let seeded = read_library(&paths, LibraryKind::Materials).unwrap().groups;
+        let all: Vec<String> = seeded.iter().map(|group| group.id.clone()).collect();
+        assert!(material_ids_fit(&all));
+        let text = materials_text(&seeded, &all).unwrap();
+        assert!(text.starts_with("## 服装\n- "), "{}", &text[..40]);
+    }
+
+    #[test]
+    fn ticked_materials_go_along_in_library_order() {
+        use super::super::image_prompts::PromptTemplate;
+        let item = |title: &str, note: &str, prompt: &str| PromptTemplate {
+            id: title.into(),
+            title: title.into(),
+            note: note.into(),
+            prompt: prompt.into(),
+            pinned: false,
+        };
+        let groups = vec![
+            PromptGroup {
+                id: "outfit".into(),
+                name: "服装".into(),
+                templates: vec![item("JK 制服", "日系校园", "水手服，\n百褶裙")],
+            },
+            PromptGroup {
+                id: "pose".into(),
+                name: "动作".into(),
+                templates: vec![item("回眸", "", "回头望向镜头")],
+            },
+            PromptGroup {
+                id: "empty".into(),
+                name: "视角".into(),
+                templates: Vec::new(),
+            },
+        ];
+        let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            materials_text(&groups, &ids(&["pose", "empty", "outfit"])).unwrap(),
+            "## 服装\n- JK 制服（日系校园）：水手服， 百褶裙\n## 动作\n- 回眸：回头望向镜头\n"
         );
+        assert_eq!(
+            materials_text(&groups, &ids(&["empty", "gone"])).unwrap(),
+            ""
+        );
+        let long = vec![PromptGroup {
+            id: "long".into(),
+            name: "长".into(),
+            templates: vec![item("长", "", &"长".repeat(MAX_MATERIAL_CHARS))],
+        }];
+        assert_eq!(
+            materials_text(&long, &ids(&["long"])).unwrap_err(),
+            "image.errors.assistMaterials"
+        );
+
+        let text = user_message("雨夜少女", "赛博朋克", "## 动作\n- 回眸：回头\n", false);
+        let materials = text
+            .find("<materials>\n## 动作\n- 回眸：回头\n</materials>")
+            .unwrap();
+        assert!(text.find("</prompt>").unwrap() < materials);
+        assert!(text.ends_with("\n这次的额外要求：赛博朋克"), "{text}");
+        assert!(!user_message("猫", "", "", false).contains("<materials>"));
     }
 
     #[test]
     fn a_reference_goes_before_the_text_and_asks_for_an_edit() {
         assert_eq!(
-            user_content("猫", "", None).unwrap(),
-            json!(user_message("猫", "", false))
+            user_content("猫", "", "", None).unwrap(),
+            json!(user_message("猫", "", "", false))
         );
-        let content = user_content("把猫换成狗", "", Some("data:image/jpeg;base64,/9j/")).unwrap();
+        let content =
+            user_content("把猫换成狗", "", "", Some("data:image/jpeg;base64,/9j/")).unwrap();
         assert_eq!(
             content[0],
             json!({ "type": "image", "source": {
@@ -370,7 +515,7 @@ mod tests {
             "data:image/png;base64,",
         ] {
             assert_eq!(
-                user_content("猫", "", Some(bad)).unwrap_err(),
+                user_content("猫", "", "", Some(bad)).unwrap_err(),
                 "image.errors.assistReference",
                 "{bad}"
             );

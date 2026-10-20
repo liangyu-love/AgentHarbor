@@ -28,6 +28,7 @@ export const queryKeys = {
   customInstructionTemplates: ["custom-instructions", "templates"],
   imageGallery: ["image-gallery"],
   imagePromptLibrary: ["image-prompt-library"],
+  imagePromptMaterials: ["image-prompt-materials"],
   imagePromptAssist: ["image-prompt-assist"],
   codexThreads: ["threads", "codex"],
   conversations: (source: "codex" | "claudeCode") => ["threads", source],

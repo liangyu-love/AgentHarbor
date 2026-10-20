@@ -788,20 +788,21 @@ api.image.saveToGallery = async (_dataUrls, meta) => {
 api.image.saveFile = async (path, dataUrl) => { (controls.review.imageFileSaves ??= []).push({ path, dataUrl }); };
 api.image.listGallery = async () => ({ directory: "C:/synthetic", items: galleryItems });
 // Like image_prompts.rs, the saved copy is what the next load returns.
-api.image.loadPromptLibrary = async () => structuredClone(controls.review.promptLibrary);
+const promptBook = (kind = "prompts") => (kind === "materials" ? "promptMaterials" : "promptLibrary");
+api.image.loadPromptLibrary = async kind => structuredClone(controls.review[promptBook(kind)]);
 api.image.loadPromptAssist = async () => structuredClone(controls.review.promptAssist);
 api.image.savePromptAssistSettings = async settings => {
   controls.review.promptAssist.settings = { ...settings };
   return { ...settings };
 };
 // Each polish waits until the test answers or fails it.
-api.image.optimizePrompt = (model, prompt, request, reference) => new Promise((resolve, reject) => {
-  controls.review.assistRequests.push({ model, prompt, request, reference: reference ?? null, resolve, reject });
+api.image.optimizePrompt = (model, prompt, request, materials, reference) => new Promise((resolve, reject) => {
+  controls.review.assistRequests.push({ model, prompt, request, materials, reference: reference ?? null, resolve, reject });
 });
-api.image.savePromptLibrary = async library => {
+api.image.savePromptLibrary = async (library, kind) => {
   if (controls.review.failPromptSave) throw "image.errors.promptLibrary";
-  controls.review.promptLibrary = structuredClone(library);
-  controls.review.promptSaves += 1;
+  controls.review[promptBook(kind)] = structuredClone(library);
+  if (promptBook(kind) === "promptLibrary") controls.review.promptSaves += 1;
   return structuredClone(library);
 };
 api.openPath = async path => {
@@ -1375,7 +1376,12 @@ controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
   promptLibrary: { groups: [] }, promptSaves: 0, failPromptSave: false,
-  promptAssist: { settings: { model: "", instruction: "", skipReference: false }, defaultInstruction: "默认润色指令", models: [
+  promptMaterials: { groups: [
+    { id: "m-outfit", name: "服装", templates: [{ id: "m1", title: "JK 制服", note: "日系校园", prompt: "水手服，百褶裙", pinned: false }] },
+    { id: "m-pose", name: "动作", templates: [{ id: "m2", title: "回眸", note: "", prompt: "回头望向镜头", pinned: false }] },
+    { id: "m-angle", name: "视角", templates: [] },
+  ] },
+  promptAssist: { settings: { model: "", instruction: "", skipReference: false, materials: [] }, defaultInstruction: "默认润色指令", models: [
     { id: "relay-a/glm-5", label: "GLM 5", sourceName: "Relay A", kind: "relay" },
     { id: "codex/gpt-5.5", label: "GPT-5.5", sourceName: "Codex", kind: "account" },
     { id: "smart", label: "Smart", sourceName: "Smart", kind: "aggregate" },

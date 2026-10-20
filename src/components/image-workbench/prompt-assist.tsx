@@ -16,6 +16,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { cn } from "@/lib/utils";
 import { SaveAsTemplateButton, charCount, editorKeys } from "./prompt-template-dialog";
+import { usePromptLibrary } from "./use-prompt-library";
 
 const ASSIST_KEY = queryKeys.imagePromptAssist;
 const KINDS: { kind: PromptAssistModel["kind"]; label: string }[] = [
@@ -86,7 +87,7 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
   const settings = state.data?.settings;
   const [picked, setPicked] = useState("");
   const [request, setRequest] = useState("");
-  const [result, setResult] = useState<{ text: string; from: string; withReference: boolean } | null>(null);
+  const [result, setResult] = useState<{ text: string; from: string; withReference: boolean; materials: string[] } | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adopted, setAdopted] = useState<{ before: string; after: string } | null>(null);
@@ -100,6 +101,13 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
   const chosen = models.find(item => item.id === model);
   // A loaded reference goes along unless the user once unticked it.
   const withReference = Boolean(reference) && !settings?.skipReference;
+  // Material categories with something in them; the ticked ones go along as text the model reads.
+  const materialBook = usePromptLibrary("materials");
+  const categories = materialBook.groups.filter(group => group.templates.length > 0);
+  const tickedIds = settings?.materials ?? [];
+  const ticked = categories.filter(group => tickedIds.includes(group.id));
+  const tickedChars = ticked.reduce((sum, group) => sum + group.templates.reduce(
+    (size, item) => size + charCount(item.title + item.note + item.prompt) + 5, charCount(group.name) + 4), 0);
 
   useEffect(() => () => { attempt.current += 1; }, []);
 
@@ -112,6 +120,13 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
       toast({ title: "润色设置保存失败", description: formatInvokeError(cause), variant: "destructive" });
       return false;
     }
+  };
+
+  /** Tick or untick a category; ids of categories since deleted are dropped on the way. */
+  const toggleCategory = (id: string, on: boolean) => {
+    if (!settings) return;
+    const known = tickedIds.filter(item => item !== id && materialBook.groups.some(group => group.id === item));
+    void saveSettings({ ...settings, materials: on ? [...known, id] : known });
   };
 
   const chooseModel = (id: string) => {
@@ -131,8 +146,10 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
         if (shrunk.current?.src !== reference) shrunk.current = { src: reference, data: await shrinkReference(reference) };
         image = shrunk.current.data;
       }
-      const text = await api.image.optimizePrompt(model, prompt, request.trim(), image);
-      if (id === attempt.current) setResult({ text, from: prompt, withReference: image !== null });
+      const text = await api.image.optimizePrompt(model, prompt, request.trim(), ticked.map(group => group.id), image);
+      if (id === attempt.current) {
+        setResult({ text, from: prompt, withReference: image !== null, materials: ticked.map(group => group.name) });
+      }
     } catch (cause) {
       if (id === attempt.current) setError(formatInvokeError(cause));
     } finally {
@@ -262,10 +279,37 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
           </label>
         )}
 
+        {settings && categories.length > 0 && (
+          <div data-prompt-assist-materials className="flex flex-wrap items-center gap-1.5 font-serif text-xs">
+            <span className="text-muted-foreground" title="勾选的分类会发给模型，由它按画面挑选合适的素材写进提示词；勾得越多，每次润色用的 token 越多。素材在下方画谱的「素材」页管理">
+              参考素材{ticked.length > 0 && <span className="font-sans text-[10px] tabular-nums"> · 约 {tickedChars} 字</span>}
+            </span>
+            {categories.map(group => {
+              const on = tickedIds.includes(group.id);
+              return (
+                <label key={group.id} className={cn(
+                  "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 transition-colors",
+                  on ? "border-[#b83b38]/35 bg-[#b83b38]/[0.05] dark:border-[#d94f4b]/35" : "border-border/60 bg-background/60 text-muted-foreground",
+                )}>
+                  <Checkbox
+                    checked={on}
+                    disabled={running}
+                    aria-label={`参考素材：${group.name}`}
+                    onCheckedChange={next => toggleCategory(group.id, next === true)}
+                    className="h-3.5 w-3.5 border-[#b83b38]/60 data-[state=checked]:border-[#b83b38] data-[state=checked]:bg-[#b83b38] data-[state=checked]:text-white"
+                  />
+                  {group.name}
+                  <span className="font-sans text-[10px] tabular-nums opacity-60">{group.templates.length}</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+
         {running && (
           <p className="flex items-center gap-1.5 font-serif text-xs text-muted-foreground" aria-live="polite">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            正在请求 {chosen?.label ?? model}{withReference && "（附带底本）"}，推理模型可能要多等一会儿…
+            正在请求 {chosen?.label ?? model}{withReference && "（附带底本）"}{ticked.length > 0 && `，参考${ticked.map(group => group.name).join("、")}素材`}，推理模型可能要多等一会儿…
           </p>
         )}
         {error && !running && (
@@ -299,6 +343,9 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose }
               <span className="font-serif text-[11px] font-semibold text-foreground/90">
                 润色后（可以先改再采用）
                 {result.withReference && <span className="font-normal text-muted-foreground"> · 已对照底本</span>}
+                {result.materials.length > 0 && (
+                  <span className="font-normal text-muted-foreground"> · 参考了{result.materials.join("、")}素材</span>
+                )}
               </span>
               <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{charCount(result.text)} 字</span>
             </div>
