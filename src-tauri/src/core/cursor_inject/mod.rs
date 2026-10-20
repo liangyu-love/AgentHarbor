@@ -187,9 +187,9 @@ fn configure_host(paths: &CodexPaths, settings: &CursorSettings, host: &Host) {
 }
 
 /// How the engine reaches Cursor and the web: through the proxy Cursor used
-/// before, or else AgentHarbor's own network setting.
+/// before while it still answers, or else AgentHarbor's own network setting.
 fn egress(paths: &CodexPaths, settings: &CursorSettings) -> Egress {
-    if let Some(proxy) = settings.ide_lease.as_ref().and_then(ide::Lease::original_proxy) {
+    if let Some(proxy) = settings.ide_lease.as_ref().and_then(ide::Lease::original_proxy).filter(|proxy| proxy_answers(proxy)) {
         return Egress::Proxy(proxy);
     }
     let proxy = newapi::proxy_from_settings(&paths.settings_path);
@@ -201,6 +201,23 @@ fn egress(paths: &CodexPaths, settings: &CursorSettings) -> Egress {
             .next()
             .map_or(Egress::Direct, |url| if url.contains("://") { Egress::Proxy(url) } else { Egress::Proxy(format!("http://{url}")) }),
     }
+}
+
+/// Whether a proxy on this machine still listens. A local proxy Cursor was set
+/// to before is often a tool that has since quit, and every page fetch and
+/// Cursor call through it would fail. Remote proxies are taken as given.
+fn proxy_answers(proxy: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(proxy) else { return true };
+    let Some(port) = url.port_or_known_default() else { return true };
+    let ip = match url.host_str() {
+        Some("localhost") => std::net::IpAddr::from([127, 0, 0, 1]),
+        Some(host) => match host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+            Ok(ip) if ip.is_loopback() => ip,
+            _ => return true,
+        },
+        None => return true,
+    };
+    std::net::TcpStream::connect_timeout(&(ip, port).into(), std::time::Duration::from_millis(300)).is_ok()
 }
 
 /// WebSearch through the model chosen for it in routing, if one is.
@@ -510,6 +527,17 @@ pub fn open_terminal() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_proxy_that_quit_is_not_used() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(proxy_answers(&format!("http://127.0.0.1:{port}")));
+        assert!(proxy_answers(&format!("http://localhost:{port}")));
+        drop(listener);
+        assert!(!proxy_answers(&format!("http://127.0.0.1:{port}")));
+        assert!(proxy_answers("http://proxy.example:8080"), "remote proxies are not probed");
+    }
 
     #[test]
     fn settings_round_trip_and_default_to_everything_off() {

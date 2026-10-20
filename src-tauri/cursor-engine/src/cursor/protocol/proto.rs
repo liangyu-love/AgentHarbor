@@ -64,6 +64,35 @@ pub mod aiserver {
         #[derive(Clone, Copy, PartialEq, ::prost::Message)]
         pub struct IsConnectedResponse {}
 
+        /// `AiService/RunWebSearch`: Cursor's own web search.
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct RunWebSearchRequest {
+            #[prost(string, tag = "1")]
+            pub search_term: String,
+            #[prost(string, optional, tag = "2")]
+            pub explanation: Option<String>,
+            #[prost(string, tag = "3")]
+            pub model_id: String,
+        }
+
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct RunWebSearchResponse {
+            #[prost(string, optional, tag = "1")]
+            pub answer: Option<String>,
+            #[prost(message, repeated, tag = "2")]
+            pub documents: Vec<WebSearchDocument>,
+        }
+
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct WebSearchDocument {
+            #[prost(string, tag = "1")]
+            pub url: String,
+            #[prost(string, tag = "2")]
+            pub title: String,
+            #[prost(string, tag = "3")]
+            pub text: String,
+        }
+
         #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct CustomErrorDetails {
             #[prost(string, tag = "1")]

@@ -9,7 +9,7 @@ use axum::{
 
 use crate::Result;
 
-const CURSOR_UPSTREAM: &str = "https://api2.cursor.sh";
+pub(crate) const CURSOR_UPSTREAM: &str = "https://api2.cursor.sh";
 pub const UPSTREAM_URL_HEADER: &str = "x-server-upstream-url";
 
 #[derive(Clone)]

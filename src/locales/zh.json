@@ -1278,7 +1278,7 @@
     "webSearchSaveFailed": "无法保存搜索服务",
     "webSearchPanel": "联网搜索",
     "webSearchShared": "所有经路由的客户端共用",
-    "webSearchHint": "Codex、经路由的 Claude Code / Claude Desktop 和 Cursor Agent 发起 WebSearch 时，都由这里选的账号执行；未指定时由模型自身的原生搜索处理。",
+    "webSearchHint": "Codex、经路由的 Claude Code / Claude Desktop 发起 WebSearch 时，由这里选的账号执行；未指定时由模型自身的原生搜索处理。Cursor Agent 在 Cursor 已登录时优先用 Cursor 自带的搜索，失败或未登录时再由这里选的账号兜底。",
     "webSearchNone": "还没有能执行联网搜索的中转或账号；添加后可以在这里指定，供所有经路由的客户端使用。",
     "upstreamModel": "上游请求模型 ID",
     "modelCapabilities": "模型能力目录与匹配预览",

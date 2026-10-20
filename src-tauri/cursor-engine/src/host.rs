@@ -81,6 +81,8 @@ struct HostInner {
     read_at: RwLock<Option<std::time::Instant>>,
     settings: RwLock<EngineSettings>,
     searcher: RwLock<Option<Arc<dyn Searcher>>>,
+    /// The signed-in Cursor account's headers, as Cursor last sent them.
+    cursor_session: RwLock<Option<axum::http::HeaderMap>>,
     egress: RwLock<Egress>,
     revision: std::sync::atomic::AtomicU64,
 }
@@ -138,6 +140,17 @@ impl Host {
 
     pub fn set_searcher(&self, searcher: Option<Arc<dyn Searcher>>) {
         *self.inner.searcher.write() = searcher;
+    }
+
+    /// What a call to Cursor on the user's behalf sends: their account's
+    /// token and the client's identifying headers. None before Cursor has
+    /// sent a signed-in request, or when it runs on the local identity.
+    pub(crate) fn cursor_session(&self) -> Option<axum::http::HeaderMap> {
+        self.inner.cursor_session.read().clone()
+    }
+
+    pub(crate) fn remember_cursor_session(&self, headers: axum::http::HeaderMap) {
+        *self.inner.cursor_session.write() = Some(headers);
     }
 
     pub fn egress(&self) -> Egress {

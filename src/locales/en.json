@@ -1278,7 +1278,7 @@
     "webSearchSaveFailed": "Could not save search service",
     "webSearchPanel": "Web search",
     "webSearchShared": "Shared by every routed client",
-    "webSearchHint": "WebSearch from Codex, routed Claude Code / Claude Desktop and the Cursor Agent runs on the account chosen here; without one, the model's own native search handles it.",
+    "webSearchHint": "WebSearch from Codex and routed Claude Code / Claude Desktop runs on the account chosen here; without one, the model's own native search handles it. The Cursor Agent searches with Cursor's own search while Cursor is signed in, and falls back to the account chosen here.",
     "webSearchNone": "No relay or account can run web search yet; add one to choose it here for every routed client.",
     "upstreamModel": "Upstream model ID",
     "modelCapabilities": "Model capabilities and match preview",

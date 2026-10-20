@@ -46,6 +46,22 @@ pub(crate) fn request_uses_local_cursor_token(headers: &axum::http::HeaderMap) -
         .is_some_and(is_local_token)
 }
 
+/// The headers of a signed-in request that a call made on the user's behalf
+/// sends again: the account's token and how the client identifies itself,
+/// not anything tied to this one request.
+pub(crate) fn session_headers(headers: &axum::http::HeaderMap) -> Option<axum::http::HeaderMap> {
+    let token = headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")?;
+    if token.trim().is_empty() || is_local_token(token) {
+        return None;
+    }
+    let kept = headers.iter().filter(|(name, _)| {
+        let name = name.as_str();
+        name == header::AUTHORIZATION || name == header::USER_AGENT || name.starts_with("x-cursor-")
+            || matches!(name, "x-ghost-mode" | "x-session-id" | "x-client-key" | "x-new-onboarding-completed")
+    });
+    Some(kept.map(|(name, value)| (name.clone(), value.clone())).collect())
+}
+
 #[derive(Clone, PartialEq, Message)]
 struct GetEmailResponse {
     #[prost(string, tag = "1")]
@@ -474,6 +490,31 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[test]
+    fn a_session_keeps_the_account_and_client_but_not_the_request() {
+        let mut headers = axum::http::HeaderMap::new();
+        for (name, value) in [
+            ("authorization", "Bearer official"),
+            ("x-cursor-client-version", "3.0.0"),
+            ("x-ghost-mode", "true"),
+            ("user-agent", "connect-es/1.6.1"),
+            ("x-request-id", "one-request"),
+            ("content-type", "application/proto"),
+            ("x-parent-request-id", "parent"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+        let session = session_headers(&headers).unwrap();
+        let mut kept: Vec<_> = session.keys().map(|name| name.as_str()).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["authorization", "user-agent", "x-cursor-client-version", "x-ghost-mode"]);
+
+        headers.insert(header::AUTHORIZATION, format!("Bearer {}", local_token()).parse().unwrap());
+        assert!(session_headers(&headers).is_none(), "the local identity is no account");
+        headers.remove(header::AUTHORIZATION);
+        assert!(session_headers(&headers).is_none());
+    }
 
     #[tokio::test]
     async fn local_account_response_consumes_request_body_before_replying() {

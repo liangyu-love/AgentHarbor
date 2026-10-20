@@ -29,6 +29,7 @@ use crate::{
 /// message and Tab calls are answered here; anything else goes to Cursor as sent.
 pub fn router(registry: TransportRegistry, proxy: CursorProxy) -> Router {
     let web_cache = registry.web_cache().router();
+    let host = registry.host().clone();
     Router::new()
         .route("/agent.v1.AgentService/RunSSE", post(run_sse_handler))
         .route("/aiserver.v1.BidiService/BidiAppend", post(bidi_handler))
@@ -56,8 +57,22 @@ pub fn router(registry: TransportRegistry, proxy: CursorProxy) -> Router {
         .method_not_allowed_fallback(proxy::forward)
         .layer(Extension(proxy))
         .layer(Extension(FreeEntitlementCache::default()))
+        .layer(axum::middleware::from_fn_with_state(host, remember_session))
         .with_state(registry)
         .merge(web_cache)
+}
+
+/// Keeps the signed-in account's headers so tools can call Cursor on the
+/// user's behalf, the way Cursor's own Agent does (WebSearch).
+async fn remember_session(
+    State(host): State<crate::Host>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response<Body> {
+    if let Some(session) = account::session_headers(request.headers()) {
+        host.remember_cursor_session(session);
+    }
+    next.run(request).await
 }
 
 /// `NetworkService/IsConnected` probe. Cursor's always-local extension checks
