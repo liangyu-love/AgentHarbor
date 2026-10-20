@@ -24,7 +24,7 @@ import { SIZES, type GenerationJob, type ReferenceImage } from "./workbench-type
 
 /** The left scroll: connection, parameters, prompt, reference images and the generate button. */
 export function GenerationForm({
-  connection, prompt, setPrompt, count, setCount, references, setReferences, addReferences, removeReference, upload,
+  connection, prompt, setPrompt, count, setCount, references, setReferences, addReferences, removeReference, upload, dropping,
   error, canGenerate, generationJobs, onGenerate,
 }: {
   connection: ImageConnection;
@@ -38,6 +38,8 @@ export function GenerationForm({
   addReferences: (references: Omit<ReferenceImage, "key">[]) => number;
   removeReference: (key: string) => void;
   upload: (files: File[]) => Promise<void>;
+  /** Pictures are being dragged over the workbench. */
+  dropping: boolean;
   error: string | null;
   canGenerate: boolean;
   generationJobs: GenerationJob[];
@@ -233,7 +235,7 @@ export function GenerationForm({
           references={references} onAddReferences={addReferences}
           onRemoveReference={removeReference} />
 
-        <ReferenceStrip references={references} setReferences={setReferences} upload={upload} />
+        <ReferenceStrip references={references} setReferences={setReferences} upload={upload} dropping={dropping} />
 
         {error && (
           <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive font-serif">

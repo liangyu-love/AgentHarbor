@@ -49,10 +49,12 @@ import { errorKey, errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { claudeOneMDefaults, clientDefaults } from "@/lib/client-config";
 import { mergeModelCatalog } from "@/lib/provider-models";
 import { darkScrimFloor } from "@/lib/wallpaper-contrast";
+import { installFileDropGuard } from "@/lib/file-drop-guard";
 
 const realBalanceQuery = api.providers.queryBalance;
 const controls = window as any;
 controls.__TAURI_INTERNALS__ = {};
+installFileDropGuard();
 const root = createRoot(document.getElementById("root")!);
 function ThreadToastProbe() {
   const { toasts } = useToast();

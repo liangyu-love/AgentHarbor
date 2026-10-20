@@ -1,16 +1,9 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { usePointerSort } from "./use-pointer-sort";
 import { MAX_REFERENCES, type ReferenceImage } from "./workbench-types";
-
-const ACCEPTED = ["image/png", "image/jpeg", "image/webp"];
-/** A dropped picture: some apps send it without a type, so its extension also counts. */
-const isPicture = (file: File) => ACCEPTED.includes(file.type) || /\.(png|jpe?g|webp)$/i.test(file.name);
-/** Files from Explorer, QQ, a browser…; a drag inside the page carries none. */
-const carriesFiles = (event: DragEvent) => Array.from(event.dataTransfer.types).includes("Files");
 
 const moved = <T,>(items: T[], from: number, to: number) => {
   const next = [...items];
@@ -20,10 +13,12 @@ const moved = <T,>(items: T[], from: number, to: number) => {
 };
 
 /** The image-to-image references, in the order the prompt names them: 图1, 图2… */
-export function ReferenceStrip({ references, setReferences, upload }: {
+export function ReferenceStrip({ references, setReferences, upload, dropping }: {
   references: ReferenceImage[];
   setReferences: (references: ReferenceImage[]) => void;
   upload: (files: File[]) => Promise<void>;
+  /** Pictures are being dragged over the workbench; they land here. */
+  dropping: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   // A newly added reference glows briefly, so a load from the canvas, gallery or materials is seen.
@@ -39,47 +34,11 @@ export function ReferenceStrip({ references, setReferences, upload }: {
   }, [references.length]);
   const sort = usePointerSort({ onMove: (from, to) => setReferences(moved(references, from, to)) });
   const single = references.length === 1;
-  const full = references.length >= MAX_REFERENCES;
-  // Entering a child fires enter before the parent's leave, so the drag is counted.
-  const [dropping, setDropping] = useState(false);
-  const depth = useRef(0);
-
-  const drop = (event: DragEvent) => {
-    event.preventDefault();
-    depth.current = 0;
-    setDropping(false);
-    const files = Array.from(event.dataTransfer.files);
-    const pictures = files.filter(isPicture);
-    if (pictures.length < files.length) {
-      toast({ title: "只能放入 PNG / JPG / WebP 图片", description: `有 ${files.length - pictures.length} 个文件没有加入`, variant: "destructive" });
-    }
-    void upload(pictures);
-  };
-
   return (
     <div
       data-image-reference
       data-fresh={fresh || undefined}
       data-dropping={dropping || undefined}
-      onDragEnter={event => {
-        if (!carriesFiles(event)) return;
-        event.preventDefault();
-        depth.current += 1;
-        setDropping(true);
-      }}
-      onDragOver={event => {
-        if (!carriesFiles(event)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = full ? "none" : "copy";
-      }}
-      onDragLeave={event => {
-        if (!carriesFiles(event)) return;
-        depth.current = Math.max(0, depth.current - 1);
-        if (depth.current === 0) setDropping(false);
-      }}
-      onDrop={event => {
-        if (carriesFiles(event)) drop(event);
-      }}
       className={cn(
         "relative rounded-xl border bg-background/50 p-3.5 transition-[border-color,background-color,box-shadow] duration-500 motion-reduce:transition-none",
         references.length > 0 ? "border-solid border-border" : "border-dashed border-border/80",
@@ -87,11 +46,6 @@ export function ReferenceStrip({ references, setReferences, upload }: {
         dropping && "border-dashed border-[#b83b38]/70 bg-[#b83b38]/[0.06] duration-150 dark:border-[#d94f4b]/70",
       )}
     >
-      {dropping && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/75 font-serif text-sm text-[#b83b38] dark:text-[#fca5a5]">
-          {full ? `参考图已满 ${MAX_REFERENCES} 张` : "松开即加入参考图"}
-        </div>
-      )}
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="font-serif text-xs font-semibold text-foreground/90">
@@ -105,7 +59,7 @@ export function ReferenceStrip({ references, setReferences, upload }: {
           <p className="font-serif text-[11px] text-muted-foreground">
             {references.length > 1
               ? "按顺序称作图1、图2…，提示词里可以这样指代；拖动排序。"
-              : `PNG / JPG / WebP，单张 ≤ 20 MB，最多 ${MAX_REFERENCES} 张；可直接拖入，成图可点「用作底本」，或从画谱「图片」页选素材。`}
+              : `PNG / JPG / WebP，单张 ≤ 20 MB，最多 ${MAX_REFERENCES} 张；可直接拖入或 Ctrl+V 粘贴，成图可点「用作底本」，或从画谱「图片」页选素材。`}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">

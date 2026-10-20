@@ -7,6 +7,7 @@ import { testImageApi } from "./test-image-api.mjs";
 import { testImagePrompts } from "./test-image-prompts.mjs";
 import { testImageViewer } from "./test-image-viewer.mjs";
 import { testImageAssist } from "./test-image-assist.mjs";
+import { testReferenceIntake } from "./test-reference-intake.mjs";
 import { testOAuthLogin } from "./test-oauth-login.mjs";
 // Run after npm run build. No real Tauri backend, profiles, or external network.
 // Optional: --playwright-module=/path/to/playwright-core or PLAYWRIGHT_MODULE_PATH.
@@ -133,6 +134,8 @@ try {
     await testImageViewer({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "image-assist") {
     await testImageAssist({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "reference-intake") {
+    await testReferenceIntake({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-cli-official") {
     await testClaudeCliOfficial({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "capability-clear") {
@@ -388,6 +391,7 @@ try {
   await testImagePrompts({ page, reset, captureDir });
   await testImageViewer({ page, reset, captureDir });
   await testImageAssist({ page, reset, captureDir });
+  await testReferenceIntake({ page, reset });
 
   await reset("groups");
   await page.getByRole("heading", { name: "relay.invalid" }).waitFor();

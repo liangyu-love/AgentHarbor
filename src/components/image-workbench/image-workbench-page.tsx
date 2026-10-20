@@ -8,6 +8,7 @@ import { GenerationForm } from "./generation-form";
 import { useGenerationQueue } from "./use-generation-queue";
 import { useImageConnection } from "./use-image-connection";
 import { useImageGallery } from "./use-image-gallery";
+import { useReferenceIntake } from "./use-reference-intake";
 import { WorkbenchHeader } from "./workbench-header";
 import { MAX_REFERENCES, fileToDataUrl, type ReferenceImage } from "./workbench-types";
 
@@ -58,6 +59,8 @@ export function ImageWorkbenchPage() {
       setError("image.errors.input");
     }
   };
+
+  const intake = useReferenceIntake({ active: pageActive, full: references.length >= MAX_REFERENCES, upload });
 
   const canGenerate =
     prompt.trim().length > 0 &&
@@ -113,6 +116,13 @@ export function ImageWorkbenchPage() {
 
   return (
     <div className="space-y-6 pb-12">
+      {intake.dropping && (
+        <div data-image-dropzone className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-[2px]">
+          <p className="rounded-xl border border-dashed border-[#b83b38]/70 bg-background/95 px-6 py-4 font-serif text-sm text-[#b83b38] shadow-lg dark:border-[#d94f4b]/70 dark:text-[#fca5a5]">
+            {references.length >= MAX_REFERENCES ? `参考图已满 ${MAX_REFERENCES} 张` : "松开即加入参考图"}
+          </p>
+        </div>
+      )}
       {/* 卷首 */}
       <WorkbenchHeader gallery={gallery} />
 
@@ -129,6 +139,7 @@ export function ImageWorkbenchPage() {
           addReferences={addReferences}
           removeReference={key => setReferences(current => current.filter(item => item.key !== key))}
           upload={upload}
+          dropping={intake.dropping}
           error={error}
           canGenerate={canGenerate}
           generationJobs={queue.generationJobs}
