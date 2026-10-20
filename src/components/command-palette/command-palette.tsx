@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import type { Route } from "@/types/navigation";
-import type { CoreEnvelope, CoreSnapshotPayload, McpLibraryView, SkillListPayload } from "@/types";
+import type { CoreEnvelope, CoreSnapshotPayload, McpLibraryView, SkillLibraryView } from "@/types";
 import { queryKeys } from "@/lib/query-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
 
@@ -81,8 +81,7 @@ export function CommandPalette({
   const mcpServers = queryClient.getQueryData<McpLibraryView>(queryKeys.mcpServers)?.servers ?? [];
 
   // Load Skills
-  const skillsData = queryClient.getQueryData<CoreEnvelope<SkillListPayload>>(queryKeys.installedSkills);
-  const skillsList = skillsData?.data.items ?? [];
+  const skillsList = queryClient.getQueryData<SkillLibraryView>(queryKeys.skillLibrary)?.skills ?? [];
 
   const handleOpenPath = async (path: string, label: string) => {
     if (!path) return;
@@ -314,9 +313,9 @@ export function CommandPalette({
     // 动态添加 Skills 项
     skillsList.forEach((skill) => {
       items.push({
-        id: `skill-${skill.id}`,
+        id: `skill-${skill.name}`,
         title: `Skill: ${skill.title || skill.name}`,
-        subtitle: skill.summary || skill.relativePath,
+        subtitle: skill.description || skill.path,
         icon: Sparkles,
         category: "skills",
         onSelect: () => {

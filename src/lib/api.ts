@@ -20,14 +20,9 @@ import type {
   McpLibraryView,
   McpServerEntry,
   PastedMcpServer,
-  SkillListPayload,
-  SkillSource,
-  InstalledSkillSummary,
-  SkillBackupListPayload,
-  SkillImportPayload,
-  SkillRemovePayload,
-  SkillRestorePayload,
-  SkillDeleteBackupPayload,
+  SkillApp,
+  SkillImport,
+  SkillLibraryView,
   CustomInstructionPreviewPayload,
   CustomInstructionStatePayload,
   CodexAccountListPayload,
@@ -527,28 +522,23 @@ export const api = {
   resyncMcpServers: () => invoke<McpLibraryView>("resync_mcp_servers"),
   parseMcpPaste: (text: string) => invoke<PastedMcpServer[]>("parse_mcp_paste", { text }),
 
-  loadInstalledSkills: (source?: SkillSource) =>
-    invoke<CoreEnvelope<SkillListPayload>>("load_installed_skills", { source }),
+  /** A folder the user picks; null when the dialog is dismissed. */
+  pickFolder: async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({ directory: true, multiple: false });
+    return typeof path === "string" ? path : null;
+  },
 
-  setSkillEnabled: (id: string, enabled: boolean, source?: SkillSource) =>
-    invoke<CoreEnvelope<InstalledSkillSummary>>("set_skill_enabled", { id, enabled, source }),
-  resolveSkillConflict: (id: string, keepEnabled: boolean, source?: SkillSource) =>
-    invoke<CoreEnvelope<InstalledSkillSummary>>("resolve_skill_conflict", { id, keepEnabled, source }),
-
-  loadSkillBackups: (source?: SkillSource) =>
-    invoke<CoreEnvelope<SkillBackupListPayload>>("load_skill_backups", { source }),
-
-  importSkill: (path: string, source?: SkillSource) =>
-    invoke<CoreEnvelope<SkillImportPayload>>("import_skill", { path, source }),
-
-  removeSkill: (id: string, source?: SkillSource) =>
-    invoke<CoreEnvelope<SkillRemovePayload>>("remove_skill", { id, source }),
-
-  restoreSkillBackup: (id: string, source?: SkillSource) =>
-    invoke<CoreEnvelope<SkillRestorePayload>>("restore_skill_backup", { id, source }),
-
-  deleteSkillBackup: (id: string, source?: SkillSource) =>
-    invoke<CoreEnvelope<SkillDeleteBackupPayload>>("delete_skill_backup", { id, source }),
+  /** The Skills library, each agent's switch, and the skills not yet in it. */
+  loadSkillLibrary: () => invoke<SkillLibraryView>("load_skill_library"),
+  /** Turn skills on or off for one agent, or for every installed agent when `app` is null. */
+  setSkills: (names: string[], app: SkillApp | null, on: boolean) =>
+    invoke<SkillLibraryView>("set_skills", { names, app, on }),
+  addSkill: (path: string, apps: SkillApp[]) => invoke<SkillLibraryView>("add_skill", { path, apps }),
+  importSkills: (items: SkillImport[]) => invoke<SkillLibraryView>("import_skills", { items }),
+  uninstallSkill: (name: string) => invoke<SkillLibraryView>("uninstall_skill", { name }),
+  restoreSkill: (id: string) => invoke<SkillLibraryView>("restore_skill", { id }),
+  deleteSkillBackup: (id: string) => invoke<SkillLibraryView>("delete_skill_backup", { id }),
 
   loadCustomInstructionState: (targetId: "codex" | "claudeCode" = "codex") =>
     invoke<CoreEnvelope<CustomInstructionStatePayload>>("load_custom_instruction_state", { targetId }),

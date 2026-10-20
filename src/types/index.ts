@@ -229,28 +229,45 @@ export interface PastedMcpServer {
   spec: McpSpec;
 }
 
-export type SkillSource = "codex" | "claudeCode";
+/** The agents whose skills folders the Skills page links into. */
+export type SkillApp = "codex" | "claudeCode" | "openCode" | "pi" | "cursor" | "harness";
 
-export interface InstalledSkillSummary {
-  id: string;
-  enabled: boolean;
-  conflict?: boolean;
-  conflictDirectoryPath?: string | null;
-  readOnly?: boolean;
+export interface SkillInfo {
+  /** The folder name, which agents load the skill by. */
   name: string;
-  title: string | null;
-  summary: string | null;
-  relativePath: string;
-  directoryPath: string;
-  skillFilePath: string;
-  updatedAt: number | null;
+  /** The front matter's name, else the first heading. */
+  title?: string;
+  description?: string;
+  path: string;
+  updatedAt?: number;
 }
 
-export interface SkillListPayload {
-  items: InstalledSkillSummary[];
-  total: number;
-  rootPath: string;
-  lastScanAt: number;
+export type SkillCellState = "on" | "off" | "occupied" | "notInstalled";
+
+export interface SkillCell {
+  app: SkillApp;
+  on: boolean;
+  state: SkillCellState;
+}
+
+export interface SkillView extends SkillInfo {
+  cells: SkillCell[];
+}
+
+export interface SkillAppView {
+  app: SkillApp;
+  dir: string;
+  installed: boolean;
+}
+
+/** A skill in an agent's folder that the library does not manage. */
+export interface UnmanagedSkill extends SkillInfo {
+  app: SkillApp;
+  /** Turned off by an older AgentHarbor and kept aside. */
+  legacyDisabled: boolean;
+  /** A link another tool made; shown, not imported. */
+  external: boolean;
+  inLibrary: boolean;
 }
 
 export interface SkillBackupSummary {
@@ -263,34 +280,25 @@ export interface SkillBackupSummary {
   createdAt: number;
 }
 
-export interface SkillBackupListPayload {
-  items: SkillBackupSummary[];
-  total: number;
-  rootPath: string;
-  lastScanAt: number;
+export interface SkillFailure {
+  name: string;
+  app?: SkillApp;
+  error: string;
 }
 
-export interface SkillImportPayload {
-  skill: InstalledSkillSummary;
-  replacedExisting: boolean;
-  backup: SkillBackupSummary | null;
+export interface SkillLibraryView {
+  library: string;
+  skills: SkillView[];
+  apps: SkillAppView[];
+  unmanaged: UnmanagedSkill[];
+  backups: SkillBackupSummary[];
+  failures: SkillFailure[];
 }
 
-export interface SkillRemovePayload {
-  removedSkillID: string;
-  backup: SkillBackupSummary;
-  remainingInstalledCount: number;
-}
-
-export interface SkillRestorePayload {
-  restoredSkill: InstalledSkillSummary;
-  backup: SkillBackupSummary;
-  rollbackBackup: SkillBackupSummary | null;
-}
-
-export interface SkillDeleteBackupPayload {
-  deletedBackupID: string;
-  remainingBackupCount: number;
+export interface SkillImport {
+  name: string;
+  app: SkillApp;
+  legacyDisabled: boolean;
 }
 
 export interface CleanPayload {

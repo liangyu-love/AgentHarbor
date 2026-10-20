@@ -199,10 +199,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const snapshot = useQuery({ queryKey: queryKeys.runtimeStateDisplay, queryFn: () => api.loadSnapshot(true) });
   const newapi = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState });
   const mcp = useQuery({ queryKey: queryKeys.mcpServers, queryFn: api.loadMcpLibrary, staleTime: Infinity });
-  const skills = useQuery({ queryKey: [...queryKeys.installedSkills, "codex"], queryFn: () => api.loadInstalledSkills("codex") });
-  const skillBackups = useQuery({ queryKey: [...queryKeys.skillBackups, "codex"], queryFn: () => api.loadSkillBackups("codex") });
-  const claudeSkills = useQuery({ queryKey: [...queryKeys.installedSkills, "claudeCode"], queryFn: () => api.loadInstalledSkills("claudeCode") });
-  const claudeBackups = useQuery({ queryKey: [...queryKeys.skillBackups, "claudeCode"], queryFn: () => api.loadSkillBackups("claudeCode") });
+  const skills = useQuery({ queryKey: queryKeys.skillLibrary, queryFn: api.loadSkillLibrary, staleTime: Infinity });
   const instructions = useQuery({ queryKey: [...queryKeys.customInstructionState, "codex"], queryFn: () => api.loadCustomInstructionState("codex") });
   const systemInfo = useQuery({ queryKey: queryKeys.systemInfo, queryFn: api.getSystemInfo, staleTime: Infinity });
   // Stored results only: refreshing would query every account remotely.
@@ -218,13 +215,13 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const { links } = useRoutingLinks(newapi.data?.router);
 
   const status = snapshot.data?.data.status;
-  const errors = [snapshot.error, newapi.error, mcp.error, skills.error, skillBackups.error, claudeSkills.error, claudeBackups.error, instructions.error].filter(Boolean);
-  const busy = [snapshot, newapi, mcp, skills, claudeSkills, instructions, accounts, usage, threads, claudeThreads, clientFiles, cursor].some((query) => query.isFetching);
+  const errors = [snapshot.error, newapi.error, mcp.error, skills.error, instructions.error].filter(Boolean);
+  const busy = [snapshot, newapi, mcp, skills, instructions, accounts, usage, threads, claudeThreads, clientFiles, cursor].some((query) => query.isFetching);
 
   const refresh = () => {
     void Promise.all([
-      snapshot.refetch(), newapi.refetch(), mcp.refetch(), skills.refetch(), skillBackups.refetch(), claudeSkills.refetch(),
-      claudeBackups.refetch(), instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(), claudeThreads.refetch(), clientFiles.refetch(), cursor.refetch(),
+      snapshot.refetch(), newapi.refetch(), mcp.refetch(), skills.refetch(),
+      instructions.refetch(), accounts.refetch(), usage.refetch(), threads.refetch(), claudeThreads.refetch(), clientFiles.refetch(), cursor.refetch(),
     ]);
   };
 
@@ -275,10 +272,10 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const routedCount = CLIENTS.filter((client) => links[client] === "routed").length;
   const mcpServers = mcp.data?.servers ?? [];
   const mcpEnabledCount = mcpServers.filter((server) => server.cells.some((cell) => cell.on)).length;
-  const skillsCount = (skills.data?.data.total ?? 0) + (claudeSkills.data?.data.total ?? 0);
-  const backupsCount = (skillBackups.data?.data.total ?? 0) + (claudeBackups.data?.data.total ?? 0);
-  const skillsAvailable = !!skills.data && !!claudeSkills.data && !skills.isError && !claudeSkills.isError;
-  const backupsAvailable = !!skillBackups.data && !!claudeBackups.data && !skillBackups.isError && !claudeBackups.isError;
+  const skillsCount = skills.data?.skills.length ?? 0;
+  const backupsCount = skills.data?.backups.length ?? 0;
+  const skillsAvailable = !!skills.data && !skills.isError;
+  const backupsAvailable = skillsAvailable;
   const instructionManaged = instructions.data?.data.current.managedBlockPresent ?? false;
   const lastTemplateTitle = instructions.data?.data.current.lastTemplateTitle;
   // Every client's data on this machine, in one list.
@@ -472,7 +469,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
             <button type="button" data-spotlight className="overview-capability" onClick={() => onNavigate("skills")}>
               <span className="overview-capability-heading"><Sparkles aria-hidden />{t("nav.skills")}<ArrowRight aria-hidden className="overview-capability-arrow" /></span>
               <span className={cn("overview-capability-value", !skillsAvailable && "is-empty")}><strong>{skillsAvailable ? skillsCount : "—"}</strong><small>{t("workspace.skillsUnit")}</small></span>
-              <span className="overview-capability-meta">{backupsAvailable ? t("workspace.skillsSummary", { count: backupsCount }) : t(skillBackups.isError || claudeBackups.isError ? "workspace.checkFailed" : "workspace.checking")}</span>
+              <span className="overview-capability-meta">{backupsAvailable ? t("workspace.skillsSummary", { count: backupsCount }) : t(skills.isError ? "workspace.checkFailed" : "workspace.checking")}</span>
             </button>
             <button type="button" data-spotlight className="overview-capability" onClick={() => onNavigate("customInstructions")}>
               <span className="overview-capability-heading"><FileCode2 aria-hidden />{t("nav.customInstructions")}<ArrowRight aria-hidden className="overview-capability-arrow" /></span>

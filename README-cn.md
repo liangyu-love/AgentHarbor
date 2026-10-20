@@ -37,7 +37,7 @@ Codex 是主要集成对象，其他客户端共用同一套中转与路由。
 | **账号** | Codex：ChatGPT OAuth 登录、额度窗口、手动切号或按阈值自动切号（正在运行的 Codex 会把任务做完，原账号额度用尽时才重启）<br>账号来源：ChatGPT（Sign in with ChatGPT）、WorkBuddy、WorkBuddy AI、GitHub Copilot、Gemini CLI、Antigravity、Kiro、Grok、Cursor、Qoder、Qoder CN、Trae CN、Trae 国际版、MiniMax Code（国内 / 国际）、ZCode、OpenCode Zen、OpenCode Go、Command Code，登录后可以提供给模型注入使用；有签到奖励的来源支持每日自动签到，见下文 |
 | **用量** | 所有客户端的 Token 与费用合成一本账：本地 Codex / Claude Code 会话与经路由的请求对齐去重，按客户端、渠道、模型和项目拆分；删除会话不影响已记录的用量 |
 | **线程管理** | 浏览、搜索、导出、删除 Codex 与 Claude Code 会话；恢复 Codex 索引里丢失的线程 |
-| **MCP / Skills / 自定义指令** | 管理 MCP 服务器、Skills（带备份），以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
+| **MCP / Skills / 自定义指令** | MCP 一份清单统一管理 Codex、Claude Code、OpenCode、Pi、Cursor、DeepSeek Harness 和 Claude Desktop，按 Agent 单独开关，并按各自的格式写入配置；可从模板、粘贴的 JSON / TOML 或一行命令添加，也能导入各 Agent 已有的服务器。Skills 每个只存一份，通过目录联接放进各 Agent 的 skills 目录（Windows 用 junction，无需管理员权限），带备份，可把各 Agent 已有的 Skill 纳入管理。以及 Codex 和 Claude Code 的 `AGENTS.md` / `CLAUDE.md` 中由 AgentHarbor 管理的区块 |
 | **生图工作台** | 通过已配置的供应商生成或编辑图片，保存到本地图册，每张图都记下生成时的提示词和参数，可按瀑布流完整浏览或以可滑动的图集轮播观看；按自建分组管理自己的提示词模版，另有服装、动作、视角、睡衣居家、COS 角色等素材库（自带一套整理好的素材），都可导入导出 JSON，也能一键添加或找回自带的预置内容；可用中转、账号或聚合里的任意模型润色提示词，勾选素材分类后由模型挑选合适的素材写进去，图生图时还能附上底本让识图模型对照着写改图指令；画布可用同样的请求一键重新生成 |
 | **设置与维护** | 主题、语言、自定义壁纸（深色模式自动保证对比度）、应用头像、API 代理、Windows 终端代理、开机自启（启动到托盘）、Windows 内存优化（释放工作集与待机缓存）、诊断、备份清理和重启 Codex。托盘菜单显示本地路由状态和今日用量，可直达各主要页面，并能切换 Cursor 注入、开机自启、检查更新和一键优化内存 |
 

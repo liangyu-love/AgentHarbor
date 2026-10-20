@@ -599,34 +599,91 @@ const installAccountSources = () => {
     return structuredClone(payload);
   };
 };
-api.loadInstalledSkills = async (source = "codex") => {
-  (controls.review.skillsReadCalls ??= []).push(source);
-  const items = source === "claudeCode" ? controls.review.claudeSkills : controls.review.skillItems;
-  return { warnings: source === "codex" ? controls.review.skillWarnings ?? [] : [], data: { total: items?.length ?? (source === "codex" ? 36 : 0),
-    items: items ?? [], rootPath: `C:/synthetic/.${source === "claudeCode" ? "claude" : "codex"}/skills` } } as any;
+// Like core/skills/hub.rs: one copy per skill, a link per agent; missing agents and taken names refuse.
+const SKILL_APPS = ["codex", "claudeCode", "openCode", "pi", "cursor", "harness"];
+const skillInstalled = new Set(["codex", "claudeCode", "cursor"]);
+const skillSeed = (mode: string) => mode === "overview" ? {
+  skills: ["one", "two", "three"].map(name => ({ name, title: name, description: "", apps: ["codex"], occupied: [] })),
+  unmanaged: [],
+  backups: ["b1", "b2"].map(id => ({ id, skillID: id, name: id, title: null, relativePath: id, backupPath: `C:/synthetic/app/skill-backups/${id}/skill`, createdAt: 1_700_000_000 })),
+} : {
+  skills: [
+    { name: "sample", title: "Sample Skill", description: "Synthetic skill", apps: ["codex", "claudeCode"], occupied: [] },
+    { name: "review", title: "Review", description: "Checks diffs", apps: ["codex"], occupied: ["cursor"] },
+  ],
+  unmanaged: [
+    { name: "notes", title: "Notes", description: "Claude notes", path: "C:/synthetic/claudeCode/skills/notes", app: "claudeCode", legacyDisabled: false, external: false, inLibrary: false },
+    { name: "old", title: "Old", description: "Turned off before", path: "C:/synthetic/app/disabled-skills/old", app: "codex", legacyDisabled: true, external: false, inLibrary: false },
+    { name: "linked", title: "Linked", description: "cc-switch managed", path: "C:/synthetic/claudeCode/skills/linked", app: "claudeCode", legacyDisabled: false, external: true, inLibrary: false },
+  ],
+  backups: [{ id: "backup-gone", skillID: "gone", name: "gone", title: null, relativePath: "gone", backupPath: "C:/synthetic/app/skill-backups/backup-gone/skill", createdAt: 1_700_000_000 }],
 };
-api.setSkillEnabled = async (id, enabled, source = "codex") => {
-  controls.review.skillToggleCalls.push({ id, enabled, source });
-  if (controls.review.skillToggleHold) await new Promise(resolve => { controls.review.skillToggleResolve = resolve; });
-  if (controls.review.skillToggleFailure) throw new Error("Synthetic skill permission failure");
-  const skill = (source === "claudeCode" ? controls.review.claudeSkills : controls.review.skillItems).find((item: any) => item.id === id);
-  Object.assign(skill, { enabled, directoryPath: enabled ? `C:/synthetic/.${source === "claudeCode" ? "claude" : "codex"}/skills/sample` : `C:/synthetic/app/${source === "claudeCode" ? "skill-clients/claude-code/" : ""}disabled-skills/sample` });
-  return { data: skill } as any;
+const skillView = (failures: any[] = []) => {
+  const state = controls.review.skillState;
+  return {
+    library: "C:/synthetic/app/skills-library",
+    skills: [...state.skills].sort((a: any, b: any) => a.name.localeCompare(b.name)).map((skill: any) => ({
+      name: skill.name, title: skill.title, description: skill.description, path: `C:/synthetic/app/skills-library/${skill.name}`,
+      cells: SKILL_APPS.map(app => {
+        const state = !skillInstalled.has(app) ? "notInstalled" : skill.apps.includes(app) ? "on" : skill.occupied.includes(app) ? "occupied" : "off";
+        return { app, on: state === "on", state };
+      }),
+    })),
+    apps: SKILL_APPS.map(app => ({ app, dir: `C:/synthetic/${app}/skills`, installed: skillInstalled.has(app) })),
+    unmanaged: structuredClone(state.unmanaged),
+    backups: structuredClone(state.backups),
+    failures,
+  } as any;
 };
-api.resolveSkillConflict = async (id, keepEnabled, source = "codex") => {
-  const skill = (source === "claudeCode" ? controls.review.claudeSkills : controls.review.skillItems).find((item: any) => item.id === id);
-  Object.assign(skill, { enabled: keepEnabled, conflict: false });
-  controls.review.skillConflictChoice = { id, keepEnabled, source };
-  return { data: skill } as any;
+const skillChange = async (operation: string, detail: object, change: () => any[]) => {
+  controls.review.skillCalls.push({ operation, ...structuredClone(detail) });
+  if (controls.review.skillHold) await new Promise(resolve => { controls.review.skillResolve = resolve; });
+  return skillView(change());
 };
-api.loadSkillBackups = async (source = "codex") => {
-  (controls.review.backupsReadCalls ??= []).push(source);
-  const items = source === "claudeCode" ? controls.review.claudeSkillBackups ?? [] : [];
-  return { data: { total: items.length, items, rootPath: source === "claudeCode" ? "C:/synthetic/app/skill-clients/claude-code/skill-backups" : "C:/synthetic/app/skill-backups" } } as any;
+const skillSwitch = (skill: any, app: string, on: boolean) => {
+  if (on && !skillInstalled.has(app)) return [{ name: skill.name, app, error: "skills.errors.notInstalled" }];
+  if (on && skill.occupied.includes(app)) return [{ name: skill.name, app, error: "skills.errors.occupied" }];
+  skill.apps = on ? [...new Set([...skill.apps, app])] : skill.apps.filter((item: string) => item !== app);
+  return [];
 };
-api.restoreSkillBackup = async (id, source = "codex") => { (controls.review.skillRestoreCalls ??= []).push({ id, source }); return { data: { restored: 1 } } as any; };
-api.deleteSkillBackup = async (id, source = "codex") => { (controls.review.skillBackupDeleteCalls ??= []).push({ id, source }); return { data: { deleted: 1 } } as any; };
-api.removeSkill = async (id, source = "codex") => { (controls.review.skillRemoveCalls ??= []).push({ id, source }); return { data: { removed: 1 } } as any; };
+api.loadSkillLibrary = async () => { controls.review.skillReads = (controls.review.skillReads ?? 0) + 1; return skillView(); };
+api.setSkills = async (names, app, on) => skillChange("set", { names, app, on }, () => controls.review.skillState.skills
+  .filter((skill: any) => names.includes(skill.name))
+  .flatMap((skill: any) => (app ? [app] : [...skillInstalled]).flatMap(item => skillSwitch(skill, item, on))));
+api.pickFolder = async () => controls.review.pickedFolder ?? null;
+api.addSkill = async (path, apps) => {
+  const name = path.split(/[\\/]/).filter(Boolean).pop()!;
+  if (controls.review.skillState.skills.some((skill: any) => skill.name === name)) throw "skills.errors.duplicate";
+  return skillChange("add", { path, apps }, () => {
+    controls.review.skillState.skills.push({ name, title: name, description: "Added", apps: apps.filter(app => skillInstalled.has(app)), occupied: [] });
+    return [];
+  });
+};
+api.importSkills = async items => skillChange("import", { items }, () => {
+  const state = controls.review.skillState;
+  for (const item of items) {
+    state.unmanaged = state.unmanaged.filter((entry: any) => !(entry.name === item.name && entry.app === item.app && entry.legacyDisabled === item.legacyDisabled));
+    const existing = state.skills.find((skill: any) => skill.name === item.name);
+    if (existing) { if (!item.legacyDisabled) existing.apps = [...new Set([...existing.apps, item.app])]; }
+    else state.skills.push({ name: item.name, title: item.name, description: "Imported", apps: item.legacyDisabled ? [] : [item.app], occupied: [] });
+  }
+  return [];
+});
+api.uninstallSkill = async name => skillChange("uninstall", { name }, () => {
+  const state = controls.review.skillState;
+  state.skills = state.skills.filter((skill: any) => skill.name !== name);
+  state.backups.unshift({ id: `backup-${name}`, skillID: name, name, title: null, relativePath: name, backupPath: `C:/synthetic/app/skill-backups/backup-${name}/skill`, createdAt: 1_800_000_000 });
+  return [];
+});
+api.restoreSkill = async id => {
+  const backup = controls.review.skillState.backups.find((item: any) => item.id === id);
+  if (controls.review.skillState.skills.some((skill: any) => skill.name === backup.name)) throw "skills.errors.duplicate";
+  return skillChange("restore", { id }, () => { controls.review.skillState.skills.push({ name: backup.name, title: backup.name, description: "", apps: [], occupied: [] }); return []; });
+};
+api.deleteSkillBackup = async id => skillChange("deleteBackup", { id }, () => {
+  controls.review.skillState.backups = controls.review.skillState.backups.filter((item: any) => item.id !== id);
+  return [];
+});
 api.loadCustomInstructionState = async () => ({ data: { current: { managedBlockPresent: false, lastTemplateTitle: null } } }) as any;
 api.getSystemInfo = async () => ({ os: "Windows", arch: "x64" }) as any;
 api.providers.queryBalance = id => new Promise((resolve, reject) => {
@@ -1072,27 +1129,14 @@ function mount(mode: FixtureMode) {
     api.rollbackCustomInstruction = async (id, source = "codex") => { controls.review.instructionCalls.push({ operation: "rollback", source, id }); return { data: structuredClone(controls.review.instructionStates[source]) } as any; };
   }
   localStorage.removeItem("threads_source");
-  if (mode === "overview") { controls.review.claudeSkills = [{ id: "one" }, { id: "two" }, { id: "three" }]; controls.review.claudeSkillBackups = [{ id: "claude-b1" }, { id: "claude-b2" }]; }
+  controls.review.skillState = skillSeed(mode);
+  controls.review.skillCalls = [];
+  controls.review.skillHold = false;
+  controls.review.skillReads = 0;
+  delete controls.review.pickedFolder;
+  localStorage.removeItem("agentharbor.skill-targets");
   controls.review.conversationCalls = [];
   controls.review.conversationListResolvers = [];
-  if (mode === "skills") {
-    controls.review.claudeSkills = [
-      { id: "sample", name: "sample", title: "Claude Sample Skill", summary: "Claude user skill", relativePath: "sample",
-        directoryPath: "C:/synthetic/.claude/skills/sample", skillFilePath: "C:/synthetic/.claude/skills/sample/SKILL.md", enabled: true },
-      { id: "linked", name: "linked", title: "Linked Skill", summary: "cc-switch managed", relativePath: "linked",
-        directoryPath: "C:/synthetic/.claude/skills/linked", skillFilePath: "C:/synthetic/.claude/skills/linked/SKILL.md", enabled: true, readOnly: true }
-    ];
-    controls.review.claudeSkillBackups = [{ id: "claude-backup", name: "sample", title: "Claude Backup", relativePath: "sample", directoryPath: "C:/synthetic/app/skill-clients/claude-code/skill-backups/claude-backup", reason: "removed", createdAt: 0 }];
-    controls.review.skillToggleCalls = [];
-    controls.review.skillConflictChoice = null;
-    controls.review.skillWarnings = [{ code: "skills.warnings.invalidEncoding", message: "C:/synthetic/.codex/skills/bad-encoding" }];
-    controls.review.skillItems = [
-      { id: "sample", name: "sample", title: "Sample Skill", summary: "Synthetic skill", relativePath: "sample",
-        directoryPath: "C:/synthetic/.codex/skills/sample", skillFilePath: "C:/synthetic/.codex/skills/sample/SKILL.md", updatedAt: 0, enabled: true },
-      { id: "conflict", name: "conflict", title: "Conflict Skill", summary: null, relativePath: "conflict",
-        directoryPath: "C:/synthetic/.codex/skills/conflict", conflictDirectoryPath: "C:/synthetic/app/disabled-skills/conflict", skillFilePath: "C:/synthetic/.codex/skills/conflict/SKILL.md", updatedAt: 0, enabled: true, conflict: true },
-    ];
-  }
   if (mode === "terminal-proxy") {
     controls.review.terminalSetCalls = [];
     controls.review.terminalTestCalls = [];

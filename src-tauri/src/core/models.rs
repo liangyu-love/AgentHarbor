@@ -291,14 +291,6 @@ impl InstalledSkillSummary {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillListPayload {
-    pub items: Vec<InstalledSkillSummary>,
-    pub total: i32,
-    pub root_path: String,
-    pub last_scan_at: i64,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -313,47 +305,10 @@ pub struct SkillBackupSummary {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillBackupListPayload {
-    pub items: Vec<SkillBackupSummary>,
-    pub total: i32,
-    pub root_path: String,
-    pub last_scan_at: i64,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillImportPayload {
-    pub skill: InstalledSkillSummary,
-    pub replaced_existing: bool,
-    pub backup: Option<SkillBackupSummary>,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillRemovePayload {
-    #[serde(rename = "removedSkillID")]
-    pub removed_skill_id: String,
-    pub backup: SkillBackupSummary,
-    pub remaining_installed_count: i32,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillRestorePayload {
-    pub restored_skill: InstalledSkillSummary,
-    pub backup: SkillBackupSummary,
-    pub rollback_backup: Option<SkillBackupSummary>,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillDeleteBackupPayload {
-    #[serde(rename = "deletedBackupID")]
-    pub deleted_backup_id: String,
-    pub remaining_backup_count: i32,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

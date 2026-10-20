@@ -10,6 +10,7 @@ export const storageKeys = {
   sidebarCollapsed: "sidebar_collapsed",
   threadsViewMode: "threads_view_mode",
   mcpTargets: "agentharbor.mcp-targets",
+  skillTargets: "agentharbor.skill-targets",
   instructionSource: "agentharbor.instruction-source",
   instructionPresets: "agentharbor.instruction-presets.v1",
   threadsSource: "threads_source",

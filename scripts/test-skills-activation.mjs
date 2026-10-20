@@ -2,94 +2,109 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { eventually } from "./eventually.mjs";
 
+// The Skills page: one library copy per skill, a switch per agent, bringing in
+// what agents already have, adding a folder, uninstalling and the backups.
 export async function testSkillsActivation({ page, reset, captureDir }) {
+  const tr = (key, options) => page.evaluate(({ key, options }) => window.review.t(key, options), { key, options });
+  const calls = (operation) => page.evaluate((operation) => window.review.skillCalls.filter((call) => call.operation === operation), operation);
+  const row = (name) => page.locator(`[data-skill="${name}"]`);
+  const cell = (name, app) => row(name).locator(`[data-skill-cell="${app}"]`);
+
   await reset("skills");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  const toggle = page.getByRole("switch", { name: "启用 Sample Skill", exact: true });
-  const conflict = page.getByRole("switch", { name: "启用 Conflict Skill", exact: true });
-  await toggle.waitFor();
-  await eventually(async () => assert.equal(await toggle.getAttribute("aria-checked"), "true"));
-  assert.equal(await conflict.count(), 0, "conflicts do not show a misleading active switch");
-  assert.equal(await page.getByText("已跳过非 UTF-8 的 SKILL.md", { exact: true }).count(), 1);
-  assert.equal(await page.getByRole("button", { name: "打开禁用副本", exact: true }).count(), 1);
-  await page.evaluate(() => { window.review.skillToggleHold = true; });
-  await toggle.click();
-  await page.waitForFunction(() => Boolean(window.review.skillToggleResolve));
-  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.disabled === true);
-  await eventually(async () => assert.equal(await toggle.isDisabled(), true));
-  assert.equal(await page.getByRole("radio", { name: "Claude Code", exact: true }).isDisabled(), true, "cannot change source while a disk write is pending");
-  assert.equal(await toggle.getAttribute("aria-checked"), "true", "retain real state while a write is pending");
-  await page.evaluate(() => { window.review.skillToggleHold = false; window.review.skillToggleResolve(); });
-  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.getAttribute("aria-checked") === "false");
-  await eventually(async () => assert.equal(await page.getByRole("heading", { name: "Sample Skill", exact: true }).count(), 1, "disabled skills remain listed"));
-  await page.evaluate(() => { window.review.skillToggleFailure = true; });
-  await toggle.click();
-  await page.waitForFunction(() => window.review.lastToast === "出错了");
-  await eventually(async () => assert.equal(await toggle.getAttribute("aria-checked"), "false", "failed enable must not report success"));
-  await page.evaluate(() => { window.review.skillToggleFailure = false; });
-  await toggle.click();
-  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Sample Skill"]')?.getAttribute("aria-checked") === "true");
-  assert.deepEqual(await page.evaluate(() => window.review.skillToggleCalls.map(call => call.enabled)), [false, true, true]);
-  await page.getByRole("button", { name: "保留禁用副本", exact: true }).click();
-  assert.equal(await page.evaluate(() => window.review.skillConflictChoice), null, "selecting a copy requires confirmation");
-  await page.getByRole("alertdialog").getByRole("button", { name: "确认", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Conflict Skill"]')?.disabled === false);
-  await eventually(async () => assert.equal(await conflict.getAttribute("aria-checked"), "false"));
-  assert.deepEqual(await page.evaluate(() => window.review.skillConflictChoice), { id: "conflict", keepEnabled: false, source: "codex" });
+
+  // ---- the matrix reads each agent's folder
+  await row("sample").waitFor();
+  assert.equal(await cell("sample", "codex").getAttribute("aria-checked"), "true");
+  assert.equal(await cell("sample", "cursor").getAttribute("data-state"), "off");
+  assert.equal(await cell("sample", "pi").isDisabled(), true, "an agent that is not installed is locked");
+  assert.equal(await cell("review", "cursor").getAttribute("data-state"), "occupied");
+  console.log("PASS the Skills matrix shows each agent's folder: linked, free, taken or missing");
+
+  // ---- a switch links one agent and the page waits for it
+  await page.evaluate(() => { window.review.skillHold = true; });
+  await cell("sample", "cursor").click();
+  await page.waitForFunction(() => !!window.review.skillResolve);
+  await eventually(async () => assert.equal(await cell("sample", "codex").isDisabled(), true, "every switch waits for the write"));
+  await page.evaluate(() => { window.review.skillHold = false; window.review.skillResolve(); });
+  await eventually(async () => assert.equal(await cell("sample", "cursor").getAttribute("aria-checked"), "true"));
+  assert.deepEqual((await calls("set")).at(-1), { operation: "set", names: ["sample"], app: "cursor", on: true });
+
+  // A folder holding another skill by the name is reported, not replaced.
+  await cell("review", "cursor").click();
+  await page.waitForFunction((title) => window.review.lastToast === title, await tr("skills.failures", { count: 1 }));
+  assert.equal(await cell("review", "cursor").getAttribute("data-state"), "occupied");
+
+  // A column turns every listed skill off for one agent.
+  await page.locator('[data-skills-column="codex"]').click();
+  await page.getByRole("menuitem", { name: await tr("skills.column.disableAll") }).click();
+  await eventually(async () => assert.equal(await cell("review", "codex").getAttribute("aria-checked"), "false"));
+  assert.equal(await cell("sample", "codex").getAttribute("aria-checked"), "false");
+  console.log("PASS switches link one agent at a time, and a taken name is reported instead of replaced");
+
+  // ---- skills the agents already have are brought in
+  const banner = page.locator("[data-skills-unmanaged-banner]");
+  await banner.getByText(await tr("skills.unmanaged.banner", { count: 2 }), { exact: true }).waitFor();
+  await banner.getByRole("button", { name: await tr("skills.unmanaged.review") }).click();
+  const unmanaged = page.locator("[data-skills-unmanaged]");
+  const linked = unmanaged.locator('[data-unmanaged-skill="linked"]');
+  await linked.getByText(await tr("skills.unmanaged.external"), { exact: true }).waitFor();
+  assert.equal(await linked.getByRole("button").count(), 0, "another tool's link is not brought in");
+  await unmanaged.locator('[data-unmanaged-skill="old"]').getByText(await tr("skills.unmanaged.legacy"), { exact: true }).waitFor();
+  await unmanaged.locator('[data-unmanaged-skill="notes"]').getByRole("button", { name: await tr("skills.unmanaged.import") }).click();
+  await unmanaged.locator('[data-unmanaged-skill="notes"]').waitFor({ state: "detached" });
+  assert.deepEqual((await calls("import")).at(-1).items, [{ name: "notes", app: "claudeCode", legacyDisabled: false }]);
+  await unmanaged.getByRole("button", { name: await tr("skills.unmanaged.importAll") }).click();
+  await unmanaged.locator('[data-unmanaged-skill="old"]').waitFor({ state: "detached" });
+  await page.getByRole("radio", { name: new RegExp(`^${await tr("skills.tabs.library")}`) }).click();
+  await row("notes").waitFor();
+  assert.equal(await cell("notes", "claudeCode").getAttribute("aria-checked"), "true", "a skill brought in stays on where it was");
+  assert.equal(await cell("old", "codex").getAttribute("aria-checked"), "false", "a skill turned off before stays off");
+  console.log("PASS skills on this machine are brought in, staying on where they were, and other tools' links are left alone");
+
+  // ---- adding a folder puts it in the chosen agents
+  await page.evaluate(() => { window.review.pickedFolder = "C:/downloads/pdf-tools"; });
+  await page.getByRole("button", { name: await tr("skills.add") }).first().click();
+  const dialog = page.locator("[data-skills-add]");
+  assert.equal(await dialog.getByRole("checkbox", { name: "Codex" }).isChecked(), true);
+  assert.equal(await dialog.getByRole("checkbox", { name: "Pi" }).isDisabled(), true);
+  await dialog.getByRole("checkbox", { name: "Claude Code" }).click();
+  await dialog.getByRole("button", { name: await tr("skills.addDialog.confirm"), exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  await row("pdf-tools").waitFor();
+  assert.deepEqual((await calls("add")).at(-1), { operation: "add", path: "C:/downloads/pdf-tools", apps: ["codex"] });
+  assert.equal(await cell("pdf-tools", "codex").getAttribute("aria-checked"), "true");
+  assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.skill-targets")), '["codex"]');
+  console.log("PASS an added folder is linked into the chosen agents and the choice is remembered");
+
+  // ---- uninstalling asks first, keeps a backup, and the backup restores it
+  await row("review").getByRole("button", { name: await tr("skills.more") }).click();
+  await page.getByRole("menuitem", { name: await tr("skills.row.uninstall") }).click();
+  const alert = page.getByRole("alertdialog");
+  await alert.getByText(await tr("skills.confirmUninstall", { name: "review" }), { exact: true }).waitFor();
+  await alert.getByRole("button", { name: await tr("skills.uninstall"), exact: true }).click();
+  await row("review").waitFor({ state: "detached" });
+  await page.getByRole("radio", { name: new RegExp(`^${await tr("skills.tabs.backups")}`) }).click();
+  const backups = page.locator("[data-skills-backups]");
+  await backups.locator('[data-skill-backup="backup-review"]').getByRole("button", { name: await tr("skills.backups.restore") }).click();
+  await page.waitForFunction((title) => window.review.lastToast === title, await tr("skills.restored"));
+  await backups.locator('[data-skill-backup="backup-gone"]').getByRole("button", { name: await tr("skills.backups.delete") }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: await tr("skills.backups.delete"), exact: true }).click();
+  await backups.locator('[data-skill-backup="backup-gone"]').waitFor({ state: "detached" });
+  await page.getByRole("radio", { name: new RegExp(`^${await tr("skills.tabs.library")}`) }).click();
+  await row("review").waitFor();
+  assert.equal(await cell("review", "codex").getAttribute("aria-checked"), "false", "a restored skill comes back off");
+  console.log("PASS uninstalling asks first and keeps a backup that restores the skill");
+
   for (const width of [1200, 390]) {
     await page.setViewportSize({ width, height: 900 });
-    assert.equal(await toggle.isVisible(), true);
-    await toggle.scrollIntoViewIfNeeded();
     const size = await page.evaluate(() => {
-      const container = document.querySelector('[data-page-scroll-container]');
+      const container = document.querySelector("[data-page-scroll-container]");
       return { scroll: container.scrollWidth, client: container.clientWidth };
     });
     assert.ok(size.scroll <= size.client + 1, `Skills overflow at ${width}px`);
     if (captureDir) await page.screenshot({ path: path.join(captureDir, `skills-${width}.png`) });
   }
-  await page.getByRole("radio", { name: "Codex", exact: true }).focus();
-  await page.keyboard.press("ArrowRight");
-  const claudeToggle = page.getByRole("switch", { name: "启用 Claude Sample Skill", exact: true });
-  await claudeToggle.waitFor();
-  assert.equal(await page.getByRole("radio", { name: "Claude Code", exact: true }).evaluate(node => node === document.activeElement), true, "keyboard focus survives source workspace remount");
-  assert.equal(await page.getByRole("heading", { name: "Sample Skill", exact: true }).count(), 0, "same skill ID from Codex must not appear in Claude Code");
-  assert.equal(await page.getByText("已跳过非 UTF-8 的 SKILL.md", { exact: true }).count(), 0, "source warnings remain isolated");
-  const linked = page.locator("[data-skill-card]").filter({ has: page.getByRole("heading", { name: "Linked Skill", exact: true }) });
-  assert.equal(await linked.getByText("外部管理", { exact: true }).count(), 1);
-  assert.equal(await linked.getByRole("switch").count(), 0);
-  assert.equal(await linked.getByRole("button", { name: "删除", exact: true }).isDisabled(), true);
-  await linked.getByRole("button", { name: "打开文件夹", exact: true }).click();
-  assert.match(await page.evaluate(() => window.review.openedPath), /\.claude\/skills\/linked$/);
-  await page.evaluate(() => { window.review.skillToggleHold = true; window.review.skillToggleResolve = null; });
-  await claudeToggle.click();
-  await page.waitForFunction(() => Boolean(window.review.skillToggleResolve));
-  await eventually(async () => assert.equal(await page.getByRole("radio", { name: "Codex", exact: true }).isDisabled(), true));
-  await page.evaluate(() => { window.review.skillToggleHold = false; window.review.skillToggleResolve(); });
-  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Claude Sample Skill"]')?.getAttribute("aria-checked") === "false");
-  assert.deepEqual(await page.evaluate(() => window.review.skillToggleCalls.at(-1)), { id: "sample", enabled: false, source: "claudeCode" });
-  await page.getByRole("radio", { name: /^备份 \(1\)$/ }).click();
-  await page.getByRole("heading", { name: "Claude Backup", exact: true }).waitFor();
-  await page.getByRole("button", { name: "恢复", exact: true }).click();
-  await page.waitForFunction(() => window.review.skillRestoreCalls?.length === 1);
-  assert.deepEqual(await page.evaluate(() => window.review.skillRestoreCalls[0]), { id: "claude-backup", source: "claudeCode" });
-  await page.getByRole("radio", { name: "Codex", exact: true }).click();
-  await toggle.waitFor();
-  await eventually(async () => assert.equal(await toggle.getAttribute("aria-checked"), "true", "Claude disable must not change Codex skill state"));
-  assert.equal(await page.getByRole("heading", { name: "Claude Backup", exact: true }).count(), 0, "switching source resets backup tab");
-  assert.deepEqual(await page.evaluate(() => window.review.skillToggleCalls.map(call => call.source)), ["codex", "codex", "codex", "claudeCode"]);
-  for (const width of [1200, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    await page.getByRole("radio", { name: "Claude Code", exact: true }).click();
-    await claudeToggle.waitFor();
-    const size = await page.evaluate(() => {
-      const container = document.querySelector('[data-page-scroll-container]');
-      return { scroll: container.scrollWidth, client: container.clientWidth };
-    });
-    assert.ok(size.scroll <= size.client + 1, `Claude Skills overflow at ${width}px`);
-    if (captureDir) await page.screenshot({ path: path.join(captureDir, `claude-skills-${width}.png`) });
-    await page.getByRole("radio", { name: "Codex", exact: true }).click();
-    await toggle.waitFor();
-  }
-  console.log("PASS Skills source-scoped activation/backup, pending-write guard, readonly projections and narrow layouts");
-  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.setViewportSize({ width: 1200, height: 820 });
+  console.log("PASS the Skills page fits desktop and phone widths");
 }
