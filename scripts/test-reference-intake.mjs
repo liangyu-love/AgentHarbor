@@ -3,12 +3,14 @@ import { eventually } from "./eventually.mjs";
 
 /** Fires a drag or paste carrying files, as Explorer, QQ or a screenshot tool would. */
 const send = (page, kind, selector, files, text) => page.evaluate(async ({ kind, selector, files, text }) => {
-  // Each picture differs, since a picture already among the references is not added twice.
+  // Each picture differs, since a picture already among the references is not added twice:
+  // a counter, not chance, picks its colour.
   const picture = async () => {
     const canvas = document.createElement("canvas");
     canvas.width = canvas.height = 2;
     const context = canvas.getContext("2d");
-    context.fillStyle = `hsl(${Math.floor(Math.random() * 360)} 70% 50%)`;
+    const n = window.__intakePictures = (window.__intakePictures ?? 0) + 1;
+    context.fillStyle = `rgb(${(n * 53) % 256}, ${(n * 97) % 256}, ${(n * 151) % 256})`;
     context.fillRect(0, 0, 2, 2);
     return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
   };
