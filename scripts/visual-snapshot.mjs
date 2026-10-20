@@ -124,18 +124,16 @@ const PAGES = [
     await page.getByRole("dialog").waitFor();
   } },
   { name: "mcp-remove", mode: "mcp", async act(page) {
-    await page.getByTitle("删除").first().click();
+    await page.getByRole("button", { name: "更多操作" }).nth(1).click();
+    await page.getByRole("menuitem", { name: "删除" }).click();
     await page.getByRole("alertdialog").waitFor();
   } },
-  { name: "mcp-filter-enabled", mode: "mcp", async act(page) {
-    await page.getByRole("button", { name: /^已启用/ }).click();
+  { name: "mcp-column-menu", mode: "mcp", async act(page) {
+    await page.locator('[data-mcp-column="codex"]').click();
+    await page.getByRole("menu").waitFor();
   } },
   { name: "mcp-search-empty", mode: "mcp", async act(page) {
     await page.locator("input").first().fill("no-such-server");
-  } },
-  { name: "mcp-env-tooltip", mode: "mcp", async act(page) {
-    await page.getByText("1 ENV").hover();
-    await page.getByRole("tooltip").waitFor();
   } },
   ...["groups", "access", "warnings", "thread-actions", "mcp", "accounts", "usage", "overview"]
     .map(mode => ({ name: mode, mode })),

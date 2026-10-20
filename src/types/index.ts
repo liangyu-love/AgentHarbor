@@ -1,7 +1,6 @@
 export type UsageSource = "local" | "api";
 export type ApiProxyMode = "system" | "direct" | "manual";
 export type ApiReachabilityStatus = "unknown" | "reachable" | "unreachable";
-export type McpTransport = "stdio" | "http" | "sse" | "unknown";
 export type CustomInstructionProtectionState = "ready" | "unmanaged" | "protected";
 export type CustomInstructionHistoryAction = "apply" | "clear" | "rollback";
 
@@ -162,35 +161,72 @@ export interface CustomInstructionPreviewPayload {
   resultingContent: string;
 }
 
-export interface McpServerSummary {
+/** The agents whose MCP servers the MCP page manages. */
+export type McpApp = "codex" | "claudeCode" | "openCode" | "pi" | "cursor" | "harness" | "claudeDesktop";
+export type McpKind = "stdio" | "http" | "sse";
+
+/** One server as the library keeps it, whatever agent it is written to. */
+export interface McpSpec {
+  transport: McpKind;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+export interface McpServerEntry {
   name: string;
-  transport: McpTransport;
-  enabled: boolean;
-  sourcePath: string;
-  command: string | null;
-  args: string[];
-  url: string | null;
-  headers: Record<string, string>;
-  environment: Record<string, string>;
+  spec: McpSpec;
+  note: string;
+  /** The agents it is on. */
+  apps: McpApp[];
 }
 
-export interface McpServerListPayload {
-  items: McpServerSummary[];
-  total: number;
-  sourcePath: string;
-  lastScanAt: number;
+export type McpCellState = "synced" | "missing" | "differs" | "off" | "outside" | "unsupported" | "notInstalled" | "unreadable";
+
+export interface McpCell {
+  app: McpApp;
+  on: boolean;
+  state: McpCellState;
+  /** i18n key: why the agent cannot hold the server. */
+  reason?: string;
 }
 
-export interface McpServerMutationPayload {
-  server: McpServerSummary;
-  total: number;
-  sourcePath: string;
+export interface McpServerView {
+  name: string;
+  spec: McpSpec;
+  note: string;
+  cells: McpCell[];
 }
 
-export interface McpServerRemovePayload {
-  removedName: string;
-  total: number;
-  sourcePath: string;
+export interface McpAppView {
+  app: McpApp;
+  path: string;
+  installed: boolean;
+  error?: string;
+  /** Servers in the agent's configuration the library does not have. */
+  unmanaged: string[];
+}
+
+export interface McpFailure {
+  name: string;
+  app: McpApp;
+  error: string;
+}
+
+export interface McpLibraryView {
+  servers: McpServerView[];
+  apps: McpAppView[];
+  failures: McpFailure[];
+  added: string[];
+}
+
+export interface PastedMcpServer {
+  /** Empty when the paste did not name it. */
+  name: string;
+  spec: McpSpec;
 }
 
 export type SkillSource = "codex" | "claudeCode";

@@ -198,7 +198,7 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
 
   const snapshot = useQuery({ queryKey: queryKeys.runtimeStateDisplay, queryFn: () => api.loadSnapshot(true) });
   const newapi = useQuery({ queryKey: queryKeys.providers, queryFn: api.providers.loadState });
-  const mcp = useQuery({ queryKey: [...queryKeys.mcpServers, "codex"], queryFn: () => api.loadMcpServers("codex") });
+  const mcp = useQuery({ queryKey: queryKeys.mcpServers, queryFn: api.loadMcpLibrary, staleTime: Infinity });
   const skills = useQuery({ queryKey: [...queryKeys.installedSkills, "codex"], queryFn: () => api.loadInstalledSkills("codex") });
   const skillBackups = useQuery({ queryKey: [...queryKeys.skillBackups, "codex"], queryFn: () => api.loadSkillBackups("codex") });
   const claudeSkills = useQuery({ queryKey: [...queryKeys.installedSkills, "claudeCode"], queryFn: () => api.loadInstalledSkills("claudeCode") });
@@ -273,8 +273,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
   const providers = newapi.data?.providers ?? [];
   const enabledProviders = providers.filter((provider) => provider.enabled).length;
   const routedCount = CLIENTS.filter((client) => links[client] === "routed").length;
-  const mcpServers = mcp.data?.data.items ?? [];
-  const mcpEnabledCount = mcpServers.filter((server) => server.enabled).length;
+  const mcpServers = mcp.data?.servers ?? [];
+  const mcpEnabledCount = mcpServers.filter((server) => server.cells.some((cell) => cell.on)).length;
   const skillsCount = (skills.data?.data.total ?? 0) + (claudeSkills.data?.data.total ?? 0);
   const backupsCount = (skillBackups.data?.data.total ?? 0) + (claudeBackups.data?.data.total ?? 0);
   const skillsAvailable = !!skills.data && !!claudeSkills.data && !skills.isError && !claudeSkills.isError;

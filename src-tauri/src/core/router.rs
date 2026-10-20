@@ -4125,9 +4125,8 @@ mod tests {
     use super::*;
     use crate::core::{
         mcp,
-        models::{ApiProxyConfigPayload, McpServerSummary, McpTransport},
+        models::ApiProxyConfigPayload,
     };
-    use std::collections::HashMap;
     use std::io::{Read, Write};
 
     fn paths() -> (tempfile::TempDir, CodexPaths) {
@@ -5041,17 +5040,12 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             active_provider_id: Some("relay-a".into()),
             ..Default::default()
         };
-        let server = McpServerSummary {
-            name: "context7".into(),
-            transport: McpTransport::Stdio,
-            enabled: true,
-            source_path: paths.config_path.display().to_string(),
-            command: Some("npx".into()),
-            args: vec!["-y".into(), "@upstash/context7-mcp@latest".into()],
-            url: None,
-            headers: HashMap::new(),
-            environment: HashMap::new(),
-        };
+        let mut server = toml::Table::new();
+        server.insert("command".into(), "npx".into());
+        server.insert(
+            "args".into(),
+            toml::Value::Array(vec!["-y".into(), "@upstash/context7-mcp@latest".into()]),
+        );
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
 
         std::thread::scope(|scope| {
@@ -5065,7 +5059,7 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             let mcp_barrier = barrier.clone();
             scope.spawn(move || {
                 mcp_barrier.wait();
-                mcp::upsert_mcp_server(&mcp_paths, &server).unwrap();
+                mcp::set_codex_server(&mcp_paths, "context7", &server).unwrap();
             });
             barrier.wait();
         });

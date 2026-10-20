@@ -16,6 +16,7 @@ mod owned;
 mod takeover;
 mod version;
 pub use claude_official::ClaudeOfficialPreview;
+pub(crate) use harness::mcp_rows as harness_mcp_rows;
 pub use harness::{HarnessInfo, HarnessProfile, HarnessReasoning};
 use options::{client_endpoint, validate_model};
 pub use options::{ClaudeAuthField, ClaudeModels, ClaudeOneM, ClientAccessMode, ClientOptions};
@@ -1284,6 +1285,22 @@ fn parse(text: Option<&str>, id: TargetId) -> Result<Value, String> {
 /// The text `next` is written as, over `base` (the text the file held when
 /// it was read). An OpenCode or Pi file with comments keeps them and its
 /// layout; everything else is written as normalized JSON.
+/// A client's JSON file as its own reader takes it (OpenCode and Pi accept
+/// comments), for modules outside the client configuration.
+pub(crate) fn read_client_json(id: TargetId, text: Option<&str>) -> Result<Value, String> {
+    parse(text, id)
+}
+
+/// `next` written over `base` the way client files are: OpenCode and Pi keep
+/// their comments, everything else is normalized JSON.
+pub(crate) fn render_client_json(
+    id: TargetId,
+    base: Option<&str>,
+    next: &Value,
+) -> Result<String, String> {
+    render(id, base, next)
+}
+
 fn render(id: TargetId, base: Option<&str>, next: &Value) -> Result<String, String> {
     let normalized = format!(
         "{}\n",

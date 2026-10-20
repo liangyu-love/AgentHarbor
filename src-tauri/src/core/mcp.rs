@@ -1,64 +1,33 @@
+//! MCP servers: the library the MCP page keeps, and how each agent's own
+//! configuration holds them. This file is Codex's `config.toml` side, which
+//! keeps comments, managed blocks and the rest of every server table; the
+//! other agents are in `apps.rs`, the library in `library.rs`.
 use crate::core::codex_config::CodexConfigRepository;
 use crate::core::models::*;
 use crate::platform::paths::CodexPaths;
 use std::collections::HashMap;
 
-mod claude;
+mod apps;
+mod library;
+mod paste;
+pub use apps::{McpApp, McpKind, McpSpec};
+pub use library::*;
+pub use paste::{parse_pasted, PastedServer};
 
-pub enum McpConfig<'a> {
-    Codex(&'a CodexPaths),
-    Claude(std::path::PathBuf),
-}
-
-impl<'a> McpConfig<'a> {
-    pub fn for_target(
-        paths: &'a CodexPaths,
-        target: super::targets::TargetId,
-    ) -> Result<Self, CoreError> {
-        match target {
-            super::targets::TargetId::Codex => Ok(Self::Codex(paths)),
-            super::targets::TargetId::ClaudeCode => Ok(Self::Claude(
-                super::client_config::ClientPaths::discover().claude_user_config(),
-            )),
-            _ => Err(CoreError::InvalidData("Unsupported MCP target".into())),
-        }
-    }
-
-    pub fn source_path(&self) -> String {
-        match self {
-            Self::Codex(paths) => paths.config_path.display().to_string(),
-            Self::Claude(path) => path.display().to_string(),
-        }
-    }
-
-    pub fn load(&self) -> Result<Vec<McpServerSummary>, CoreError> {
-        match self {
-            Self::Codex(paths) => load_mcp_servers(paths),
-            Self::Claude(path) => claude::load(path),
-        }
-    }
-
-    pub fn upsert(&self, server: &McpServerSummary) -> Result<McpServerSummary, CoreError> {
-        match self {
-            Self::Codex(paths) => upsert_mcp_server(paths, server),
-            Self::Claude(path) => claude::upsert(path, server),
-        }
-    }
-
-    pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<McpServerSummary, CoreError> {
-        match self {
-            Self::Codex(paths) => set_mcp_server_enabled(paths, name, enabled),
-            Self::Claude(path) => claude::set_enabled(path, name, enabled),
-        }
-    }
-
-    pub fn remove(&self, name: &str) -> Result<(), CoreError> {
-        match self {
-            Self::Codex(paths) => remove_mcp_server(paths, name),
-            Self::Claude(path) => claude::remove(path, name),
-        }
-    }
-}
+/// Keys of a Codex server table the MCP page writes. The rest of the table
+/// (timeouts, tool lists, auth) belongs to the user and is kept.
+const CODEX_MANAGED_KEYS: [&str; 10] = [
+    "enabled",
+    "transport",
+    "type",
+    "command",
+    "args",
+    "env",
+    "cwd",
+    "url",
+    "headers",
+    "http_headers",
+];
 
 const MANAGED_BLOCK_BEGIN_PREFIX: &str = "# --- AgentHarbor Managed";
 const MANAGED_BLOCK_END_SUFFIX: &str = "# --- End AgentHarbor Managed";
@@ -75,45 +44,93 @@ const BOTTOM_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (botto
 const LEGACY_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (top) ---";
 const ROUTER_TOP_MANAGED_BLOCK_BEGIN: &str = "# --- AgentHarbor Managed Block (router-top) ---";
 
-pub fn load_mcp_servers(paths: &CodexPaths) -> Result<Vec<McpServerSummary>, CoreError> {
-    let text = CodexConfigRepository::new(paths).read_text()?;
-    if text.is_empty() {
-        return Ok(vec![]);
+/// Every `[mcp_servers.<name>]` table in Codex's config text.
+pub(crate) fn codex_servers(text: &str) -> Result<Vec<(String, toml::Table)>, CoreError> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
     }
-    parse_mcp_servers(&text, &paths.config_path.display().to_string())
+    let document: toml::Value = text.parse()?;
+    Ok(document
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .map(|servers| {
+            servers
+                .iter()
+                .filter_map(|(name, value)| Some((name.clone(), value.as_table()?.clone())))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
-pub fn upsert_mcp_server(
-    paths: &CodexPaths,
-    server: &McpServerSummary,
-) -> Result<McpServerSummary, CoreError> {
-    write_mcp_server(paths, server)?;
-    let servers = load_mcp_servers(paths)?;
-    Ok(servers
-        .into_iter()
-        .find(|s| s.name == server.name)
-        .unwrap_or_else(|| server.clone()))
+pub fn read_codex_servers(paths: &CodexPaths) -> Result<Vec<(String, toml::Table)>, CoreError> {
+    codex_servers(&CodexConfigRepository::new(paths).read_text()?)
 }
 
-pub fn set_mcp_server_enabled(
+/// Sets server `name`'s managed keys to `managed`, keeping the rest of its
+/// table and of the file.
+pub(crate) fn set_codex_server(
     paths: &CodexPaths,
     name: &str,
-    enabled: bool,
-) -> Result<McpServerSummary, CoreError> {
-    let source_path = paths.config_path.display().to_string();
-    let mut saved = None;
-    CodexConfigRepository::new(paths).update(|original| {
-        let current = parse_mcp_servers(original, &source_path)?
-            .into_iter()
-            .find(|server| server.name == name)
-            .ok_or_else(|| CoreError::NotFound(format!("MCP server not found: {name}")))?;
-        let mut updated = current;
-        updated.enabled = enabled;
-        let next = render_mcp_update(original, &updated)?;
-        saved = Some(updated);
-        Ok(next)
-    })?;
-    saved.ok_or_else(|| CoreError::OperationFailed("MCP server update produced no result".into()))
+    managed: &toml::Table,
+) -> Result<(), CoreError> {
+    CodexConfigRepository::new(paths)
+        .update(|original| render_codex_server(original, name, managed))?;
+    Ok(())
+}
+
+fn render_codex_server(
+    original: &str,
+    name: &str,
+    managed: &toml::Table,
+) -> Result<String, CoreError> {
+    let original_value: toml::Value = original.parse()?;
+    let document = parse_mcp_document(original)?;
+    let mut preserved = original_value
+        .get("mcp_servers")
+        .and_then(|v| v.get(name))
+        .and_then(toml::Value::as_table)
+        .cloned()
+        .unwrap_or_default();
+    if !preserved.is_empty() && !document.blocks.contains_key(name) {
+        return Err(CoreError::InvalidData(
+            "Expand inline MCP configuration into a table before editing".into(),
+        ));
+    }
+    for key in CODEX_MANAGED_KEYS {
+        preserved.remove(key);
+    }
+    preserved.extend(managed.clone());
+    let mut servers = toml::Table::new();
+    servers.insert(name.to_owned(), toml::Value::Table(preserved));
+    let mut wrapper = toml::Table::new();
+    wrapper.insert("mcp_servers".into(), toml::Value::Table(servers));
+    let rendered = toml::to_string_pretty(&wrapper)?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+
+    let updated = if let Some(existing) = document.blocks.get(name) {
+        let relocate = existing
+            .iter()
+            .any(|block| should_relocate_mcp_block(&document.lines, block));
+        let mut lines = document.lines.clone();
+        for block in existing.iter().rev() {
+            lines.drain(block.start..block.end);
+        }
+        if relocate {
+            insert_mcp_block(lines, rendered)
+        } else {
+            lines.splice(existing[0].start..existing[0].start, rendered);
+            lines
+        }
+    } else {
+        insert_mcp_block(document.lines.clone(), rendered)
+    };
+
+    Ok(updated.join(
+        "
+",
+    ))
 }
 
 pub fn remove_mcp_server(paths: &CodexPaths, name: &str) -> Result<(), CoreError> {
@@ -167,109 +184,6 @@ pub fn remove_mcp_server(paths: &CodexPaths, name: &str) -> Result<(), CoreError
         Ok(semantic)
     })?;
     Ok(())
-}
-
-fn write_mcp_server(paths: &CodexPaths, server: &McpServerSummary) -> Result<(), CoreError> {
-    CodexConfigRepository::new(paths).update(|original| render_mcp_update(original, server))?;
-    Ok(())
-}
-
-fn render_mcp_update(original: &str, server: &McpServerSummary) -> Result<String, CoreError> {
-    if server.name.trim().is_empty() {
-        return Err(CoreError::InvalidData("MCP server name is required".into()));
-    }
-    if server.name.trim() != server.name {
-        return Err(CoreError::InvalidData(
-            "MCP server name must not start or end with whitespace".into(),
-        ));
-    }
-    match server.transport {
-        McpTransport::Stdio
-            if server
-                .command
-                .as_deref()
-                .map_or(true, |s| s.trim().is_empty()) =>
-        {
-            return Err(CoreError::InvalidData("MCP command is required".into()))
-        }
-        McpTransport::Http | McpTransport::Sse => {
-            let url = server
-                .url
-                .as_deref()
-                .and_then(|s| reqwest::Url::parse(s).ok())
-                .ok_or_else(|| CoreError::InvalidData("MCP URL is required".into()))?;
-            if !matches!(url.scheme(), "http" | "https") {
-                return Err(CoreError::InvalidData(
-                    "MCP URL must use HTTP or HTTPS".into(),
-                ));
-            }
-        }
-        McpTransport::Unknown => {
-            return Err(CoreError::InvalidData("Unsupported MCP transport".into()))
-        }
-        _ => {}
-    }
-    let original_value: toml::Value = original.parse()?;
-    let document = parse_mcp_document(original)?;
-    let managed: toml::Value = render_mcp_block(server).join("\n").parse()?;
-    let mut preserved = original_value
-        .get("mcp_servers")
-        .and_then(|v| v.get(&server.name))
-        .and_then(toml::Value::as_table)
-        .cloned()
-        .unwrap_or_default();
-    if !preserved.is_empty() && !document.blocks.contains_key(&server.name) {
-        return Err(CoreError::InvalidData(
-            "Expand inline MCP configuration into a table before editing".into(),
-        ));
-    }
-    for key in [
-        "enabled",
-        "transport",
-        "type",
-        "command",
-        "args",
-        "url",
-        "env",
-        "headers",
-        "http_headers",
-    ] {
-        preserved.remove(key);
-    }
-    preserved.extend(
-        managed["mcp_servers"][&server.name]
-            .as_table()
-            .unwrap()
-            .clone(),
-    );
-    let mut servers = toml::Table::new();
-    servers.insert(server.name.clone(), toml::Value::Table(preserved));
-    let mut wrapper = toml::Table::new();
-    wrapper.insert("mcp_servers".into(), toml::Value::Table(servers));
-    let rendered = toml::to_string_pretty(&wrapper)?
-        .lines()
-        .map(str::to_owned)
-        .collect();
-
-    let updated = if let Some(existing) = document.blocks.get(&server.name) {
-        let relocate = existing
-            .iter()
-            .any(|block| should_relocate_mcp_block(&document.lines, block));
-        let mut lines = document.lines.clone();
-        for block in existing.iter().rev() {
-            lines.drain(block.start..block.end);
-        }
-        if relocate {
-            insert_mcp_block(lines, rendered)
-        } else {
-            lines.splice(existing[0].start..existing[0].start, rendered);
-            lines
-        }
-    } else {
-        insert_mcp_block(document.lines.clone(), rendered)
-    };
-
-    Ok(updated.join("\n"))
 }
 
 fn insert_mcp_block(mut lines: Vec<String>, rendered: Vec<String>) -> Vec<String> {
@@ -330,80 +244,6 @@ fn is_inside_managed_block(lines: &[String], index: usize) -> bool {
         }
     }
     false
-}
-
-fn render_mcp_block(server: &McpServerSummary) -> Vec<String> {
-    let header = quote_toml(&server.name);
-    let mut lines = vec![format!("[mcp_servers.{header}]")];
-    lines.push(format!(
-        "enabled = {}",
-        if server.enabled { "true" } else { "false" }
-    ));
-    let transport_str = match server.transport {
-        McpTransport::Stdio => "stdio",
-        McpTransport::Http => "http",
-        McpTransport::Sse => "sse",
-        McpTransport::Unknown => "stdio",
-    };
-    lines.push(format!("transport = {}", quote_toml(transport_str)));
-
-    match server.transport {
-        McpTransport::Stdio | McpTransport::Unknown => {
-            if let Some(ref cmd) = server.command {
-                if !cmd.trim().is_empty() {
-                    lines.push(format!("command = {}", quote_toml(cmd)));
-                }
-            }
-            if !server.args.is_empty() {
-                let args_str = server
-                    .args
-                    .iter()
-                    .map(|a| quote_toml(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                lines.push(format!("args = [{args_str}]"));
-            }
-        }
-        McpTransport::Http | McpTransport::Sse => {
-            if let Some(ref url) = server.url {
-                if !url.trim().is_empty() {
-                    lines.push(format!("url = {}", quote_toml(url)));
-                }
-            }
-        }
-    }
-
-    if !server.environment.is_empty() {
-        lines.push(String::new());
-        lines.push(format!("[mcp_servers.{header}.env]"));
-        let mut keys: Vec<&String> = server.environment.keys().collect();
-        keys.sort();
-        for key in keys {
-            let value = server
-                .environment
-                .get(key)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            lines.push(format!("{} = {}", quote_toml(key), quote_toml(value)));
-        }
-    }
-
-    if !server.headers.is_empty() {
-        lines.push(String::new());
-        lines.push(format!("[mcp_servers.{header}.http_headers]"));
-        let mut keys: Vec<&String> = server.headers.keys().collect();
-        keys.sort();
-        for key in keys {
-            let value = server.headers.get(key).map(|s| s.as_str()).unwrap_or("");
-            lines.push(format!("{} = {}", quote_toml(key), quote_toml(value)));
-        }
-    }
-
-    lines
-}
-
-fn quote_toml(s: &str) -> String {
-    toml::Value::String(s.into()).to_string()
 }
 
 struct McpDocument {
@@ -523,71 +363,6 @@ fn parse_mcp_document(text: &str) -> Result<McpDocument, CoreError> {
     Ok(McpDocument { lines, blocks })
 }
 
-fn parse_mcp_servers(text: &str, source_path: &str) -> Result<Vec<McpServerSummary>, CoreError> {
-    let document: toml::Value = text.parse()?;
-    let Some(servers) = document.get("mcp_servers").and_then(toml::Value::as_table) else {
-        return Ok(vec![]);
-    };
-    let string_map = |value: Option<&toml::Value>| -> HashMap<String, String> {
-        value
-            .and_then(toml::Value::as_table)
-            .map(|table| {
-                table
-                    .iter()
-                    .filter_map(|(key, value)| value.as_str().map(|s| (key.clone(), s.to_owned())))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let mut items = Vec::new();
-    for (name, value) in servers {
-        let command = value
-            .get("command")
-            .and_then(toml::Value::as_str)
-            .map(str::to_owned);
-        let url = value
-            .get("url")
-            .and_then(toml::Value::as_str)
-            .map(str::to_owned);
-        let transport = match value
-            .get("transport")
-            .or_else(|| value.get("type"))
-            .and_then(toml::Value::as_str)
-        {
-            Some("sse") => McpTransport::Sse,
-            _ if command.is_some() => McpTransport::Stdio,
-            _ if url.is_some() => McpTransport::Http,
-            _ => McpTransport::Unknown,
-        };
-        items.push(McpServerSummary {
-            name: name.clone(),
-            transport,
-            command,
-            url,
-            enabled: value
-                .get("enabled")
-                .and_then(toml::Value::as_bool)
-                .unwrap_or(true),
-            source_path: source_path.into(),
-            args: value
-                .get("args")
-                .and_then(toml::Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(toml::Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            environment: string_map(value.get("env")),
-            headers: string_map(value.get("http_headers").or_else(|| value.get("headers"))),
-        });
-    }
-    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(items)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,18 +371,20 @@ mod tests {
     const ROUTER_TOP_MANAGED_BLOCK_END: &str =
         "# --- End AgentHarbor Managed Block (router-top) ---";
 
-    fn stdio_server(name: &str) -> McpServerSummary {
-        McpServerSummary {
-            name: name.into(),
-            transport: McpTransport::Stdio,
-            enabled: true,
-            source_path: String::new(),
-            command: Some("npx".into()),
-            args: vec!["-y".into(), "@upstash/context7-mcp@latest".into()],
-            url: None,
-            headers: HashMap::new(),
-            environment: HashMap::new(),
-        }
+    /// The managed keys for a stdio server running `command`.
+    fn stdio(command: &str) -> toml::Table {
+        let mut table = toml::Table::new();
+        table.insert("enabled".into(), true.into());
+        table.insert("command".into(), command.into());
+        table
+    }
+
+    fn names(paths: &CodexPaths) -> Vec<String> {
+        read_codex_servers(paths)
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
     }
 
     fn temp_paths() -> (tempfile::TempDir, CodexPaths) {
@@ -623,9 +400,7 @@ mod tests {
         let original = "# User config\n[mcp_servers.foo]\ncommand = 'npx'\n\n[features]\nweb_search_request = true\n\n[mcp_servers.keep]\ncommand = 'node'\n\n[mcp_servers.foo.env]\nTOKEN = 'synthetic'\n";
         std::fs::write(&paths.config_path, original).unwrap();
         remove_mcp_server(&paths, "foo").unwrap();
-        let remaining = load_mcp_servers(&paths).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].name, "keep");
+        assert_eq!(names(&paths), ["keep"]);
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
         assert!(updated.contains("# User config"));
         let parsed: toml::Value = updated.parse().unwrap();
@@ -645,7 +420,7 @@ mod tests {
         )
         .unwrap();
         remove_mcp_server(&paths, "quoted.name").unwrap();
-        assert!(load_mcp_servers(&paths).unwrap().is_empty());
+        assert!(names(&paths).is_empty());
     }
 
     #[test]
@@ -657,7 +432,7 @@ mod tests {
         )
         .unwrap();
         remove_mcp_server(&paths, "foo").unwrap();
-        assert!(load_mcp_servers(&paths).unwrap().is_empty());
+        assert!(names(&paths).is_empty());
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
         let parsed: toml::Value = updated.parse().unwrap();
         assert_eq!(
@@ -680,10 +455,16 @@ mod tests {
              {BOTTOM_MANAGED_BLOCK_BEGIN}\n[model_providers.relay]\nname = 'Relay'\n{BOTTOM_MANAGED_BLOCK_END}\n"
         );
         std::fs::write(&paths.config_path, original).unwrap();
-        let mut server = set_mcp_server_enabled(&paths, "foo", false).unwrap();
-        assert!(!server.enabled);
-        server.command = Some("updated".into());
-        upsert_mcp_server(&paths, &server).unwrap();
+        let mut managed = stdio("updated");
+        managed.insert("enabled".into(), false.into());
+        managed.insert(
+            "env".into(),
+            toml::Value::Table(toml::Table::from_iter([(
+                "TOKEN".into(),
+                "synthetic".into(),
+            )])),
+        );
+        set_codex_server(&paths, "foo", &managed).unwrap();
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
         let parsed: toml::Value = updated.parse().unwrap();
         let foo = &parsed["mcp_servers"]["foo"];
@@ -730,9 +511,16 @@ mod tests {
                  [mcp_servers.{header}.env] # child\nTOKEN = 'synthetic'\n"
             );
             std::fs::write(&paths.config_path, original).unwrap();
-            let mut server = set_mcp_server_enabled(&paths, name, false).unwrap();
-            server.command = Some("updated".into());
-            upsert_mcp_server(&paths, &server).unwrap();
+            let mut managed = stdio("updated");
+            managed.insert("enabled".into(), false.into());
+            managed.insert(
+                "env".into(),
+                toml::Value::Table(toml::Table::from_iter([(
+                    "TOKEN".into(),
+                    "synthetic".into(),
+                )])),
+            );
+            set_codex_server(&paths, name, &managed).unwrap();
             let updated = std::fs::read_to_string(&paths.config_path).unwrap();
             let parsed: toml::Value = updated.parse().unwrap();
             let servers = parsed["mcp_servers"].as_table().unwrap();
@@ -783,7 +571,7 @@ mod tests {
              [mcp_servers.foo.env]\nTOKEN = 'synthetic'\n"
         );
         std::fs::write(&paths.config_path, original).unwrap();
-        set_mcp_server_enabled(&paths, "foo", false).unwrap();
+        set_codex_server(&paths, "foo", &stdio("old")).unwrap();
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
         let parsed: toml::Value = updated.parse().unwrap();
         assert_eq!(
@@ -816,7 +604,7 @@ mod tests {
         );
         std::fs::write(&paths.config_path, original).unwrap();
 
-        upsert_mcp_server(&paths, &stdio_server("context7")).unwrap();
+        set_codex_server(&paths, "context7", &stdio("npx")).unwrap();
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
 
         let top_pos = updated.find(ROUTER_TOP_MANAGED_BLOCK_BEGIN).unwrap();
@@ -848,9 +636,9 @@ mod tests {
         );
         std::fs::write(&paths.config_path, original).unwrap();
 
-        let mut server = stdio_server("context7");
-        server.enabled = false;
-        upsert_mcp_server(&paths, &server).unwrap();
+        let mut managed = stdio("npx");
+        managed.insert("enabled".into(), false.into());
+        set_codex_server(&paths, "context7", &managed).unwrap();
         let updated = std::fs::read_to_string(&paths.config_path).unwrap();
 
         let mcp_pos = updated.find("[mcp_servers.context7]").unwrap();

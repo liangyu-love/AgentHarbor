@@ -21,7 +21,7 @@ export const queryKeys = {
   accountSources: ["account-sources"],
   gateway: ["gateway"],
   tokenUsage: ["token-usage"],
-  mcpServers: ["mcp-servers"],
+  mcpServers: ["mcp-library"],
   installedSkills: ["installed-skills"],
   skillBackups: ["skill-backups"],
   customInstructionState: ["custom-instructions", "state"],

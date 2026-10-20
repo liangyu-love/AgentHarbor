@@ -1,4 +1,3 @@
-use agentharbor_lib::core::models::{McpServerSummary, McpTransport};
 use agentharbor_lib::core::{custom_instructions, mcp, skills};
 
 #[test]
@@ -368,7 +367,7 @@ fn junctions_are_not_followed_by_skill_mutations() {
     assert!(external.join("SKILL.md").exists());
 }
 use agentharbor_lib::platform::paths::CodexPaths;
-use std::{collections::HashMap, fs};
+use std::fs;
 
 #[test]
 fn skill_import_replace_remove_and_restore_roundtrip() {
@@ -519,31 +518,45 @@ fn instruction_history_rejects_paths_outside_its_directory() {
     );
 }
 
+/// The MCP library over a temporary home, with only Codex installed.
+fn mcp_context(temp: &std::path::Path, paths: &CodexPaths) -> mcp::McpContext {
+    fs::create_dir_all(&paths.app_data_dir).unwrap();
+    let clients = agentharbor_lib::core::client_config::ClientPaths::from_home(&temp.join("home"));
+    mcp::McpContext::new(paths, &clients, None)
+}
+
+fn codex_server(name: &str, command: &str, args: &[&str]) -> mcp::McpServerEntry {
+    mcp::McpServerEntry {
+        name: name.into(),
+        spec: mcp::McpSpec {
+            transport: mcp::McpKind::Stdio,
+            command: Some(command.into()),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            ..Default::default()
+        },
+        note: String::new(),
+        apps: vec![mcp::McpApp::Codex],
+    }
+}
+
 #[test]
 fn mcp_crud_keeps_other_configuration() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
     fs::create_dir_all(&paths.codex_home).unwrap();
     fs::write(&paths.config_path, "# User settings\nmodel = \"test-model\"\n\n[projects.\"D:\\\\project\"]\ntrust_level = \"trusted\"\n").unwrap();
-    let mut server = McpServerSummary {
-        name: "test-service".into(),
-        transport: McpTransport::Stdio,
-        enabled: true,
-        source_path: paths.config_path.display().to_string(),
-        command: Some("node".into()),
-        args: vec!["server.js".into()],
-        url: None,
-        headers: HashMap::new(),
-        environment: HashMap::new(),
-    };
-    mcp::upsert_mcp_server(&paths, &server).unwrap();
-    assert_eq!(mcp::load_mcp_servers(&paths).unwrap().len(), 1);
-    mcp::set_mcp_server_enabled(&paths, "test-service", false).unwrap();
-    assert!(!mcp::load_mcp_servers(&paths).unwrap()[0].enabled);
-    server.command = Some("python".into());
-    mcp::upsert_mcp_server(&paths, &server).unwrap();
-    mcp::remove_mcp_server(&paths, "test-service").unwrap();
-    let text = fs::read_to_string(paths.config_path).unwrap();
+    let context = mcp_context(temp.path(), &paths);
+    mcp::load_library(&context).unwrap();
+    let view = mcp::save_server(&context, None, codex_server("test-service", "node", &["server.js"])).unwrap();
+    assert!(view.failures.is_empty(), "{:?}", view.failures);
+    assert_eq!(mcp::read_codex_servers(&paths).unwrap().len(), 1);
+    mcp::set_servers(&context, &["test-service".into()], Some(mcp::McpApp::Codex), false).unwrap();
+    assert!(mcp::read_codex_servers(&paths).unwrap().is_empty());
+    mcp::save_server(&context, Some("test-service"), codex_server("test-service", "python", &[])).unwrap();
+    let servers = mcp::read_codex_servers(&paths).unwrap();
+    assert_eq!(servers[0].1["command"].as_str(), Some("python"));
+    mcp::remove_server(&context, "test-service").unwrap();
+    let text = fs::read_to_string(&paths.config_path).unwrap();
     assert!(text.contains("# User settings"));
     let parsed: toml::Value = text.parse().unwrap();
     assert_eq!(parsed["model"].as_str(), Some("test-model"));
@@ -551,6 +564,7 @@ fn mcp_crud_keeps_other_configuration() {
         parsed["projects"]["D:\\project"]["trust_level"].as_str(),
         Some("trusted")
     );
+    assert!(parsed.get("mcp_servers").is_none_or(|servers| servers.as_table().unwrap().is_empty()));
 }
 
 #[test]
@@ -578,14 +592,21 @@ enabled_tools = ["search"]
 "###,
     )
     .unwrap();
-    let before = mcp::load_mcp_servers(&paths).unwrap();
-    assert_eq!(before[0].args, [r"C:\tools\server.js", "--features=a,b"]);
-    mcp::set_mcp_server_enabled(&paths, "example", false).unwrap();
-    let after = mcp::load_mcp_servers(&paths).unwrap();
-    assert!(!after[0].enabled);
-    assert_eq!(after[0].command, before[0].command);
-    assert_eq!(after[0].args, before[0].args);
-    assert_eq!(after[0].environment, before[0].environment);
+    let context = mcp_context(temp.path(), &paths);
+    let view = mcp::load_library(&context).unwrap();
+    let before = view.servers[0].clone();
+    assert_eq!(before.spec.args, [r"C:\tools\server.js", "--features=a,b"]);
+    assert_eq!(before.spec.env.len(), 5);
+    // Saved again unchanged: the agent's own options stay.
+    let entry = mcp::McpServerEntry {
+        name: before.name.clone(),
+        spec: before.spec.clone(),
+        note: String::new(),
+        apps: vec![mcp::McpApp::Codex],
+    };
+    let after = mcp::save_server(&context, Some("example"), entry).unwrap();
+    assert!(after.failures.is_empty(), "{:?}", after.failures);
+    assert_eq!(after.servers[0].spec, before.spec);
     let parsed: toml::Value = fs::read_to_string(&paths.config_path)
         .unwrap()
         .parse()
@@ -605,20 +626,31 @@ fn mcp_http_headers_roundtrip_and_invalid_config_is_unchanged() {
     let temp = tempfile::tempdir().unwrap();
     let paths = CodexPaths::from_home(temp.path().join("codex"));
     fs::create_dir_all(&paths.codex_home).unwrap();
-    fs::write(&paths.config_path, "[mcp_servers.remote]\nurl = 'https://example.com/mcp'\n[mcp_servers.remote.http_headers]\n'X.Test' = 'fixture'\n").unwrap();
-    let mut server = mcp::load_mcp_servers(&paths).unwrap().remove(0);
-    assert_eq!(
-        server.headers.get("X.Test").map(String::as_str),
-        Some("fixture")
-    );
-    server.headers.insert("X.Test".into(), "updated".into());
-    mcp::upsert_mcp_server(&paths, &server).unwrap();
-    assert_eq!(
-        mcp::load_mcp_servers(&paths).unwrap()[0].headers,
-        server.headers
-    );
-    let broken = "[mcp_servers.remote\nurl = 'invalid TOML'\n";
+    fs::write(&paths.config_path, "[mcp_servers.remote]
+url = 'https://example.com/mcp'
+[mcp_servers.remote.http_headers]
+'X.Test' = 'fixture'
+").unwrap();
+    let context = mcp_context(temp.path(), &paths);
+    let view = mcp::load_library(&context).unwrap();
+    let mut spec = view.servers[0].spec.clone();
+    assert_eq!(spec.headers.get("X.Test").map(String::as_str), Some("fixture"));
+    spec.headers.insert("X.Test".into(), "updated".into());
+    let entry = |spec: mcp::McpSpec| mcp::McpServerEntry {
+        name: "remote".into(),
+        spec,
+        note: String::new(),
+        apps: vec![mcp::McpApp::Codex],
+    };
+    let view = mcp::save_server(&context, Some("remote"), entry(spec.clone())).unwrap();
+    assert!(view.failures.is_empty(), "{:?}", view.failures);
+    let servers = mcp::read_codex_servers(&paths).unwrap();
+    assert_eq!(servers[0].1["http_headers"]["X.Test"].as_str(), Some("updated"));
+    let broken = "[mcp_servers.remote
+url = 'invalid TOML'
+";
     fs::write(&paths.config_path, broken).unwrap();
-    assert!(mcp::upsert_mcp_server(&paths, &server).is_err());
+    let view = mcp::save_server(&context, Some("remote"), entry(spec)).unwrap();
+    assert_eq!(view.failures.len(), 1);
     assert_eq!(fs::read_to_string(&paths.config_path).unwrap(), broken);
 }

@@ -401,14 +401,86 @@ api.loadSnapshot = async () => ({ data: { status: {
   api: { proxy: { mode: "manual", url: "http://127.0.0.1:7890" } },
   autoSwitch: { supported: true, enabled: false, threshold5hPercent: 15, thresholdWeeklyPercent: 10 },
 } } }) as any;
-const mcpServers = [
-  { name: "filesystem", transport: "stdio", enabled: true, sourcePath: "C:/synthetic/.codex/config.toml", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "C:/work"], url: null, headers: {}, environment: { LOG_LEVEL: "info" } },
-  { name: "docs", transport: "http", enabled: true, sourcePath: "C:/synthetic/.codex/config.toml", command: null, args: [], url: "https://docs.example.invalid/mcp", headers: { Authorization: "Bearer synthetic" }, environment: {} },
-  { name: "legacy-sse", transport: "sse", enabled: false, sourcePath: "C:/synthetic/.codex/config.toml", command: null, args: [], url: "https://sse.example.invalid/events", headers: {}, environment: {} },
-  ...Array.from({ length: 3 }, (_, i) => ({ name: "tool-" + i, transport: "stdio", enabled: i !== 1, sourcePath: "C:/synthetic/.codex/config.toml", command: "uvx", args: ["tool-" + i], url: null, headers: {}, environment: {} })),
+// Like core/mcp/library.rs: one list, a switch per agent; unsupported and missing agents refuse.
+const MCP_APPS = ["codex", "claudeCode", "openCode", "pi", "cursor", "harness", "claudeDesktop"];
+const mcpInstalled = new Set(["codex", "claudeCode", "openCode", "cursor"]);
+const mcpUnsupported = (app: string, name: string, spec: any) =>
+  spec.transport === "sse" && ["codex", "pi", "harness"].includes(app) ? "mcp.unsupported.sse"
+    : spec.transport !== "stdio" && app === "claudeDesktop" ? "mcp.unsupported.remote"
+      : app === "harness" && !/^[A-Za-z0-9_-]{1,32}$/.test(name) ? "mcp.unsupported.harnessName" : null;
+const mcpSeed = () => [
+  { name: "filesystem", spec: { transport: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "C:/work"], env: { LOG_LEVEL: "info" } }, note: "", apps: ["codex", "claudeCode"] },
+  { name: "docs", spec: { transport: "http", url: "https://docs.example.invalid/mcp", headers: { Authorization: "Bearer synthetic" } }, note: "文档检索", apps: ["codex"] },
+  { name: "legacy-sse", spec: { transport: "sse", url: "https://sse.example.invalid/events" }, note: "", apps: ["claudeCode"] },
+  ...Array.from({ length: 3 }, (_, i) => ({ name: "tool-" + i, spec: { transport: "stdio", command: "uvx", args: ["tool-" + i] }, note: "", apps: i === 1 ? [] : ["codex"] })),
 ];
-api.loadMcpServers = async () => ({ schemaVersion: 1, success: true, code: "ok", message: "", warnings: [],
-  data: { items: mcpServers, total: mcpServers.length, sourcePath: "C:/synthetic/.codex/config.toml", lastScanAt: 0 } }) as any;
+const mcpView = (failures: any[] = [], added: string[] = []) => ({
+  servers: [...controls.review.mcpLibrary].sort((a: any, b: any) => a.name.localeCompare(b.name)).map((server: any) => ({
+    name: server.name, spec: structuredClone(server.spec), note: server.note,
+    cells: MCP_APPS.map(app => {
+      const reason = mcpUnsupported(app, server.name, server.spec);
+      const on = server.apps.includes(app);
+      return { app, on, state: !mcpInstalled.has(app) ? "notInstalled" : reason ? "unsupported" : on ? "synced" : "off", ...(reason ? { reason } : {}) };
+    }),
+  })),
+  apps: MCP_APPS.map(app => ({ app, path: `C:/synthetic/${app}/mcp.json`, installed: mcpInstalled.has(app), unmanaged: app === "cursor" ? ["cursor-only"] : [] })),
+  failures, added,
+});
+/** Turn a server on or off for an agent, as library.rs `switch` does. */
+const mcpSwitch = (server: any, app: string, on: boolean) => {
+  if (on && !mcpInstalled.has(app)) return [{ name: server.name, app, error: "mcp.errors.notInstalled" }];
+  const reason = on && mcpUnsupported(app, server.name, server.spec);
+  if (reason) return [{ name: server.name, app, error: reason }];
+  server.apps = on ? [...new Set([...server.apps, app])] : server.apps.filter((item: string) => item !== app);
+  return [];
+};
+const mcpChange = async (operation: string, detail: object, change: () => any[]) => {
+  controls.review.mcpCalls.push({ operation, ...structuredClone(detail) });
+  if (controls.review.mcpHold) await new Promise(resolve => { controls.review.mcpResolve = resolve; });
+  return mcpView(change()) as any;
+};
+api.loadMcpLibrary = async () => { controls.review.mcpCalls.push({ operation: "load" }); return mcpView() as any; };
+api.importMcpServers = async () => {
+  const fresh = !controls.review.mcpLibrary.some((server: any) => server.name === "cursor-only");
+  const view = await mcpChange("import", {}, () => {
+    if (fresh) controls.review.mcpLibrary.push({ name: "cursor-only", spec: { transport: "stdio", command: "node", args: ["cursor.js"] }, note: "", apps: ["cursor"] });
+    return [];
+  });
+  return { ...view, added: fresh ? ["cursor-only"] : [] };
+};
+api.saveMcpServer = async (original, server) => {
+  if (!original && controls.review.mcpLibrary.some((item: any) => item.name === server.name)) throw "mcp.errors.duplicate";
+  return mcpChange("save", { original, server }, () => {
+    let entry = controls.review.mcpLibrary.find((item: any) => item.name === server.name);
+    if (!entry) controls.review.mcpLibrary.push(entry = { name: server.name, spec: server.spec, note: server.note, apps: [] });
+    entry.spec = server.spec;
+    entry.note = server.note;
+    return MCP_APPS.flatMap(app => server.apps.includes(app) || entry.apps.includes(app) ? mcpSwitch(entry, app, server.apps.includes(app)) : []);
+  });
+};
+api.setMcpServers = async (names, app, on) => mcpChange("set", { names, app, on }, () => controls.review.mcpLibrary
+  .filter((server: any) => names.includes(server.name))
+  .flatMap((server: any) => app ? mcpSwitch(server, app, on)
+    : MCP_APPS.filter(item => on ? mcpInstalled.has(item) && !mcpUnsupported(item, server.name, server.spec) : server.apps.includes(item))
+      .flatMap(item => mcpSwitch(server, item, on))));
+api.removeMcpServer = async name => mcpChange("remove", { name }, () => {
+  controls.review.mcpLibrary = controls.review.mcpLibrary.filter((server: any) => server.name !== name);
+  return [];
+});
+api.resyncMcpServers = async () => mcpChange("resync", {}, () => []);
+api.parseMcpPaste = async text => {
+  controls.review.mcpCalls.push({ operation: "paste", text });
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) {
+    const servers = JSON.parse(trimmed).mcpServers ?? {};
+    return Object.entries(servers).map(([name, spec]: [string, any]) => ({ name, spec: spec.url
+      ? { transport: spec.type === "sse" ? "sse" : "http", url: spec.url, headers: spec.headers ?? {} }
+      : { transport: "stdio", command: spec.command, args: spec.args ?? [], env: spec.env ?? {} } })) as any;
+  }
+  const words = trimmed.split(/\s+/);
+  if (!words[0]) throw "mcp.errors.paste";
+  return [{ name: "", spec: { transport: "stdio", command: words[0], args: words.slice(1) } }] as any;
+};
 const quotaWindow = (remainingPercent: number, windowMinutes: number) => ({ usedPercent: 100 - remainingPercent, remainingPercent, windowMinutes, resetsAt: 1_900_000_000 });
 const accountList = { activeAccountKey: "acct-a", refreshedAt: 1_800_000_000, items: [
   { accountKey: "acct-a", email: "alpha@example.invalid", displayName: "Alpha", plan: "pro", authMode: "chatgpt", isActive: true, createdAt: 1_700_000_000, lastUsedAt: 1_800_000_000, lastUsageAt: 1_800_000_000, primaryWindow: quotaWindow(72, 300), secondaryWindow: quotaWindow(40, 10080), usageStatus: "healthy", usageError: null },
@@ -979,7 +1051,10 @@ function mount(mode: FixtureMode) {
     delete controls.review.cursorModels;
     controls.review.cursorCalls = [];
   }
-  localStorage.removeItem("agentharbor.mcp-source");
+  localStorage.removeItem("agentharbor.mcp-targets");
+  controls.review.mcpLibrary = mcpSeed();
+  controls.review.mcpCalls = [];
+  controls.review.mcpHold = false;
   if (!controls.review.keepAccountsTab) localStorage.removeItem("agentharbor.accounts-tab.v1");
   localStorage.removeItem("agentharbor.instruction-source");
   // The injection console opens on Codex unless a suite asks for another client.
@@ -995,14 +1070,6 @@ function mount(mode: FixtureMode) {
     api.applyCustomInstruction = async (params, source = "codex") => { controls.review.instructionCalls.push({ operation: "apply", target: source, ...params }); if (controls.review.instructionApplyHold) await new Promise(resolve => { controls.review.instructionApplyResolve = resolve; }); const state = controls.review.instructionStates[source]; state.history.unshift({ id: `entry-${state.history.length}`, action: "apply", source: "manual", createdAt: 1700000000 }); state.current.managedContent = params.content; state.current.fileContent = instructionFile(params.content); return { data: structuredClone(state) } as any; };
     api.clearCustomInstructionBlock = async (source = "codex") => { controls.review.instructionCalls.push({ operation: "clear", source }); const state = controls.review.instructionStates[source]; state.current.managedContent = ""; state.current.fileContent = "User rules\n"; state.current.managedBlockPresent = false; return { data: structuredClone(state) } as any; };
     api.rollbackCustomInstruction = async (id, source = "codex") => { controls.review.instructionCalls.push({ operation: "rollback", source, id }); return { data: structuredClone(controls.review.instructionStates[source]) } as any; };
-  }
-  if (mode === "mcp-clients") {
-    controls.review.mcpCalls = [];
-    controls.review.mcpStore = { codex: structuredClone(mcpServers), claudeCode: [{ ...structuredClone(mcpServers[1]), name: "claude-docs", sourcePath: "C:/synthetic/.claude.json" }] };
-    api.loadMcpServers = async (source = "codex") => { controls.review.mcpCalls.push({ operation: "load", source }); return { data: { items: structuredClone(controls.review.mcpStore[source]), total: controls.review.mcpStore[source].length, sourcePath: source === "codex" ? "C:/synthetic/.codex/config.toml" : "C:/synthetic/.claude.json" } } as any; };
-    api.setMcpServerEnabled = async (name, enabled, source = "codex") => { controls.review.mcpCalls.push({ operation: "toggle", name, enabled, source }); if (controls.review.mcpHold) await new Promise(resolve => { controls.review.mcpResolve = resolve; }); const server = controls.review.mcpStore[source].find((item: any) => item.name === name); server.enabled = enabled; return { data: { server } } as any; };
-    api.upsertMcpServer = async (server, source = "codex") => { controls.review.mcpCalls.push({ operation: "save", server, source }); const list = controls.review.mcpStore[source]; const index = list.findIndex((item: any) => item.name === server.name); if (index >= 0) list[index] = server; else list.push(server); return { data: { server } } as any; };
-    api.removeMcpServer = async (name, source = "codex") => { controls.review.mcpCalls.push({ operation: "remove", name, source }); controls.review.mcpStore[source] = controls.review.mcpStore[source].filter((item: any) => item.name !== name); return { data: {} } as any; };
   }
   localStorage.removeItem("threads_source");
   if (mode === "overview") { controls.review.claudeSkills = [{ id: "one" }, { id: "two" }, { id: "three" }]; controls.review.claudeSkillBackups = [{ id: "claude-b1" }, { id: "claude-b2" }]; }

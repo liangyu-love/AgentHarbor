@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -58,14 +57,6 @@ pub enum ApiProxyMode {
     Manual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum McpTransport {
-    Stdio,
-    Http,
-    Sse,
-    Unknown,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -258,44 +249,9 @@ pub struct CustomInstructionPreviewPayload {
 // MCP payloads
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct McpServerSummary {
-    pub name: String,
-    pub transport: McpTransport,
-    pub enabled: bool,
-    pub source_path: String,
-    pub command: Option<String>,
-    pub args: Vec<String>,
-    pub url: Option<String>,
-    pub headers: HashMap<String, String>,
-    pub environment: HashMap<String, String>,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct McpServerListPayload {
-    pub items: Vec<McpServerSummary>,
-    pub total: i32,
-    pub source_path: String,
-    pub last_scan_at: i64,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct McpServerMutationPayload {
-    pub server: McpServerSummary,
-    pub total: i32,
-    pub source_path: String,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct McpServerRemovePayload {
-    pub removed_name: String,
-    pub total: i32,
-    pub source_path: String,
-}
 
 // ---------------------------------------------------------------------------
 // Skill payloads

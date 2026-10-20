@@ -1,107 +1,73 @@
-use crate::core::auth::current_timestamp;
-use crate::core::mcp;
-use crate::core::models::*;
+use crate::core::mcp::{self, McpApp, McpContext, McpLibraryView, McpServerEntry, PastedServer};
 use crate::core::repository::Repository;
-use crate::core::targets::TargetId;
-use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
 
-#[tauri::command]
-pub fn load_mcp_servers(
-    repo: State<'_, Mutex<Repository>>,
-    target_id: Option<TargetId>,
-) -> Result<CoreEnvelope<McpServerListPayload>, String> {
+fn context(repo: &State<'_, Mutex<Repository>>) -> Result<McpContext, String> {
     let repo = repo.lock().map_err(|e| e.to_string())?;
-    let config = mcp::McpConfig::for_target(repo.paths(), target_id.unwrap_or(TargetId::Codex))
-        .map_err(|e| e.to_string())?;
-    let items = config.load().map_err(|e| e.to_string())?;
-    let payload = McpServerListPayload {
-        total: items.len() as i32,
-        source_path: config.source_path(),
-        last_scan_at: current_timestamp(),
-        items,
-    };
-    Ok(CoreEnvelope::ok(payload))
+    Ok(McpContext::discover(repo.paths()))
+}
+
+/// The MCP library and each agent's state; seeded from the agents the first time.
+#[tauri::command]
+pub async fn load_mcp_library(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<McpLibraryView, String> {
+    let context = context(&repo)?;
+    super::blocking(move || mcp::load_library(&context)).await
 }
 
 #[tauri::command]
-pub fn upsert_mcp_server(
+pub async fn import_mcp_servers(
     repo: State<'_, Mutex<Repository>>,
-    target_id: Option<TargetId>,
-    name: String,
-    transport: String,
-    enabled: bool,
-    command: Option<String>,
-    args: Vec<String>,
-    url: Option<String>,
-    headers: HashMap<String, String>,
-    environment: HashMap<String, String>,
-) -> Result<CoreEnvelope<McpServerMutationPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let config = mcp::McpConfig::for_target(repo.paths(), target_id.unwrap_or(TargetId::Codex))
-        .map_err(|e| e.to_string())?;
-    let transport_enum = match transport.as_str() {
-        "stdio" => McpTransport::Stdio,
-        "http" => McpTransport::Http,
-        "sse" => McpTransport::Sse,
-        _ => McpTransport::Unknown,
-    };
-    let server = McpServerSummary {
-        name,
-        transport: transport_enum,
-        enabled,
-        source_path: config.source_path(),
-        command,
-        args,
-        url,
-        headers,
-        environment,
-    };
-    let saved = config.upsert(&server).map_err(|e| e.to_string())?;
-    let all = config.load().map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(McpServerMutationPayload {
-        server: saved,
-        total: all.len() as i32,
-        source_path: config.source_path(),
-    }))
+) -> Result<McpLibraryView, String> {
+    let context = context(&repo)?;
+    super::blocking(move || mcp::import_servers(&context)).await
+}
+
+/// Add a server (`original` absent) or change one, and write it to the agents it is on.
+#[tauri::command]
+pub async fn save_mcp_server(
+    repo: State<'_, Mutex<Repository>>,
+    original: Option<String>,
+    server: McpServerEntry,
+) -> Result<McpLibraryView, String> {
+    let context = context(&repo)?;
+    super::blocking(move || mcp::save_server(&context, original.as_deref(), server)).await
+}
+
+/// Turn servers on or off for one agent, or for every agent when `app` is absent.
+#[tauri::command]
+pub async fn set_mcp_servers(
+    repo: State<'_, Mutex<Repository>>,
+    names: Vec<String>,
+    app: Option<McpApp>,
+    on: bool,
+) -> Result<McpLibraryView, String> {
+    let context = context(&repo)?;
+    super::blocking(move || mcp::set_servers(&context, &names, app, on)).await
 }
 
 #[tauri::command]
-pub fn set_mcp_server_enabled(
+pub async fn remove_mcp_server(
     repo: State<'_, Mutex<Repository>>,
-    target_id: Option<TargetId>,
     name: String,
-    enabled: bool,
-) -> Result<CoreEnvelope<McpServerMutationPayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let config = mcp::McpConfig::for_target(repo.paths(), target_id.unwrap_or(TargetId::Codex))
-        .map_err(|e| e.to_string())?;
-    let saved = config
-        .set_enabled(&name, enabled)
-        .map_err(|e| e.to_string())?;
-    let all = config.load().map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(McpServerMutationPayload {
-        server: saved,
-        total: all.len() as i32,
-        source_path: config.source_path(),
-    }))
+) -> Result<McpLibraryView, String> {
+    let context = context(&repo)?;
+    super::blocking(move || mcp::remove_server(&context, &name)).await
 }
 
+/// Write every server again to the agents it is on.
 #[tauri::command]
-pub fn remove_mcp_server(
+pub async fn resync_mcp_servers(
     repo: State<'_, Mutex<Repository>>,
-    target_id: Option<TargetId>,
-    name: String,
-) -> Result<CoreEnvelope<McpServerRemovePayload>, String> {
-    let repo = repo.lock().map_err(|e| e.to_string())?;
-    let config = mcp::McpConfig::for_target(repo.paths(), target_id.unwrap_or(TargetId::Codex))
-        .map_err(|e| e.to_string())?;
-    config.remove(&name).map_err(|e| e.to_string())?;
-    let all = config.load().map_err(|e| e.to_string())?;
-    Ok(CoreEnvelope::ok(McpServerRemovePayload {
-        removed_name: name,
-        total: all.len() as i32,
-        source_path: config.source_path(),
-    }))
+) -> Result<McpLibraryView, String> {
+    let context = context(&repo)?;
+    super::blocking(move || mcp::resync_servers(&context)).await
+}
+
+/// The servers in pasted JSON, TOML or a command line, for the add form.
+#[tauri::command]
+pub fn parse_mcp_paste(text: String) -> Result<Vec<PastedServer>, String> {
+    mcp::parse_pasted(&text)
 }

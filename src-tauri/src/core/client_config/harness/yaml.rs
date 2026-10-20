@@ -227,6 +227,27 @@ pub(super) fn remove_row(text: Option<&str>, id: &str) -> Result<Option<String>,
     first_reading(candidates, &expected)
 }
 
+/// The patch text with `entry` (a whole row, `id` included) appended. The
+/// caller has checked that no row holds its id.
+pub(super) fn insert_row(text: Option<&str>, entry: &Value) -> Result<Option<String>, String> {
+    let document = read(text)?;
+    let mut expected = if document.is_null() {
+        json!([])
+    } else {
+        document
+    };
+    expected.as_array_mut().ok_or(SHAPE)?.push(entry.clone());
+    let source = text.unwrap_or("");
+    let mut candidates = vec![append_rows(source, entry)];
+    candidates.extend(structural(source, |document| {
+        document
+            .as_sequence()?
+            .push(flow_snippet(entry)?.as_mapping()?);
+        Some(())
+    }));
+    first_reading(candidates, &expected)
+}
+
 /// New rows as block YAML after the existing ones. A list that holds nothing
 /// but `[]` gives that token up for the rows.
 fn append_rows(source: &str, entry: &Value) -> String {

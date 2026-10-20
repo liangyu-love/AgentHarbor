@@ -27,9 +27,8 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import type { Route } from "@/types/navigation";
-import type { CoreEnvelope, CoreSnapshotPayload, McpServerListPayload, SkillListPayload } from "@/types";
+import type { CoreEnvelope, CoreSnapshotPayload, McpLibraryView, SkillListPayload } from "@/types";
 import { queryKeys } from "@/lib/query-keys";
-import { storageKeys } from "@/lib/storage-keys";
 import { formatInvokeError } from "@/lib/invoke-error";
 
 interface CommandPaletteProps {
@@ -79,9 +78,7 @@ export function CommandPalette({
   const sessionsPath = snapshotData?.data.status.paths.sessionsPath ?? "";
 
   // Load MCP servers
-  const mcpSource = localStorage.getItem(storageKeys.mcpSource) === "claudeCode" ? "claudeCode" : "codex";
-  const mcpData = queryClient.getQueryData<CoreEnvelope<McpServerListPayload>>([...queryKeys.mcpServers, mcpSource]);
-  const mcpServers = mcpData?.data.items ?? [];
+  const mcpServers = queryClient.getQueryData<McpLibraryView>(queryKeys.mcpServers)?.servers ?? [];
 
   // Load Skills
   const skillsData = queryClient.getQueryData<CoreEnvelope<SkillListPayload>>(queryKeys.installedSkills);
@@ -300,9 +297,11 @@ export function CommandPalette({
     // 动态添加 MCP 服务项
     mcpServers.forEach((server) => {
       items.push({
-        id: `mcp-${mcpSource}-${server.name}`,
+        id: `mcp-${server.name}`,
         title: `MCP: ${server.name}`,
-        subtitle: `${mcpSource === "codex" ? "Codex" : "Claude Code"} · ${server.transport.toUpperCase()} · ${t(server.enabled ? "mcp.enabled" : "mcp.disabled")} · ${server.command || server.url}`,
+        subtitle: [server.spec.transport.toUpperCase(),
+          server.cells.filter((cell) => cell.on).map((cell) => t(`mcp.apps.${cell.app}`)).join(" / ") || t("mcp.state.off"),
+          server.spec.command || server.spec.url].join(" · "),
         icon: Terminal,
         category: "mcp",
         onSelect: () => {
@@ -328,7 +327,7 @@ export function CommandPalette({
     });
 
     return items;
-  }, [t, onNavigate, onOpenChange, isDarkMode, onThemeToggle, codexHome, sessionsPath, mcpSource, mcpServers, skillsList]);
+  }, [t, onNavigate, onOpenChange, isDarkMode, onThemeToggle, codexHome, sessionsPath, mcpServers, skillsList]);
 
   // Filter items by query
   const filteredItems = useMemo(() => {

@@ -1,7 +1,6 @@
 import type {
   CoreEnvelope,
   CoreSnapshotPayload,
-  McpServerSummary,
   CleanPayload,
   RebuildRegistryPayload,
   AutoSwitchConfigPayload,
@@ -17,9 +16,10 @@ import type {
   TerminalProxyProbe,
   UpdateInstallabilityPayload,
   DiagnosePayload,
-  McpServerListPayload,
-  McpServerMutationPayload,
-  McpServerRemovePayload,
+  McpApp,
+  McpLibraryView,
+  McpServerEntry,
+  PastedMcpServer,
   SkillListPayload,
   SkillSource,
   InstalledSkillSummary,
@@ -514,17 +514,18 @@ export const api = {
   diagnose: () =>
     invoke<CoreEnvelope<DiagnosePayload>>("diagnose"),
 
-  loadMcpServers: (targetId: "codex" | "claudeCode" = "codex") =>
-    invoke<CoreEnvelope<McpServerListPayload>>("load_mcp_servers", { targetId }),
-
-  upsertMcpServer: (server: Omit<McpServerSummary, "sourcePath">, targetId: "codex" | "claudeCode" = "codex") =>
-    invoke<CoreEnvelope<McpServerMutationPayload>>("upsert_mcp_server", { ...server, targetId }),
-
-  setMcpServerEnabled: (name: string, enabled: boolean, targetId: "codex" | "claudeCode" = "codex") =>
-    invoke<CoreEnvelope<McpServerMutationPayload>>("set_mcp_server_enabled", { name, enabled, targetId }),
-
-  removeMcpServer: (name: string, targetId: "codex" | "claudeCode" = "codex") =>
-    invoke<CoreEnvelope<McpServerRemovePayload>>("remove_mcp_server", { name, targetId }),
+  /** The MCP library and each agent's state; seeded from the agents the first time. */
+  loadMcpLibrary: () => invoke<McpLibraryView>("load_mcp_library"),
+  importMcpServers: () => invoke<McpLibraryView>("import_mcp_servers"),
+  /** Add a server (`original` null) or change one; it is written to the agents it is on. */
+  saveMcpServer: (original: string | null, server: McpServerEntry) =>
+    invoke<McpLibraryView>("save_mcp_server", { original, server }),
+  /** Turn servers on or off for one agent, or for every agent when `app` is null. */
+  setMcpServers: (names: string[], app: McpApp | null, on: boolean) =>
+    invoke<McpLibraryView>("set_mcp_servers", { names, app, on }),
+  removeMcpServer: (name: string) => invoke<McpLibraryView>("remove_mcp_server", { name }),
+  resyncMcpServers: () => invoke<McpLibraryView>("resync_mcp_servers"),
+  parseMcpPaste: (text: string) => invoke<PastedMcpServer[]>("parse_mcp_paste", { text }),
 
   loadInstalledSkills: (source?: SkillSource) =>
     invoke<CoreEnvelope<SkillListPayload>>("load_installed_skills", { source }),

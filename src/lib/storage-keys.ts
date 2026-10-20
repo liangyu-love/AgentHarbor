@@ -9,7 +9,7 @@ export const storageKeys = {
   refreshInterval: "refresh_interval",
   sidebarCollapsed: "sidebar_collapsed",
   threadsViewMode: "threads_view_mode",
-  mcpSource: "agentharbor.mcp-source",
+  mcpTargets: "agentharbor.mcp-targets",
   instructionSource: "agentharbor.instruction-source",
   instructionPresets: "agentharbor.instruction-presets.v1",
   threadsSource: "threads_source",

@@ -18,6 +18,51 @@ mod routes;
 mod yaml;
 
 pub use routes::Reasoning as HarnessReasoning;
+
+/// MCP servers in Harness's machine-wide patch (`$DSH_HOME/cordis.patch.yml`):
+/// one `@deepseek-ai/dsh-mcp-client` row per server, for the MCP page.
+pub(crate) mod mcp_rows {
+    use super::yaml;
+    use serde_json::{json, Value};
+
+    pub const PLUGIN: &str = "@deepseek-ai/dsh-mcp-client";
+
+    /// Every MCP client row as (row id, config).
+    pub fn read(text: Option<&str>) -> Result<Vec<(String, Value)>, String> {
+        let document = yaml::read(text)?;
+        let rows = match &document {
+            Value::Null => return Ok(Vec::new()),
+            Value::Array(rows) => rows,
+            _ => return Err("clients.errors.harnessPatchShape".into()),
+        };
+        Ok(rows
+            .iter()
+            .filter(|row| row.get("name").and_then(Value::as_str) == Some(PLUGIN))
+            .filter_map(|row| {
+                let id = row.get("id")?.as_str()?.to_owned();
+                Some((id, row.get("config").cloned().unwrap_or(Value::Null)))
+            })
+            .collect())
+    }
+
+    /// The text with row `id` holding `config`: its config replaced when the
+    /// row exists (and is an MCP client), else a new MCP client row.
+    pub fn upsert(text: Option<&str>, id: &str, config: &Value) -> Result<Option<String>, String> {
+        let document = yaml::read(text)?;
+        match yaml::row(&document, id) {
+            Some(row) if row.get("name").and_then(Value::as_str) != Some(PLUGIN) => {
+                Err("mcp.errors.harnessRowTaken".into())
+            }
+            Some(_) => yaml::set_patch(text, id, &[], Some(config)),
+            None => yaml::insert_row(text, &json!({"id": id, "name": PLUGIN, "config": config})),
+        }
+    }
+
+    /// The text without row `id`.
+    pub fn remove(text: Option<&str>, id: &str) -> Result<Option<String>, String> {
+        yaml::remove_row(text, id)
+    }
+}
 pub(super) use routes::PROTOCOLS;
 
 use super::*;

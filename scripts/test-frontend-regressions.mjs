@@ -1,4 +1,5 @@
 import { testClaudeSupport } from "./test-claude-support.mjs";
+import { testMcpLibrary } from "./test-mcp-library.mjs";
 import { testPiIntegration } from "./test-pi-integration.mjs";
 import { testHarnessIntegration } from "./test-harness-integration.mjs";
 import { testImageDownload } from "./test-image-download.mjs";
@@ -120,6 +121,8 @@ try {
     await testHarnessIntegration({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-support") {
     await testClaudeSupport({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "mcp") {
+    await testMcpLibrary({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "image-download") {
     await testImageDownload({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "image-api") {
@@ -1594,6 +1597,7 @@ try {
   await testThreadDetails({ page, reset, captureDir });
   await testClaudeSessions({ page, reset, captureDir });
   await testClaudeSupport({ page, reset, captureDir });
+  await testMcpLibrary({ page, reset, captureDir });
   await testPiIntegration({ page, reset, captureDir });
   await testHarnessIntegration({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
