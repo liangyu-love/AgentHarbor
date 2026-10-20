@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ChevronLeft, ChevronRight, Layers, Loader2, Network, PlugZap, RadioTower, RefreshCw, ScanSearch, SquarePen, Tag, Trash2, Wallet,
+  ChevronLeft, ChevronRight, Globe, Layers, Loader2, Network, PlugZap, RadioTower, RefreshCw, ScanSearch, SquarePen, Tag, Trash2, Wallet,
 } from "lucide-react";
 import { balanceSourceName, isMimoBalanceSite } from "@/lib/provider-balance";
 import { api } from "@/lib/api";
@@ -88,6 +88,10 @@ export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRem
   const live = !!use?.codex;
   const filtered = filter === group.key;
   const dsPeak = hostOf(provider) === "api.deepseek.com" ? deepSeekPeakNow() : null;
+  // MiMo searches only over Chat Completions, and only once the account's
+  // console has the Web Search plugin on; the card says so.
+  const mimoSearch = hostOf(provider) === "api.xiaomimimo.com"
+    ? (providerModelProtocol(provider) === "chatCompletions" ? "ready" : "wrongProtocol") : null;
   const value = balanceValue(provider);
   const hasMultiple = group.providers.length > 1;
   const isExpanded = !!expandedGroups[group.key];
@@ -201,6 +205,14 @@ export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRem
             {dsPeak !== null && (
               <span className={cn(pill, dsPeak ? "bg-amber-500/15 text-amber-700 dark:text-amber-400" : testTone.ok)} title={t("newapi.deepSeekPeakTip")}>
                 {t(dsPeak ? "newapi.peakNow" : "newapi.offPeakNow")}
+              </span>
+            )}
+            {mimoSearch && (
+              <span data-mimo-search={mimoSearch}
+                className={cn(pill, mimoSearch === "ready" ? "bg-primary/10 text-primary" : "bg-amber-500/15 text-amber-700 dark:text-amber-400")}
+                title={mimoSearch === "ready" ? t("newapi.mimoSearchTip")
+                  : `${t("newapi.mimoSearchTip")}\n${t("newapi.mimoSearchProtocolTip", { protocol: t(protocolBadgeKey[providerModelProtocol(provider)]) })}`}>
+                <Globe className="h-3 w-3" />{t(mimoSearch === "ready" ? "newapi.mimoSearch" : "newapi.mimoSearchNeedsChat")}
               </span>
             )}
           </div>
