@@ -243,7 +243,8 @@ impl ModelConfig {
                 ModelType::Anthropic => self.anthropic_thinking_effort.clone(),
             };
         }
-        model.reasoning.enabled |= model.reasoning.effort.is_some();
+        let effort = model.reasoning.effort.as_deref();
+        model.reasoning.enabled = effort != Some("none") && (model.reasoning.enabled || effort.is_some());
     }
 }
 

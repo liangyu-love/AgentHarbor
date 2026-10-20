@@ -293,6 +293,32 @@ pub fn shared_plan(models: &[(&str, &ClientProjection)]) -> SharedCompressionPla
     }
 }
 
+/// The levels a client offers. A model whose thinking is a switch gets `none`
+/// to turn it off, and one with no levels of its own gets `high` to turn it
+/// on, returned as the default; the router turns both back into the switch
+/// (`session_compat::prepare_thinking_switch`). Manual levels stay as given.
+fn with_switch(metadata: &ResolvedMetadata) -> (Vec<model_metadata::ReasoningLevel>, Option<String>) {
+    let mut levels = metadata.reasoning.levels.value.clone().unwrap_or_default();
+    let switch = metadata.reasoning.supports != Some(false)
+        && metadata.reasoning.levels.source != model_metadata::source::MANUAL
+        && metadata.reasoning.options.iter().any(|option| option.kind == "toggle");
+    if !switch {
+        return (levels, None);
+    }
+    let level = |effort: &str| model_metadata::ReasoningLevel {
+        effort: effort.to_owned(),
+        description: model_metadata::effort_description(effort),
+    };
+    let switched_on = levels.is_empty().then(|| {
+        levels.push(level("high"));
+        "high".to_owned()
+    });
+    if !levels.iter().any(|level| level.effort.eq_ignore_ascii_case("none")) {
+        levels.insert(0, level("none"));
+    }
+    (levels, switched_on)
+}
+
 /// Build the shared projection. `policy` is the resolved model → provider →
 /// global chain; the caller supplies it so the source label stays truthful.
 pub fn project(
@@ -327,16 +353,20 @@ pub fn project(
         Some(_) => (context_window, context_source.clone()),
         None => (context_window, context_source.clone()),
     };
-    let levels = metadata.reasoning.levels.value.clone().unwrap_or_default();
+    let (levels, switched_on) = with_switch(metadata);
     let reasoning = levels
         .iter()
         .filter_map(|level| serde_json::to_value(level).ok())
         .collect();
-    let default_reasoning = metadata.default_effort.clone().filter(|effort| {
-        levels
-            .iter()
-            .any(|level| level.effort.eq_ignore_ascii_case(effort))
-    });
+    let default_reasoning = metadata
+        .default_effort
+        .clone()
+        .filter(|effort| {
+            levels
+                .iter()
+                .any(|level| level.effort.eq_ignore_ascii_case(effort))
+        })
+        .or(switched_on);
     let budget = budget.max(1);
     let compression = plan(policy.0, policy.1, Some(budget), &budget_source);
     ClientProjection {
@@ -377,6 +407,45 @@ mod tests {
             "catalog",
         );
         assert_eq!(computed.threshold, Some(160_000));
+    }
+
+    #[test]
+    fn a_thinking_switch_is_offered_as_off_and_on() {
+        let efforts = |projection: &ClientProjection| -> Vec<String> {
+            projection.reasoning.iter().map(|level| level["effort"].as_str().unwrap().to_owned()).collect()
+        };
+        let level = |effort: &str| model_metadata::ReasoningLevel { effort: effort.into(), description: String::new() };
+        let metadata = |levels: &[&str], toggle: bool, source: &str| {
+            let mut metadata = ResolvedMetadata::default();
+            metadata.reasoning.levels.value = Some(levels.iter().map(|effort| level(effort)).collect());
+            metadata.reasoning.levels.source = source.into();
+            metadata.reasoning.supports = Some(true);
+            if toggle {
+                metadata.reasoning.options.push(model_metadata::ReasoningOptionInfo { kind: "toggle".into(), ..Default::default() });
+            }
+            metadata
+        };
+        let policy = (&CompressionPolicy::Inherit, PolicySource::Global);
+        let catalog = model_metadata::source::CATALOG_GENERIC;
+
+        // A switch alone (MiMo): Off and On, starting on.
+        let projection = project(&metadata(&[], true, catalog), policy);
+        assert_eq!(efforts(&projection), ["none", "high"]);
+        assert_eq!(projection.default_reasoning.as_deref(), Some("high"));
+
+        // A switch beside levels (DeepSeek): Off ahead of them, default untouched.
+        let mut leveled = metadata(&["low", "high", "max"], true, catalog);
+        leveled.default_effort = Some("max".into());
+        let projection = project(&leveled, policy);
+        assert_eq!(efforts(&projection), ["none", "low", "high", "max"]);
+        assert_eq!(projection.default_reasoning.as_deref(), Some("max"));
+
+        // Levels without a switch, manual levels and non-thinking models stay as they are.
+        assert_eq!(efforts(&project(&metadata(&["low", "high"], false, catalog), policy)), ["low", "high"]);
+        assert_eq!(efforts(&project(&metadata(&["high"], true, model_metadata::source::MANUAL), policy)), ["high"]);
+        let mut unsupported = metadata(&[], true, catalog);
+        unsupported.reasoning.supports = Some(false);
+        assert!(project(&unsupported, policy).reasoning.is_empty());
     }
 
     #[test]

@@ -99,10 +99,12 @@ fn from_requested(
     for parameter in &model.parameters {
         match parameter.id.as_str() {
             "effort" | "reasoning" => {
+                // `none` stays explicit: it turns thinking off rather than
+                // leaving the model on its own default.
                 let effort = parameter.value.trim();
-                spec.reasoning.effort =
-                    (effort != "none" && !effort.is_empty()).then(|| effort.to_string());
-                spec.reasoning.enabled |= spec.reasoning.effort.is_some();
+                spec.reasoning.effort = (!effort.is_empty()).then(|| effort.to_string());
+                spec.reasoning.enabled = effort != "none"
+                    && (spec.reasoning.enabled || spec.reasoning.effort.is_some());
             }
             "thinking" => spec.reasoning.enabled |= parse_bool(parameter)?,
             "fast" => {
@@ -156,5 +158,23 @@ mod tests {
         assert_eq!(model.model_id, "test-model");
         assert_eq!(model.latency, ModelLatency::Standard);
         assert!(!model.reasoning.enabled);
+    }
+
+    #[test]
+    fn an_off_effort_stays_explicit() {
+        let requested = |effort: &str| pb::RequestedModel {
+            model_id: "test-model".into(),
+            max_mode: true,
+            parameters: vec![pb::requested_model::ModelParameterValue { id: "reasoning".into(), value: effort.into() }],
+            ..Default::default()
+        };
+
+        let off = from_requested(&requested("none"), None).unwrap();
+        assert_eq!(off.reasoning.effort.as_deref(), Some("none"));
+        assert!(!off.reasoning.enabled);
+
+        let high = from_requested(&requested("high"), None).unwrap();
+        assert_eq!(high.reasoning.effort.as_deref(), Some("high"));
+        assert!(high.reasoning.enabled);
     }
 }
