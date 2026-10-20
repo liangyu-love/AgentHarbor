@@ -1,7 +1,7 @@
 {
   "name": "agent-harbor",
   "private": false,
-  "version": "1.0.13",
+  "version": "1.0.14",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "scripts": {
