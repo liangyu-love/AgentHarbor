@@ -229,7 +229,16 @@ fn effort_name(effort: &str) -> String {
         }
     }
 }
+/// The context a model starts on when its own window is unknown.
 const DEFAULT_CONTEXT: &str = "200k";
+
+/// The context a model starts on: its own window, as the option that names
+/// it, else the fallback.
+fn default_context(contexts: &[(String, String)], context_window_tokens: Option<u64>) -> &str {
+    context_window_tokens
+        .and_then(|tokens| contexts.iter().find(|(value, _)| parse_token_count(value) == Some(tokens)))
+        .map_or(DEFAULT_CONTEXT, |(value, _)| value.as_str())
+}
 
 fn context_options(context_window_tokens: Option<u64>) -> Vec<(String, String)> {
     let mut contexts = CONTEXTS
@@ -390,11 +399,13 @@ fn available_model(model: &ModelConfig) -> AvailableModel {
         .map(|effort| (effort.clone(), effort_name(effort)))
         .collect::<Vec<_>>();
     let default_effort = model.default_effort.as_deref();
+    let default_context = default_context(&contexts, model.context_window_tokens);
     let variants = model_variants(
         &model.model_hash,
         &model.display_name,
         &tooltip,
         &contexts,
+        default_context,
         &efforts,
         default_effort,
     );
@@ -521,6 +532,7 @@ fn model_variants(
     display_name: &str,
     tooltip: &TooltipData,
     contexts: &[(String, String)],
+    default_context: &str,
     efforts: &[(String, String)],
     default_effort: Option<&str>,
 ) -> Vec<ModelVariant> {
@@ -544,6 +556,7 @@ fn model_variants(
                     tooltip,
                     context,
                     context_name,
+                    default_context,
                     *effort,
                     default_effort,
                     fast,
@@ -560,12 +573,13 @@ fn model_variant(
     tooltip: &TooltipData,
     context: &str,
     context_name: &str,
+    default_context: &str,
     effort: Option<(&str, &str)>,
     default_effort: Option<&str>,
     fast: bool,
 ) -> ModelVariant {
     let mut suffix = Vec::with_capacity(3);
-    if context != DEFAULT_CONTEXT {
+    if context != default_context {
         suffix.push(context_name);
     }
     if let Some((_, effort_name)) = effort {
@@ -582,7 +596,7 @@ fn model_variant(
             "{display_name} <span style=\"color: var(--cursor-text-tertiary);\">{suffix}</span>"
         )
     };
-    let is_default = context == DEFAULT_CONTEXT
+    let is_default = context == default_context
         && !fast
         && effort.is_none_or(|(effort, _)| Some(effort) == default_effort);
     let mut parameter_values = vec![ModelParameterValue {
@@ -684,6 +698,27 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
         }
+    }
+
+    #[test]
+    fn a_model_starts_on_its_own_context_window() {
+        let default_variant = |tokens: Option<u64>| {
+            let model = ModelConfig { context_window_tokens: tokens, ..model() };
+            let variants = available_model(&model).variants;
+            let defaults: Vec<_> = variants.iter().filter(|variant| variant.is_default_non_max_config == Some(true)).collect();
+            assert_eq!(defaults.len(), 1);
+            let context = defaults[0].parameter_values.iter().find(|value| value.id == "context").unwrap().value.clone();
+            (context, defaults[0].display_name.clone())
+        };
+
+        // A custom window (DeepSeek's 1048576) is the default, not 200K.
+        let (context, name) = default_variant(Some(1_048_576));
+        assert_eq!(context, "1048576");
+        assert_eq!(name, "Local Model <span style=\"color: var(--cursor-text-tertiary);\">High</span>");
+        // A window that matches a preset picks the preset.
+        assert_eq!(default_variant(Some(1_000_000)).0, "1m");
+        // An unknown window falls back to 200K.
+        assert_eq!(default_variant(None).0, "200k");
     }
 
     #[test]
