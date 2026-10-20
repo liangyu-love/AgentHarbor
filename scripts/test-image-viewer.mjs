@@ -164,4 +164,19 @@ export async function testImageViewer({ page, reset, captureDir }) {
   await page.evaluate(() => window.review.imageResolvers[1]());
   await page.getByRole("button", { name: "移除画稿" }).click();
   console.log("PASS a generated image loads as the reference from the canvas and the preview");
+
+  // Generating again resends the canvas's own request, reference included, in that canvas's place.
+  await page.waitForFunction(() => window.review.galleryMetas?.length === 2);
+  const jobs = page.locator("[data-generation-job-status]");
+  assert.equal(await jobs.count(), 2);
+  await jobs.first().getByRole("button", { name: "用相同请求重新生成，替换本次画布" }).click();
+  await page.waitForFunction(() => window.review.imageRequests.length === 3);
+  const resent = await page.evaluate(() => window.review.imageRequests[2]);
+  assert.equal(resent.imageData, generated, "the reference sent then, not the empty slot now");
+  assert.equal(resent.prompt, "雪山晨光，航拍");
+  assert.equal(await jobs.count(), 2);
+  assert.equal(await jobs.first().getAttribute("data-generation-job-status"), "running");
+  await page.evaluate(() => window.review.imageResolvers[2]());
+  await page.waitForFunction(() => document.querySelectorAll('[data-generation-job-status="completed"]').length === 2);
+  console.log("PASS generating a canvas again resends its request and reference in its place");
 }

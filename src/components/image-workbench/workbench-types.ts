@@ -1,4 +1,4 @@
-import type { ImageGenerationResponse } from "@/lib/api";
+import type { ImageGenerationRequest, ImageGenerationResponse } from "@/lib/api";
 import { storageKeys } from "@/lib/storage-keys";
 
 export const GALLERY_THUMBNAIL_CACHE_LIMIT = 48;
@@ -57,6 +57,8 @@ export type GenerationJob = {
   model: string;
   size: string;
   quality: string;
+  /** The request exactly as sent, so the canvas can be generated again. */
+  request: ImageGenerationRequest;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   result?: ImageGenerationResponse;
   error?: string;

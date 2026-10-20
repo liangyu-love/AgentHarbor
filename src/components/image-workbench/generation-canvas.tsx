@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Download, Feather, ImagePlus, ImageUp, Loader2, Scroll, Square, X, ZoomIn } from "lucide-react";
+import { Download, Feather, ImagePlus, ImageUp, Loader2, RotateCcw, Scroll, Square, X, ZoomIn } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -21,10 +21,12 @@ const previewEntries = (job: GenerationJob): PreviewEntry[] =>
   }));
 
 /** The result scroll: one canvas per generation job, with its status and images. */
-export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySave, onPreview, onSaveAs, onUsePrompt, onUseAsReference }: {
+export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRegenerate, onRetrySave, onPreview, onSaveAs, onUsePrompt, onUseAsReference }: {
   generationJobs: GenerationJob[];
   onCancel: (job: GenerationJob) => void;
   onRemove: (job: GenerationJob) => void;
+  /** Run the canvas's request again in its place. */
+  onRegenerate: (job: GenerationJob) => void;
   onRetrySave: (id: string, images: string[]) => Promise<void>;
   onPreview: (entries: PreviewEntry[], index: number) => void;
   onSaveAs: (src: string, index: number) => Promise<void>;
@@ -102,6 +104,19 @@ export function GenerationCanvas({ generationJobs, onCancel, onRemove, onRetrySa
                       <Square className="h-3.5 w-3.5" />
                     </button>
                   )}
+                  {(job.status === "completed" || job.status === "failed" || job.status === "cancelled") && (() => {
+                    const unsaved = job.galleryStatus === "saving" || job.galleryStatus === "failed";
+                    const label = job.galleryStatus === "saving" ? "正在存入画廊，稍后再重新生成"
+                      : job.galleryStatus === "failed" ? "图片未存入画廊，存好后才能重新生成"
+                        : "用相同请求重新生成，替换本次画布";
+                    return (
+                      <button type="button" onClick={() => onRegenerate(job)} disabled={unsaved}
+                        aria-label={label} title={label}
+                        className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-[#b83b38] disabled:pointer-events-none disabled:opacity-40 dark:hover:text-[#fca5a5]">
+                        <RotateCcw className="h-3.5 w-3.5" />
+                      </button>
+                    );
+                  })()}
                   {job.status !== "running" && (
                     <button type="button" onClick={() => onRemove(job)}
                       aria-label={job.status === "queued" ? "取消排队" : "关闭画布"}

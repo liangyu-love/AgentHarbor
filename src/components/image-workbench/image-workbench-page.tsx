@@ -107,6 +107,7 @@ export function ImageWorkbenchPage() {
           generationJobs={queue.generationJobs}
           onCancel={queue.cancelGeneration}
           onRemove={queue.removeCanvas}
+          onRegenerate={queue.regenerate}
           onRetrySave={queue.saveJobToGallery}
           onPreview={gallery.showPreview}
           onSaveAs={gallery.saveImageAs}

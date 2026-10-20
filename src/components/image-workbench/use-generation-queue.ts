@@ -48,7 +48,8 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
     }
   };
 
-  const enqueue = (request: ImageGenerationRequest) => {
+  /** Start a canvas for the request, on top or in the place of the canvas `replacing`. */
+  const enqueue = (request: ImageGenerationRequest, replacing?: string) => {
     const id = crypto.randomUUID();
     const job: GenerationJob = {
       id,
@@ -56,9 +57,12 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
       model: request.model,
       size: request.size,
       quality: request.quality,
+      request,
       status: activeGenerations.current < MAX_ACTIVE_GENERATIONS ? "running" : "queued",
     };
-    setGenerationJobs(current => [job, ...current]);
+    setGenerationJobs(current => replacing && current.some(item => item.id === replacing)
+      ? current.map(item => item.id === replacing ? job : item)
+      : [job, ...current]);
     queuedGenerations.current.push({ id, run: async () => {
       setGenerationJobs(current => current.map(item => item.id === id ? { ...item, status: "running" } : item));
       try {
@@ -104,5 +108,12 @@ export function useGenerationQueue({ persistToGallery, onManualKeyUsed }: {
     setGenerationJobs(current => current.filter(item => item.id !== job.id));
   };
 
-  return { generationJobs, enqueue, cancelGeneration, removeCanvas, saveJobToGallery };
+  /** Send a finished canvas's request again; the new run takes this canvas's place. */
+  const regenerate = (job: GenerationJob) => {
+    if (job.status === "running" || job.status === "queued" || gallerySaves.current.has(job.id)) return;
+    jobRecords.current.delete(job.id);
+    enqueue(job.request, job.id);
+  };
+
+  return { generationJobs, enqueue, cancelGeneration, removeCanvas, regenerate, saveJobToGallery };
 }
