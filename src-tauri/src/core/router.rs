@@ -2239,6 +2239,14 @@ pub(crate) fn supports_command_search(provider: &Provider) -> bool {
     search_api(provider) == Some(SearchApi::Command)
 }
 
+/// MiMo searches only over Chat Completions: its Responses endpoint refuses
+/// the tool and its Anthropic one ignores it. So a MiMo model searches on
+/// Chat whatever protocol the card uses for its other turns.
+pub(crate) fn mimo_chat_search(provider: &Provider, model: &str) -> bool {
+    provider.chat_search.resolve(&provider.base_url, model) == Some(super::protocol::ChatSearch::Mimo)
+        && provider.supports_model_protocol(model, ModelProtocol::ChatCompletions)
+}
+
 pub fn set_web_search_provider(
     paths: &CodexPaths,
     provider_id: Option<String>,
@@ -2254,9 +2262,9 @@ pub(crate) fn native_search_models(provider: &Provider) -> Vec<String> {
     }
     let mut models = vec![provider.model.clone()];
     models.extend(provider.models.iter().map(|model| model.id.clone()));
-    models.retain(|model| !model.is_empty() && matches!(provider.protocol_for_model(model),
+    models.retain(|model| !model.is_empty() && (mimo_chat_search(provider, model) || (matches!(provider.protocol_for_model(model),
         ModelProtocol::Responses | ModelProtocol::AnthropicMessages)
-        && provider.supports_model_protocol(model,provider.protocol_for_model(model)));
+        && provider.supports_model_protocol(model,provider.protocol_for_model(model)))));
     models.sort();
     models.dedup();
     models
@@ -4261,6 +4269,22 @@ mod tests {
             assert!(!supports_command_search(&provider), "{base_url}");
         }
         assert!(!supports_command_search(&Provider { base_url: "https://api.commandcode.ai".into(), ..Default::default() }));
+    }
+
+    #[test]
+    fn mimo_models_search_on_chat_whatever_the_card_protocol() {
+        for card_protocol in [ModelProtocol::ChatCompletions, ModelProtocol::Responses, ModelProtocol::AnthropicMessages] {
+            let provider = Provider { base_url: "https://api.xiaomimimo.com/".into(), api_key: "sk-fixture".into(),
+                model: "mimo-v2.6-flash".into(), protocol: card_protocol, ..Default::default() };
+            assert!(mimo_chat_search(&provider, "mimo-v2.6-flash"), "{card_protocol:?}");
+            let view = provider.view();
+            assert!(view.web_search_capable && view.web_search_models == ["mimo-v2.6-flash"], "{card_protocol:?}");
+            let disabled = Provider { chat_search: protocol::ChatSearch::Disabled, ..provider };
+            assert!(!mimo_chat_search(&disabled, "mimo-v2.6-flash"));
+        }
+        let other = Provider { base_url: "https://relay.example/v1".into(), api_key: "sk-fixture".into(), model: "m".into(),
+            protocol: ModelProtocol::ChatCompletions, ..Default::default() };
+        assert!(!mimo_chat_search(&other, "m") && !other.view().web_search_capable);
     }
 
     #[test]

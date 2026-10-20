@@ -88,10 +88,9 @@ export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRem
   const live = !!use?.codex;
   const filtered = filter === group.key;
   const dsPeak = hostOf(provider) === "api.deepseek.com" ? deepSeekPeakNow() : null;
-  // MiMo searches only over Chat Completions, and only once the account's
-  // console has the Web Search plugin on; the card says so.
-  const mimoSearch = hostOf(provider) === "api.xiaomimimo.com"
-    ? (providerModelProtocol(provider) === "chatCompletions" ? "ready" : "wrongProtocol") : null;
+  // MiMo searches only once the account's console has the Web Search plugin
+  // on (the router sends search turns to its Chat endpoint); the card says so.
+  const mimoSearch = hostOf(provider) === "api.xiaomimimo.com";
   const value = balanceValue(provider);
   const hasMultiple = group.providers.length > 1;
   const isExpanded = !!expandedGroups[group.key];
@@ -208,11 +207,8 @@ export function RelayCard({ group, store, view, consumers, onEdit, onTest, onRem
               </span>
             )}
             {mimoSearch && (
-              <span data-mimo-search={mimoSearch}
-                className={cn(pill, mimoSearch === "ready" ? "bg-primary/10 text-primary" : "bg-amber-500/15 text-amber-700 dark:text-amber-400")}
-                title={mimoSearch === "ready" ? t("newapi.mimoSearchTip")
-                  : `${t("newapi.mimoSearchTip")}\n${t("newapi.mimoSearchProtocolTip", { protocol: t(protocolBadgeKey[providerModelProtocol(provider)]) })}`}>
-                <Globe className="h-3 w-3" />{t(mimoSearch === "ready" ? "newapi.mimoSearch" : "newapi.mimoSearchNeedsChat")}
+              <span data-mimo-search className={cn(pill, "bg-primary/10 text-primary")} title={t("newapi.mimoSearchTip")}>
+                <Globe className="h-3 w-3" />{t("newapi.mimoSearch")}
               </span>
             )}
           </div>

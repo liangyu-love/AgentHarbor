@@ -236,18 +236,14 @@ pub(super) async fn execute(
                 && owner.effective_protocol == router::ModelProtocol::ChatCompletions
                 && matches!(owner.configured_protocol,router::ModelProtocol::Responses | router::ModelProtocol::AnthropicMessages)
         });
-        // A Command search turn can choose Chat for a configured Responses
-        // member. Keep that exact effective protocol for subsequent history,
-        // even when the next request no longer declares the search tool.
+        // A Command or MiMo search turn can choose Chat for a configured
+        // Responses member. Keep that exact effective protocol for subsequent
+        // history, even when the next request no longer declares the search tool.
         let command_selected = hosted_search::Plan::command_enabled(&resolved.provider,store);
         let compatibility = matches!(ingress,router::ModelProtocol::AnthropicMessages | router::ModelProtocol::Responses)
-            && ((requirements.search && command_selected) || bound_chat)
+            && (requirements.search || bound_chat)
             && matches!(resolved.protocol,router::ModelProtocol::Responses | router::ModelProtocol::AnthropicMessages)
-            && router::supports_command_search(&resolved.provider)
-            && resolved.provider.supports_model_protocol(
-                &member.actual_model_id,
-                router::ModelProtocol::ChatCompletions,
-            );
+            && hosted_search::Plan::searches_on_chat(&resolved.provider, &member.actual_model_id, command_selected || bound_chat);
         let effective = if compatibility {
             router::ModelProtocol::ChatCompletions
         } else {

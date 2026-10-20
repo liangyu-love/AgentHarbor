@@ -926,3 +926,77 @@ fn selected_deepseek_search_api_serves_every_protocol_with_its_own_key() {
         assert_eq!(searches[0]["body"],json!({"query":"Rust","count":10}));
     });
 }
+
+/// MiMo's reply to a Chat search: its sources as citations, its calls in usage.
+fn mimo_search_reply(text: &str) -> Value {
+    let mut reply = chat_reply(json!({"role":"assistant","content":text,
+        "annotations":[{"type":"url_citation","url":"https://www.rust-lang.org/releases","title":"Rust","summary":"release notes"}]}),"stop");
+    reply["usage"]["web_search_usage"] = json!({"tool_usage":1,"page_usage":1});
+    reply
+}
+
+#[test]
+fn a_mimo_card_searches_on_its_chat_endpoint_whatever_its_protocol() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let _cleanup = Cleanup;
+        let mimo = Mock::new(|_,_| Reply::ok(mimo_search_reply("Rust 1.99 fixture"))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().join("codex"));
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        // No WebSearch service chosen: the card's own model searches.
+        let store = router::Store {providers:vec![card("mimo",&mimo.url,"mimo-model",ModelProtocol::Responses,protocol::ChatSearch::Mimo)],
+            router:router::RouterSettings {bearer_token:"router-local".into(),..Default::default()},..Default::default()};
+        store_file(&paths,&store);
+        let port = ensure_running(0,paths.clone(),ApiProxyConfigPayload::default()).await.unwrap();
+        let client = Client::builder().no_proxy().build().unwrap();
+        // What Cursor's WebSearch sends through the router.
+        let response = client.post(format!("http://127.0.0.1:{port}/v1/messages")).bearer_auth("router-local")
+            .json(&json!({"model":"mimo::mimo-model","max_tokens":256,"messages":[{"role":"user","content":"Search the web for: Rust"}],
+                "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":2}]})).send().await.unwrap();
+        let status = response.status();
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(status,StatusCode::OK,"{value}");
+        let calls = mimo.captured();
+        assert_eq!(calls.len(),1);
+        assert!(calls[0]["path"].as_str().unwrap().ends_with("/chat/completions"),"{}",calls[0]["path"]);
+        let search = calls[0]["body"]["tools"].as_array().unwrap().iter().find(|tool| tool["type"] == "web_search").cloned().unwrap();
+        assert_eq!(search["max_keyword"],2);
+        assert!(value["content"].as_array().unwrap().iter().any(|block| block["type"] == "web_search_tool_result"
+            && block["content"].to_string().contains("https://www.rust-lang.org/releases")),"{value}");
+        // An ordinary turn keeps the card's protocol.
+        let _ = client.post(format!("http://127.0.0.1:{port}/v1/messages")).bearer_auth("router-local")
+            .json(&json!({"model":"mimo::mimo-model","max_tokens":64,"messages":[{"role":"user","content":"hi"}]})).send().await.unwrap();
+        assert!(mimo.captured()[1]["path"].as_str().unwrap().ends_with("/responses"),"{}",mimo.captured()[1]["path"]);
+    });
+}
+
+#[test]
+fn a_selected_mimo_service_searches_over_chat() {
+    let _guard = global_router_test_lock();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let _cleanup = Cleanup;
+        let inference = Mock::new(|_,body| Reply::ok(inference_reply(ModelProtocol::Responses,body))).await;
+        let mimo = Mock::new(|_,_| Reply::ok(mimo_search_reply("Rust 1.99 fixture"))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(temp.path().join("codex"));
+        std::fs::create_dir_all(&paths.app_data_dir).unwrap();
+        let store = router::Store {providers:vec![card("inference",&inference.url,"inference-model",ModelProtocol::Responses,protocol::ChatSearch::Selected),
+                card("mimo",&mimo.url,"mimo-model",ModelProtocol::Responses,protocol::ChatSearch::Mimo)],
+            router:router::RouterSettings {bearer_token:"router-local".into(),web_search_provider_id:Some("mimo".into()),web_search_model_id:Some("mimo-model".into()),..Default::default()},..Default::default()};
+        store_file(&paths,&store);
+        let port = ensure_running(0,paths.clone(),ApiProxyConfigPayload::default()).await.unwrap();
+        let response = Client::builder().no_proxy().build().unwrap().post(format!("http://127.0.0.1:{port}/v1/responses")).bearer_auth("router-local")
+            .json(&json!({"model":"inference::inference-model","input":"test","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}})).send().await.unwrap();
+        let status = response.status();
+        let text = response.text().await.unwrap();
+        assert_eq!(status,StatusCode::OK,"{text}");
+        assert!(text.contains("web_search_call") && text.contains("https://www.rust-lang.org/releases") && text.contains("Rust answer"),"{text}");
+        let searches = mimo.captured();
+        assert_eq!(searches.len(),1);
+        assert!(searches[0]["path"].as_str().unwrap().ends_with("/chat/completions"),"{}",searches[0]["path"]);
+        assert_eq!(searches[0]["body"]["tools"][0]["type"],"web_search");
+        assert_eq!(searches[0]["body"]["tools"][0]["force_search"],true);
+        assert_eq!(searches[0]["body"]["model"],"mimo-model");
+    });
+}

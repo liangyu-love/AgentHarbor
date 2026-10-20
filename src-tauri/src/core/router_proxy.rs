@@ -1167,7 +1167,7 @@ async fn handle(mut request: Request<Incoming>, context: Arc<ArcContext>) -> For
             Destination::Provider { provider, .. } => hosted_search::Plan::command_enabled(provider,&store),
             _ => false,
         };
-        hosted_search::Plan::command_responses_search_to_chat(&mut destination, body.as_deref(), command_selected);
+        hosted_search::Plan::search_to_chat(&mut destination, body.as_deref(), command_selected);
         let request_catalog = desktop_catalog.clone()
             .unwrap_or_else(|| super::models_dev::load(&context.app_data_dir));
         if one_m_context

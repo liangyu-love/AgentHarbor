@@ -11,6 +11,8 @@ pub(in crate::core::router_proxy) struct Backend {
     pub credential: request_diagnostics::CredentialSnapshot,
     pub usage: relay_usage::RelayUsageRequest,
     max_tokens: u64,
+    /// How a Chat service (MiMo) takes its search tool.
+    chat_search: Option<protocol::ChatSearch>,
 }
 
 pub(super) struct ResultSet {
@@ -39,7 +41,8 @@ impl Selection {
         }
         let mut request = plan.native_request.clone().ok_or(INVALID)?;
         if let Some(pair) = protocol::Translation::between(plan.caller,self.protocol) {
-            request = protocol::request_body(pair,&request).map_err(|_| (StatusCode::BAD_REQUEST,"selected search cannot preserve these WebSearch options"))?.body;
+            request = protocol::request_body_with_chat_search(pair,&request,chat_search(&self.provider,&self.model,self.protocol))
+                .map_err(|_| (StatusCode::BAD_REQUEST,"selected search cannot preserve these WebSearch options"))?.body;
         }
         request["model"] = json!(self.model);
         if plan.options.search.as_ref().and_then(|search| search.max_uses).is_some() {
@@ -70,7 +73,8 @@ impl Selection {
         if !router::native_search_models(provider).iter().any(|candidate| candidate == model) {
             return Err((StatusCode::BAD_REQUEST,"configured WebSearch model is unavailable"));
         }
-        let protocol = provider.protocol_for_model(model);
+        // MiMo searches only on Chat, whatever the card uses for other turns.
+        let protocol = if router::mimo_chat_search(provider,model) {router::ModelProtocol::ChatCompletions} else {provider.protocol_for_model(model)};
         Ok(Self::for_provider(context,provider,model,protocol,catalog,trace,identity,None))
     }
 
@@ -102,7 +106,12 @@ impl Selection {
         // Account refresh futures include every source's auth flow. Keep them
         // off the Windows worker stack inside the multi-round executor.
         let account = match account {Some(account)=>Some(account),None=>Box::pin(account_auth(&context,&destination)).await?};
-        let suffix = if protocol == router::ModelProtocol::Responses {"responses"} else {"messages"};
+        let suffix = match protocol {
+            router::ModelProtocol::Responses => "responses",
+            router::ModelProtocol::ChatCompletions => "chat/completions",
+            router::ModelProtocol::AnthropicMessages => "messages",
+        };
+        let chat_search = chat_search(&provider,&model,protocol);
         let mut initial = HeaderMap::new();
         initial.insert(CONTENT_TYPE,HeaderValue::from_static("application/json"));
         initial.insert(ACCEPT_ENCODING,HeaderValue::from_static("identity"));
@@ -114,7 +123,7 @@ impl Selection {
             if account.is_some() {"accountSource"} else {"providerApiKey"},
             &format!("{}|{}",provider.id,endpoint),headers.get(AUTHORIZATION).or_else(|| headers.get("x-api-key")).and_then(|header| header.to_str().ok()),None);
         let usage = usage.with_credential(credential.clone());
-        Ok(SearchBackend {client,endpoint,headers,api:None,native:Some(Backend {protocol,model,provider_id:provider.id.clone(),provider_name:provider.name.clone(),account,credential,usage,max_tokens})})
+        Ok(SearchBackend {client,endpoint,headers,api:None,native:Some(Backend {protocol,model,provider_id:provider.id.clone(),provider_name:provider.name.clone(),account,credential,usage,max_tokens,chat_search})})
     }
 }
 
@@ -132,7 +141,7 @@ impl Backend {
             if let Some(remaining) = remaining {request["tools"][0]["max_uses"] = json!(remaining);}
         }
         if let Some(pair) = protocol::Translation::between(caller,self.protocol) {
-            request = protocol::request_body(pair,&request).map_err(|_| "unsupported_search_options")?.body;
+            request = protocol::request_body_with_chat_search(pair,&request,self.chat_search).map_err(|_| "unsupported_search_options")?.body;
         }
         request["model"] = json!(self.model);
         request["stream"] = json!(false);
@@ -242,8 +251,19 @@ pub(super) fn event_stream(response: &reqwest::Response) -> bool {
     response.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok()).is_some_and(|value| value.starts_with("text/event-stream"))
 }
 
+/// The Chat contract a search service on Chat uses, if it has one.
+fn chat_search(provider: &router::Provider, model: &str, protocol: router::ModelProtocol) -> Option<protocol::ChatSearch> {
+    (protocol == router::ModelProtocol::ChatCompletions).then(|| provider.chat_search.resolve(&provider.base_url,model)).flatten()
+}
+
 pub(super) fn canonical(protocol: router::ModelProtocol, value: &Value) -> ForwardResult<Value> {
-    protocol::canonical_response(protocol::Translation {from:router::ModelProtocol::Responses,to:protocol},value).map_err(|_| INVALID_RESPONSE)
+    // A Chat search service reports its search as citations and usage, not
+    // as a call; read that evidence as the completed search call.
+    let options = protocol::ResponseOptions {
+        search: (protocol == router::ModelProtocol::ChatCompletions).then(|| protocol::web_search::Search {name:"web_search".into(),max_uses:None}),
+        ..Default::default()
+    };
+    protocol::response_body_with_options(protocol::Translation {from:router::ModelProtocol::Responses,to:protocol},value,&options).map_err(|_| INVALID_RESPONSE)
 }
 
 pub(super) fn reply(target: router::ModelProtocol, bytes: &[u8], sse: bool) -> ForwardResult<Value> {

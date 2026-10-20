@@ -53,16 +53,23 @@ impl Plan {
         provider.chat_search == protocol::ChatSearch::Command || (router::supports_command_search(provider)
             && store.router.web_search_provider_id.as_deref().is_some_and(|id| store.providers.iter().any(|selected| selected.id == id && router::supports_command_search(selected))))
     }
+    /// Whether a search turn for this model goes to the card's Chat endpoint.
     /// Command Code exposes search through /alpha/web-search, not as a hosted
-    /// tool on the configured native endpoint. Explicit search selections can
-    /// use the existing executor when this model also has a verified Chat
-    /// endpoint. Fresh ordinary turns keep the configured protocol.
-    pub fn command_responses_search_to_chat(
+    /// tool on the configured native endpoint, so explicit Command selections
+    /// use the existing executor there; MiMo runs its own search only on Chat.
+    /// Either needs the model to have a verified Chat endpoint.
+    pub fn searches_on_chat(provider: &router::Provider, model: &str, command_enabled: bool) -> bool {
+        (command_enabled && router::supports_command_search(provider)
+            && provider.supports_model_protocol(model, router::ModelProtocol::ChatCompletions))
+            || router::mimo_chat_search(provider, model)
+    }
+    /// Moves a search turn to Chat where [`Self::searches_on_chat`] says so.
+    /// Fresh ordinary turns keep the configured protocol.
+    pub fn search_to_chat(
         destination: &mut Destination,
         body: Option<&[u8]>,
-        enabled: bool,
+        command_enabled: bool,
     ) -> bool {
-        if !enabled { return false; }
         #[derive(serde::Deserialize)]
         struct DeclaredTools {
             #[serde(default)]
@@ -74,11 +81,7 @@ impl Plan {
         let caller = translation.as_ref().map_or(*upstream_protocol, |pair| pair.from);
         if !matches!(*upstream_protocol,router::ModelProtocol::Responses | router::ModelProtocol::AnthropicMessages)
             || !matches!(caller, router::ModelProtocol::AnthropicMessages | router::ModelProtocol::Responses)
-            || !router::supports_command_search(provider)
-            || !provider.supports_model_protocol(
-                model_override.as_deref().unwrap_or(&provider.model),
-                router::ModelProtocol::ChatCompletions,
-            )
+            || !Self::searches_on_chat(provider, model_override.as_deref().unwrap_or(&provider.model), command_enabled)
         {
             return false;
         }
@@ -1252,9 +1255,9 @@ mod tests {
         };
         let search = br#"{"model":"claude-haiku-4-5","max_tokens":128,"messages":[{"role":"user","content":"search"}],"tools":[{"type":"web_search_20250305","name":"web_search_next"}]}"#;
         let mut selected = destination(card.clone());
-        assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(search), false));
-        assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(br#"{"messages":[]}"#), true));
-        assert!(Plan::command_responses_search_to_chat(&mut selected, Some(search), true));
+        assert!(!Plan::search_to_chat(&mut selected, Some(search), false));
+        assert!(!Plan::search_to_chat(&mut selected, Some(br#"{"messages":[]}"#), true));
+        assert!(Plan::search_to_chat(&mut selected, Some(search), true));
         assert!(matches!(selected, Destination::Provider { upstream_protocol: router::ModelProtocol::ChatCompletions, .. }));
         assert!(Plan::for_destination(&selected, Some(search)).unwrap().is_some());
 
@@ -1262,24 +1265,24 @@ mod tests {
             provider:Box::new(card.clone()),model_override:Some("claude-haiku-4-5".into()),
             upstream_protocol:router::ModelProtocol::AnthropicMessages,translation:None,
         };
-        assert!(Plan::command_responses_search_to_chat(&mut native_messages,Some(search),true));
+        assert!(Plan::search_to_chat(&mut native_messages,Some(search),true));
         assert!(Plan::for_destination(&native_messages,Some(search)).unwrap().is_some());
         let mut native_codex = Destination::Provider {
             provider:Box::new(card.clone()),model_override:Some("claude-haiku-4-5".into()),
             upstream_protocol:router::ModelProtocol::Responses,translation:None,
         };
-        assert!(Plan::command_responses_search_to_chat(&mut native_codex,Some(br#"{"model":"claude-haiku-4-5","input":"search","tools":[{"type":"web_search"}]}"#),true));
+        assert!(Plan::search_to_chat(&mut native_codex,Some(br#"{"model":"claude-haiku-4-5","input":"search","tools":[{"type":"web_search"}]}"#),true));
         assert!(matches!(native_codex,Destination::Provider {translation:Some(protocol::Translation {from:router::ModelProtocol::Responses,..}),..}));
 
         let mut responses_only = card.clone();
         responses_only.models[0].endpoint_types = vec!["/responses".into()];
         let mut selected = destination(responses_only);
-        assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(search), true));
+        assert!(!Plan::search_to_chat(&mut selected, Some(search), true));
 
         let mut unrelated = card;
         unrelated.base_url = "https://other.example/v1".into();
         let mut selected = destination(unrelated);
-        assert!(!Plan::command_responses_search_to_chat(&mut selected, Some(search), true));
+        assert!(!Plan::search_to_chat(&mut selected, Some(search), true));
     }
 
     #[test]
