@@ -232,11 +232,13 @@ impl ModelConfig {
 
     pub fn configure(&self, model: &mut super::ModelSpec) {
         model.display_name = Some(self.display_name.clone());
-        // A request-selected context is authoritative.  Use the saved model
-        // value only when Cursor did not send a context parameter.
-        if model.context_window_tokens.is_none() {
-            model.context_window_tokens = self.context_window_tokens;
-        }
+        // A request-selected context is authoritative within the model's
+        // window (a selection saved before the window was known may exceed
+        // it). Use the saved model value when Cursor did not send one.
+        model.context_window_tokens = match (model.context_window_tokens, self.context_window_tokens) {
+            (Some(requested), Some(window)) => Some(requested.min(window)),
+            (requested, window) => requested.or(window),
+        };
         if model.reasoning.effort.is_none() {
             model.reasoning.effort = match self.model_type {
                 ModelType::OpenAi => self.reasoning_effort.clone(),

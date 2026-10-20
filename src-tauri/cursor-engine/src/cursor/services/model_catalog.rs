@@ -240,18 +240,22 @@ fn default_context(contexts: &[(String, String)], context_window_tokens: Option<
         .map_or(DEFAULT_CONTEXT, |(value, _)| value.as_str())
 }
 
+/// The contexts a model offers: the presets its window holds, then the
+/// window itself when no preset names it. An unknown window offers them all.
 fn context_options(context_window_tokens: Option<u64>) -> Vec<(String, String)> {
     let mut contexts = CONTEXTS
         .into_iter()
+        .filter(|(value, _)| {
+            context_window_tokens.is_none_or(|tokens| parse_token_count(value).is_some_and(|preset| preset <= tokens))
+        })
         .map(|(value, display_name)| (value.to_owned(), display_name.to_owned()))
         .collect::<Vec<_>>();
     if let Some(tokens) = context_window_tokens {
-        let value = tokens.to_string();
         let duplicate = contexts
             .iter()
             .any(|(existing, _)| parse_token_count(existing) == Some(tokens));
         if !duplicate {
-            contexts.push((value, format!("{} (Custom)", format_token_count(tokens))));
+            contexts.push((tokens.to_string(), format!("{} (Full)", format_token_count(tokens))));
         }
     }
     contexts
@@ -719,6 +723,17 @@ mod tests {
         assert_eq!(default_variant(Some(1_000_000)).0, "1m");
         // An unknown window falls back to 200K.
         assert_eq!(default_variant(None).0, "200k");
+    }
+
+    #[test]
+    fn contexts_stop_at_the_model_window() {
+        let values = |tokens: Option<u64>| -> Vec<(String, String)> { context_options(tokens) };
+        let names = |tokens| values(tokens).into_iter().map(|(_, name)| name).collect::<Vec<_>>();
+        assert_eq!(names(Some(1_048_576)), ["200K", "356K", "500K", "800K", "1M", "1048576 (Full)"]);
+        assert_eq!(names(Some(400_000)), ["200K", "356K", "400K (Full)"]);
+        assert_eq!(names(Some(128_000)), ["128K (Full)"]);
+        assert_eq!(names(Some(1_000_000)), ["200K", "356K", "500K", "800K", "1M"]);
+        assert_eq!(names(None), ["200K", "356K", "500K", "800K", "1M"]);
     }
 
     #[test]
