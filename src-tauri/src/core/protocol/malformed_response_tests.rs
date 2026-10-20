@@ -128,8 +128,6 @@ fn sse(events: &[Value]) -> Vec<u8> {
 
 #[test]
 fn malformed_relay_replies_are_refused_without_panicking() {
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     let mut panics = Vec::new();
     for upstream in PROTOCOLS {
         let replies = bodies(upstream);
@@ -158,7 +156,6 @@ fn malformed_relay_replies_are_refused_without_panicking() {
             }
         }
     }
-    std::panic::set_hook(hook);
     assert!(
         panics.is_empty(),
         "{} panics:\n{}",

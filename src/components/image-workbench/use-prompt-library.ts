@@ -87,6 +87,9 @@ const saveChains: Record<PromptLibraryKind, Promise<unknown>> = {
   materials: Promise.resolve(),
 };
 
+/** Resolves once every save of the book made so far has settled. */
+export const librarySaved = (kind: PromptLibraryKind) => saveChains[kind];
+
 /** The user's prompt groups and templates (or material categories and materials), saved to the app data folder on every change. */
 export function usePromptLibrary(kind: PromptLibraryKind = "prompts") {
   const queryClient = useQueryClient();

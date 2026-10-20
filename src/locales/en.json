@@ -2550,7 +2550,7 @@
     "routerPort": {
       "label": "Local router port",
       "desc": "Clients reach the local router on this port (43127 by default).",
-      "note": "Connected clients are rewritten for you; copied gateway addresses need updating by hand.",
+      "note": "Connected clients are rewritten for you and pick it up when restarted; copied gateway addresses need updating by hand.",
       "placeholder": "43200",
       "apply": "Apply",
       "reset": "Reset to default",

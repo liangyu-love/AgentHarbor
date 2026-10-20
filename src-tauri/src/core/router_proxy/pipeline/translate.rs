@@ -614,8 +614,6 @@ mod malformed_bodies {
 
     #[test]
     fn malformed_client_bodies_are_refused_without_panicking() {
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
         let mut panics = Vec::new();
         for from in [Responses, ChatCompletions, AnthropicMessages] {
             let all = bodies(from);
@@ -640,7 +638,6 @@ mod malformed_bodies {
                 }
             }
         }
-        std::panic::set_hook(hook);
         assert!(panics.is_empty(), "{} panics:\n{}", panics.len(), panics.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
     }
 }

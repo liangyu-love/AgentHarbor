@@ -254,23 +254,44 @@ fn save_library(
 /// Merge imported groups into the library: same-named groups are joined, a
 /// template already in its group (same title and prompt) is skipped, and the
 /// limits stop the import rather than evict what the user already has.
+///
+/// `by_id` is for AgentHarbor's own presets, whose ids are fixed: they keep
+/// them, a group the user renamed is still theirs, and a preset whose id the
+/// library holds is already there however the user has edited it since.
 fn merge(
     mut groups: Vec<PromptGroup>,
     incoming: Vec<PromptGroup>,
+    by_id: bool,
 ) -> (Vec<PromptGroup>, PromptImportResult) {
     let (incoming, mut skipped) = sanitize(incoming);
+    let mut taken: HashSet<String> = groups
+        .iter()
+        .flat_map(|group| {
+            std::iter::once(group.id.clone())
+                .chain(group.templates.iter().map(|template| template.id.clone()))
+        })
+        .collect();
     let mut total: usize = groups.iter().map(|group| group.templates.len()).sum();
     let mut new_groups = 0;
     let mut imported = 0;
     for group in incoming {
-        let index = match groups
-            .iter()
-            .position(|existing| existing.name == group.name)
-        {
+        let same_id = by_id
+            .then(|| groups.iter().position(|existing| existing.id == group.id))
+            .flatten();
+        let index = match same_id.or_else(|| {
+            groups
+                .iter()
+                .position(|existing| existing.name == group.name)
+        }) {
             Some(index) => index,
             None if groups.len() < MAX_GROUPS => {
+                let id = match by_id && !taken.contains(&group.id) {
+                    true => group.id,
+                    false => fresh_id(),
+                };
+                taken.insert(id.clone());
                 groups.push(PromptGroup {
-                    id: fresh_id(),
+                    id,
                     name: group.name,
                     templates: Vec::new(),
                 });
@@ -284,17 +305,20 @@ fn merge(
         };
         let target = &mut groups[index];
         for template in group.templates {
-            let duplicate = target.templates.iter().any(|existing| {
-                existing.title == template.title && existing.prompt == template.prompt
-            });
+            let duplicate = (by_id && taken.contains(&template.id))
+                || target.templates.iter().any(|existing| {
+                    existing.title == template.title && existing.prompt == template.prompt
+                });
             if duplicate || total >= MAX_TEMPLATES {
                 skipped += 1;
                 continue;
             }
-            target.templates.push(PromptTemplate {
-                id: fresh_id(),
-                ..template
-            });
+            let id = match by_id {
+                true => template.id.clone(),
+                false => fresh_id(),
+            };
+            taken.insert(id.clone());
+            target.templates.push(PromptTemplate { id, ..template });
             total += 1;
             imported += 1;
         }
@@ -329,27 +353,29 @@ fn import_library(
     if incoming.is_empty() {
         return Err("image.errors.promptImport".into());
     }
-    merge_into(paths, kind, incoming)
+    merge_into(paths, kind, incoming, false)
 }
 
 fn merge_into(
     paths: &CodexPaths,
     kind: LibraryKind,
     incoming: Vec<PromptGroup>,
+    by_id: bool,
 ) -> Result<PromptImportResult, String> {
     let _guard = LIBRARY_LOCK
         .lock()
         .map_err(|_| "image.errors.promptLibrary".to_owned())?;
     let current = read_library(paths, kind)?;
-    let (groups, mut result) = merge(current.groups, incoming);
+    let (groups, mut result) = merge(current.groups, incoming, by_id);
     result.library = write_library(paths, kind, groups)?;
     Ok(result)
 }
 
-/// Add what AgentHarbor ships for the book, as an import would: same-named groups
-/// are joined and what is already there is skipped, so a deleted preset comes back.
+/// Add what AgentHarbor ships for the book, as an import would, but by the
+/// presets' fixed ids: a deleted preset comes back, one the user edited or
+/// moved stays as they left it, and a renamed group is still joined.
 fn add_presets(paths: &CodexPaths, kind: LibraryKind) -> Result<PromptImportResult, String> {
-    merge_into(paths, kind, preset_groups(kind))
+    merge_into(paths, kind, preset_groups(kind), true)
 }
 
 fn export_target(path: &str) -> Result<std::path::PathBuf, String> {
@@ -528,6 +554,34 @@ mod tests {
             (1, removed.templates.len())
         );
         assert_eq!(restored.library.groups.last().unwrap().name, removed.name);
+        assert_eq!(
+            restored.library.groups.last().unwrap().id,
+            removed.id,
+            "presets keep their ids"
+        );
+
+        // An edited preset and a renamed category are the user's: nothing comes back beside them.
+        let mut materials = restored.library;
+        materials.groups[0].name = "我的服装".into();
+        materials.groups[0].templates[0].prompt = "改过的内容".into();
+        let edited = materials.groups[0].templates[0].clone();
+        save_library(&paths, LibraryKind::Materials, materials).unwrap();
+        let again = add_presets(&paths, LibraryKind::Materials).unwrap();
+        assert_eq!((again.groups, again.templates), (0, 0));
+        assert_eq!(again.library.groups[0].name, "我的服装");
+        assert_eq!(again.library.groups[0].templates[0], edited);
+
+        // Preset templates keep their own ids too.
+        let prompts = read_library(&paths, P).unwrap();
+        let preset_ids: HashSet<_> = prompts
+            .groups
+            .iter()
+            .flat_map(|group| group.templates.iter().map(|template| template.id.clone()))
+            .collect();
+        assert!(
+            preset_ids.iter().all(|id| id.starts_with("preset-")),
+            "{preset_ids:?}"
+        );
     }
 
     #[test]

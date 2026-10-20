@@ -179,6 +179,7 @@ fn user_message(prompt: &str, request: &str, materials: &str, with_reference: bo
              根据画面需要从中选用：每个分类最多取一两条，条目列出多个单品时只取需要的，自然地写进提示词；\
              提示词已经写明的不要替换，与画面不搭的分类就不用，不要堆砌，也不要提到素材库。\
              写服装时按外套、上衣、下装、袜子、鞋、配饰的顺序，一套穿搭的亮点不超过三个，配色保持统一。\
+             画面里的人物一律写成成年人；校园制服和原作中未成年的角色，不要和性感、透视、内衣类服装或强调身体的机位放在一起。\
              \n<materials>\n{materials}</materials>"
         ));
     }
@@ -489,6 +490,10 @@ mod tests {
             .find("<materials>\n## 动作\n- 回眸：回头\n</materials>")
             .unwrap();
         assert!(text.find("</prompt>").unwrap() < materials);
+        assert!(
+            text.contains("一律写成成年人"),
+            "materials come with the adults-only rule"
+        );
         assert!(text.ends_with("\n这次的额外要求：赛博朋克"), "{text}");
         assert!(!user_message("猫", "", "", false).contains("<materials>"));
     }

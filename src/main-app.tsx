@@ -379,7 +379,7 @@ function useTrayRequests(navigate: (route: Route) => void, checkForUpdate: () =>
         if (isAppRoute(payload)) navigate(payload);
       }),
       listen("tray-check-update", () => {
-        void checkForUpdate().then(result => announceUpdateCheck(t, result));
+        void checkForUpdate().catch(() => "error" as const).then(result => announceUpdateCheck(t, result));
       }),
       listen<{ switch: "cursor" | "autostart"; error: string | null }>("tray-switched", ({ payload }) => {
         const cursor = payload.switch === "cursor";

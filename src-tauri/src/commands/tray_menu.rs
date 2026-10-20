@@ -76,6 +76,7 @@ fn pick(zh: &'static str, en: &'static str) -> &'static str {
 }
 
 /// The menu items whose text or check mark changes while the menu exists.
+#[derive(Clone)]
 struct Items {
     router: MenuItem<Wry>,
     usage: MenuItem<Wry>,
@@ -222,10 +223,10 @@ pub fn refresh_tray_menu(app: &AppHandle) {
 fn update_items(app: &AppHandle) {
     let (ide_on, cli_on) = cursor_flags(app);
     let startup = autostart::status();
-    let Ok(items) = ITEMS.lock() else {
-        return;
-    };
-    let Some(items) = items.as_ref() else {
+    // Off the main thread each setter waits for the main thread to run it, and
+    // the main thread takes this lock to build or refresh the menu: holding it
+    // across the setters would deadlock the two.
+    let Some(items) = ITEMS.lock().ok().and_then(|items| items.clone()) else {
         return;
     };
     let _ = items.router.set_text(router_text());

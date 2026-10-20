@@ -16,7 +16,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { cn } from "@/lib/utils";
 import { SaveAsTemplateButton, charCount, editorKeys } from "./prompt-template-dialog";
-import { usePromptLibrary } from "./use-prompt-library";
+import { librarySaved, usePromptLibrary } from "./use-prompt-library";
 
 const ASSIST_KEY = queryKeys.imagePromptAssist;
 const KINDS: { kind: PromptAssistModel["kind"]; label: string }[] = [
@@ -26,6 +26,8 @@ const KINDS: { kind: PromptAssistModel["kind"]; label: string }[] = [
 ];
 const MAX_REQUEST_CHARS = 500;
 const MAX_INSTRUCTION_CHARS = 8000;
+/** Mirrors MAX_MATERIAL_CHARS in image_prompt_assist.rs. */
+const MAX_MATERIAL_CHARS = 24000;
 /** Long edge of the reference copy a polishing model sees; generation still uses the original. */
 const REFERENCE_EDGE = 1568;
 
@@ -97,6 +99,7 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
   const attempt = useRef(0);
   // The shrunk copy of the reference last sent, so a retry does not redraw it.
   const shrunk = useRef<{ src: string; data: string } | null>(null);
+  const settingsChain = useRef<Promise<unknown>>(Promise.resolve());
 
   // This session's pick, else the model used last time, else the first one offered.
   const model = [picked, settings?.model].find(id => id && models.some(item => item.id === id)) ?? models[0]?.id ?? "";
@@ -112,18 +115,33 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
   const categoryChars = (group: (typeof categories)[number]) => group.templates.reduce(
     (size, item) => size + charCount(item.title + item.note + item.prompt) + 5, charCount(group.name) + 4);
   const tickedChars = ticked.reduce((sum, group) => sum + categoryChars(group), 0);
+  // An estimate: the backend counts exactly and refuses past its own limit.
+  const tooManyMaterials = tickedChars > MAX_MATERIAL_CHARS;
 
   useEffect(() => () => { attempt.current += 1; }, []);
 
-  const saveSettings = async (next: PromptAssistSettings) => {
-    try {
-      const saved = await api.image.savePromptAssistSettings(next);
-      queryClient.setQueryData<PromptAssistState>(ASSIST_KEY, current => current && { ...current, settings: saved });
-      return true;
-    } catch (cause) {
-      toast({ title: "润色设置保存失败", description: formatInvokeError(cause), variant: "destructive" });
-      return false;
-    }
+  /**
+   * Show the settings at once and save them in order, so a tick made before the
+   * last save returned builds on it instead of writing over it.
+   */
+  const saveSettings = (next: PromptAssistSettings) => {
+    queryClient.setQueryData<PromptAssistState>(ASSIST_KEY, current => current && { ...current, settings: next });
+    const save = settingsChain.current.then(() => api.image.savePromptAssistSettings(next));
+    settingsChain.current = save.catch(() => undefined);
+    return save.then(
+      saved => {
+        // A newer change is already showing and its own save will follow.
+        if (queryClient.getQueryData<PromptAssistState>(ASSIST_KEY)?.settings === next) {
+          queryClient.setQueryData<PromptAssistState>(ASSIST_KEY, current => current && { ...current, settings: saved });
+        }
+        return true;
+      },
+      cause => {
+        toast({ title: "润色设置保存失败", description: formatInvokeError(cause), variant: "destructive" });
+        void queryClient.invalidateQueries({ queryKey: ASSIST_KEY });
+        return false;
+      },
+    );
   };
 
   /** Tick or untick a category; ids of categories since deleted are dropped on the way. */
@@ -150,6 +168,8 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
         if (shrunk.current?.src !== reference) shrunk.current = { src: reference, data: await shrinkReference(reference) };
         image = shrunk.current.data;
       }
+      // The backend reads the materials from disk: an edit just made must be there first.
+      if (ticked.length > 0) await librarySaved("materials");
       const text = await api.image.optimizePrompt(model, prompt, request.trim(), ticked.map(group => group.id), image);
       if (id === attempt.current) {
         setResult({ text, from: prompt, withReference: image !== null, materials: ticked.map(group => group.name) });
@@ -286,7 +306,12 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
         {settings && materialBook.ready && (
           <div data-prompt-assist-materials className="flex flex-wrap items-center gap-1.5 font-serif text-xs">
             <span className="text-muted-foreground" title="勾选的分类会发给模型，由它按画面挑选合适的素材写进提示词；勾得越多，每次润色用的 token 越多。素材在下方画谱的「素材」页管理">
-              参考素材{ticked.length > 0 && <span className="font-sans text-[10px] tabular-nums"> · 约 {tickedChars} 字</span>}
+              参考素材{ticked.length > 0 && (
+                <span className={cn("font-sans text-[10px] tabular-nums", tooManyMaterials && "font-semibold text-destructive")}
+                  title={tooManyMaterials ? `超过单次润色约 ${MAX_MATERIAL_CHARS} 字的上限，请少勾几个分类` : undefined}>
+                  {" "}· 约 {tickedChars} 字{tooManyMaterials && "，超出上限"}
+                </span>
+              )}
             </span>
             {categories.map(group => {
               const on = tickedIds.includes(group.id);
