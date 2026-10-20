@@ -51,6 +51,20 @@ export type SavedImageConfig = {
   legacyApiKey?: string;
 };
 
+/** GPT Image edits take up to 16 input images; mirrors MAX_REFERENCE_IMAGES in image.rs. */
+export const MAX_REFERENCES = 16;
+
+/** One image-to-image reference; the order of the list is 图1, 图2… */
+export type ReferenceImage = {
+  /** Tells apart two loads of the same picture. */
+  key: string;
+  src: string;
+  /** Set when it came from the image materials; the polishing model reads them. */
+  materialId?: string;
+  name?: string;
+  note?: string;
+};
+
 export type GenerationJob = {
   id: string;
   prompt: string;

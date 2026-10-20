@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, ChevronUp, Copy, Feather, GripVertical,
-  ListPlus, Maximize2, PackagePlus, Pencil, Pin, PinOff, Plus, RotateCw, Search, Sparkles, Star, Trash2, X,
+  ArrowDownToLine, ArrowUpFromLine, Check, Copy, Feather, GripVertical,
+  ListPlus, Maximize2, PackagePlus, Pencil, Pin, PinOff, Plus, RotateCw, Search, Star, Trash2, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
@@ -12,10 +12,13 @@ import { cn } from "@/lib/utils";
 import {
   PromptTemplateDialog, charCount, editorKeys, rememberGroup, rememberedGroup, type TemplateEditorRequest,
 } from "./prompt-template-dialog";
+import { ImageMaterialBook } from "./image-material-book";
+import { BookHeader, GroupNameInput } from "./library-parts";
 import { usePointerSort } from "./use-pointer-sort";
 import {
-  PROMPT_LIMITS, rememberBook, usePromptLibrary, type PromptLibraryState, type TemplateDraft,
+  PROMPT_LIMITS, rememberBook, usePromptLibrary, type LibraryBook, type PromptLibraryState, type TemplateDraft,
 } from "./use-prompt-library";
+import type { ReferenceImage } from "./workbench-types";
 
 const iconButton = "h-7 w-7 text-muted-foreground";
 // Secondary card actions appear while the card is hovered or focused.
@@ -27,11 +30,6 @@ const draftOf = (template: PromptTemplate): TemplateDraft => ({
   prompt: template.prompt,
 });
 
-const BOOK_TABS: { kind: PromptLibraryKind; label: string; title: string }[] = [
-  { kind: "prompts", label: "提示词灵感", title: "整段的提示词模版，点一下填入提示词框" },
-  { kind: "materials", label: "素材", title: "服装、动作、视角等描述片段；AI 润色时勾选分类，模型会从中挑选" },
-];
-
 /** Punctuation a material can follow without a comma of its own. */
 const CLAUSE_ENDS = ["，", ",", "。", ".", "；", ";", "、"];
 
@@ -42,13 +40,19 @@ const withMaterial = (prompt: string, material: string) => {
   return CLAUSE_ENDS.some(mark => base.endsWith(mark)) ? base + material : `${base}，${material}`;
 };
 
-/** The 画谱: the user's own prompt templates, and the materials AI polishing draws on. */
-export function PromptLibrary({ kind, onKindChange, prompt, onPromptChange }: {
+/** The 画谱: the user's own prompt templates, the materials AI polishing draws on, and their pictures. */
+export function PromptLibrary({
+  kind, onKindChange, prompt, onPromptChange, references, onAddReferences, onRemoveReference,
+}: {
   /** The book shown; the polishing panel can open the materials from outside. */
-  kind: PromptLibraryKind;
-  onKindChange: (kind: PromptLibraryKind) => void;
+  kind: LibraryBook;
+  onKindChange: (kind: LibraryBook) => void;
   prompt: string;
   onPromptChange: (prompt: string) => void;
+  references: ReferenceImage[];
+  /** Append references; returns how many were added. */
+  onAddReferences: (references: Omit<ReferenceImage, "key">[]) => number;
+  onRemoveReference: (key: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   // Opening a book, from its tab or from elsewhere, shows it.
@@ -56,6 +60,12 @@ export function PromptLibrary({ kind, onKindChange, prompt, onPromptChange }: {
     setCollapsed(false);
     rememberBook(kind);
   }, [kind]);
+  if (kind === "images") {
+    return (
+      <ImageMaterialBook onKindChange={onKindChange} collapsed={collapsed} onCollapsedChange={setCollapsed}
+        references={references} onAddReferences={onAddReferences} onRemoveReference={onRemoveReference} />
+    );
+  }
   // Each book starts with its own search, selection and editors.
   return (
     <PromptBook key={kind} kind={kind} onKindChange={onKindChange} collapsed={collapsed} onCollapsedChange={setCollapsed}
@@ -66,7 +76,7 @@ export function PromptLibrary({ kind, onKindChange, prompt, onPromptChange }: {
 /** One book of the 画谱: groups and templates, or categories and materials. */
 function PromptBook({ kind, onKindChange, collapsed, onCollapsedChange: setCollapsed, prompt, onPromptChange }: {
   kind: PromptLibraryKind;
-  onKindChange: (kind: PromptLibraryKind) => void;
+  onKindChange: (kind: LibraryBook) => void;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   prompt: string;
@@ -447,55 +457,25 @@ function PromptBook({ kind, onKindChange, collapsed, onCollapsedChange: setColla
 
   return (
     <div data-prompt-library className="space-y-2.5 rounded-xl bg-black/[0.025] p-2.5 ring-1 ring-border/50 dark:bg-white/[0.02] sm:space-y-3 sm:p-3">
-      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs">
-        <span className="inline-flex min-w-0 items-center gap-1.5 font-serif font-semibold text-muted-foreground">
-          <Sparkles className="h-3.5 w-3.5 shrink-0 text-[#b83b38] dark:text-[#d94f4b]" />
-          <span className="shrink-0">画谱 ·</span>
-          <span role="tablist" aria-label="画谱分册" className="inline-flex shrink-0 items-center gap-0.5">
-            {BOOK_TABS.map(tab => (
-              <button key={tab.kind} type="button" role="tab" aria-selected={tab.kind === kind} title={tab.title}
-                onClick={() => { onKindChange(tab.kind); setCollapsed(false); }}
-                className={cn(
-                  "rounded px-1 py-px font-serif text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[#b83b38]/35",
-                  tab.kind === kind
-                    ? "font-semibold text-[#b83b38] underline decoration-[#b83b38]/40 underline-offset-4 dark:text-[#fca5a5]"
-                    : "font-normal text-muted-foreground hover:text-foreground",
-                )}>
-                {tab.label}
-              </button>
-            ))}
-          </span>
-          {library.templateCount > 0 && (
-            <span className="shrink-0 rounded-full bg-[#b83b38]/10 px-1.5 py-px text-[10px] font-normal text-[#b83b38] dark:bg-[#d94f4b]/15 dark:text-[#fca5a5]">
-              {library.templateCount} {book.unit}{book.item}
-            </span>
-          )}
-        </span>
-        <div className="flex items-center gap-0.5">
-          {library.ready && !collapsed && (
-            <>
-              <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-                title={`把 AgentHarbor 自带的${book.presets}加进来：同名${book.group}合并，已有的跳过，删掉的可以找回`}
-                onClick={() => void library.addPresets()}>
-                <PackagePlus className="h-3.5 w-3.5" /> 预置
-              </Button>
-              <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-                title={`从 JSON 文件导入${book.group}和${book.item}（同名${book.group}合并，重复${book.item}跳过）`} onClick={() => void library.importLibrary()}>
-                <ArrowDownToLine className="h-3.5 w-3.5" /> 导入
-              </Button>
-              <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-                title={materials ? "把全部素材导出为 JSON 文件" : "把整本画谱导出为 JSON 文件"} disabled={groups.length === 0} onClick={() => void library.exportLibrary()}>
-                <ArrowUpFromLine className="h-3.5 w-3.5" /> 导出
-              </Button>
-            </>
-          )}
-          <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-            onClick={() => setCollapsed(!collapsed)}>
-            <span>{collapsed ? "展开画谱" : "收起画谱"}</span>
-            {collapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
-          </Button>
-        </div>
-      </div>
+      <BookHeader kind={kind} onKindChange={onKindChange} count={library.templateCount} countLabel={`${book.unit}${book.item}`}
+        collapsed={collapsed} onCollapsedChange={setCollapsed}
+        actions={library.ready && (
+          <>
+            <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              title={`把 AgentHarbor 自带的${book.presets}加进来：同名${book.group}合并，已有的跳过，删掉的可以找回`}
+              onClick={() => void library.addPresets()}>
+              <PackagePlus className="h-3.5 w-3.5" /> 预置
+            </Button>
+            <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              title={`从 JSON 文件导入${book.group}和${book.item}（同名${book.group}合并，重复${book.item}跳过）`} onClick={() => void library.importLibrary()}>
+              <ArrowDownToLine className="h-3.5 w-3.5" /> 导入
+            </Button>
+            <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              title={materials ? "把全部素材导出为 JSON 文件" : "把整本画谱导出为 JSON 文件"} disabled={groups.length === 0} onClick={() => void library.exportLibrary()}>
+              <ArrowUpFromLine className="h-3.5 w-3.5" /> 导出
+            </Button>
+          </>
+        )} />
 
       {!collapsed && (
         <>
@@ -524,54 +504,6 @@ function PromptBook({ kind, onKindChange, collapsed, onCollapsedChange: setColla
       <PromptTemplateDialog library={library} request={editor} onClose={() => setEditor(null)} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </div>
-  );
-}
-
-/** A group name being typed: Enter or leaving the field keeps it, Esc drops it. */
-function GroupNameInput({ label, initial, taken, onSubmit, onCancel }: {
-  label: string;
-  initial: string;
-  taken: (name: string) => boolean;
-  onSubmit: (name: string) => void;
-  onCancel: () => void;
-}) {
-  const [value, setValue] = useState(initial);
-  const done = useRef(false);
-  const name = value.trim();
-  const error = !name ? `${label}名称不能为空` : taken(name) ? `已有同名${label}` : null;
-  const finish = (keep: boolean) => {
-    if (done.current) return;
-    done.current = true;
-    if (keep && !error && name !== initial) onSubmit(name);
-    else onCancel();
-  };
-  return (
-    <input
-      autoFocus
-      value={value}
-      maxLength={PROMPT_LIMITS.groupName}
-      onChange={event => setValue(event.target.value)}
-      onKeyDown={event => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          // A taken name stays open to be fixed; an empty one just closes.
-          if (!error || !name) finish(true);
-        }
-        if (event.key === "Escape") {
-          event.preventDefault();
-          finish(false);
-        }
-      }}
-      onBlur={() => finish(true)}
-      placeholder={`${label}名称`}
-      aria-label={`${label}名称`}
-      aria-invalid={Boolean(error && name)}
-      title={error && name ? error : "回车确认 · Esc 取消"}
-      className={cn(
-        "h-7 w-32 rounded-md border bg-background px-2 font-serif text-[11px] outline-none focus:border-[#b83b38]/50",
-        error && name ? "border-destructive/60" : "border-border/70",
-      )}
-    />
   );
 }
 

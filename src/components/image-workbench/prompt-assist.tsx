@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Check, Loader2, RotateCw, Settings2, Undo2, Wand2, X } from "lucide-react";
+import { BookOpen, Check, ChevronDown, Loader2, RotateCw, Settings2, Undo2, Wand2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,13 +10,16 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
-import { api, type PromptAssistModel, type PromptAssistSettings, type PromptAssistState } from "@/lib/api";
+import {
+  api, type AssistReference, type PromptAssistModel, type PromptAssistSettings, type PromptAssistState, type PromptGroup,
+} from "@/lib/api";
 import { formatInvokeError } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { cn } from "@/lib/utils";
 import { SaveAsTemplateButton, charCount, editorKeys } from "./prompt-template-dialog";
 import { librarySaved, usePromptLibrary } from "./use-prompt-library";
+import type { ReferenceImage } from "./workbench-types";
 
 const ASSIST_KEY = queryKeys.imagePromptAssist;
 const KINDS: { kind: PromptAssistModel["kind"]; label: string }[] = [
@@ -30,13 +33,15 @@ const MAX_INSTRUCTION_CHARS = 8000;
 const MAX_MATERIAL_CHARS = 24000;
 /** Long edge of the reference copy a polishing model sees; generation still uses the original. */
 const REFERENCE_EDGE = 1568;
+/** Several references go smaller, so the request stays light. */
+const REFERENCES_EDGE = 1024;
 
 /** A JPEG copy of the reference small enough for any relay, flattened onto white. */
-async function shrinkReference(src: string): Promise<string> {
+async function shrinkReference(src: string, edge: number): Promise<string> {
   const image = new Image();
   image.src = src;
   await image.decode();
-  const scale = Math.min(1, REFERENCE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
+  const scale = Math.min(1, edge / Math.max(image.naturalWidth, image.naturalHeight));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
   canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
@@ -69,11 +74,26 @@ export function PromptAssistToggle({ open, onToggle }: { open: boolean; onToggle
   );
 }
 
+/** About what the model reads for one material, as image_prompt_assist.rs writes it. */
+const materialChars = (item: PromptGroup["templates"][number]) => charCount(item.title + item.note + item.prompt) + 5;
+
+/**
+ * What is ticked in each category: all of it when the category id is ticked, else the
+ * materials ticked one by one. Ids of what was since deleted fall away.
+ */
+function tickedMaterials(categories: PromptGroup[], ids: string[]) {
+  const set = new Set(ids);
+  return categories.map(group => {
+    const whole = set.has(group.id);
+    return { group, whole, items: group.templates.filter(item => whole || set.has(item.id)) };
+  }).filter(entry => entry.items.length > 0);
+}
+
 /** Rewrites the prompt with a text model AgentHarbor offers; the result is compared before it is used. */
-export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, onManageMaterials }: {
+export function PromptAssistPanel({ prompt, references, onPromptChange, onClose, onManageMaterials }: {
   prompt: string;
-  /** The image-to-image reference, which the model may see to polish against. */
-  reference: string | null;
+  /** The image-to-image references, which the model may see to polish against. */
+  references: ReferenceImage[];
   onPromptChange: (prompt: string) => void;
   onClose: () => void;
   /** Open the materials book of the 画谱. */
@@ -91,32 +111,28 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
   const settings = state.data?.settings;
   const [picked, setPicked] = useState("");
   const [request, setRequest] = useState("");
-  const [result, setResult] = useState<{ text: string; from: string; withReference: boolean; materials: string[] } | null>(null);
+  const [result, setResult] = useState<{ text: string; from: string; references: number; materials: string[] } | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adopted, setAdopted] = useState<{ before: string; after: string } | null>(null);
   const [instructionOpen, setInstructionOpen] = useState(false);
   const attempt = useRef(0);
-  // The shrunk copy of the reference last sent, so a retry does not redraw it.
-  const shrunk = useRef<{ src: string; data: string } | null>(null);
+  // Shrunk copies of the references sent, by size and source, so a retry does not redraw them.
+  const shrunk = useRef(new Map<string, string>());
   const settingsChain = useRef<Promise<unknown>>(Promise.resolve());
 
   // This session's pick, else the model used last time, else the first one offered.
   const model = [picked, settings?.model].find(id => id && models.some(item => item.id === id)) ?? models[0]?.id ?? "";
   const chosen = models.find(item => item.id === model);
-  // A loaded reference goes along unless the user once unticked it.
-  const withReference = Boolean(reference) && !settings?.skipReference;
-  // Material categories with something in them; the ticked ones go along as text the model reads.
+  // Loaded references go along unless the user once unticked them.
+  const withReference = references.length > 0 && !settings?.skipReference;
+  // Material categories with something in them; what is ticked goes along as text the model reads.
   const materialBook = usePromptLibrary("materials");
   const categories = materialBook.groups.filter(group => group.templates.length > 0);
-  const tickedIds = settings?.materials ?? [];
-  const ticked = categories.filter(group => tickedIds.includes(group.id));
-  // About what the model reads for a category, as image_prompt_assist.rs writes it.
-  const categoryChars = (group: (typeof categories)[number]) => group.templates.reduce(
-    (size, item) => size + charCount(item.title + item.note + item.prompt) + 5, charCount(group.name) + 4);
-  const tickedChars = ticked.reduce((sum, group) => sum + categoryChars(group), 0);
-  // An estimate: the backend counts exactly and refuses past its own limit.
-  const tooManyMaterials = tickedChars > MAX_MATERIAL_CHARS;
+  const ticked = tickedMaterials(categories, settings?.materials ?? []);
+  // In library order, a whole category by its id, else each ticked material.
+  const tickedIds = ticked.flatMap(entry => (entry.whole ? [entry.group.id] : entry.items.map(item => item.id)));
+  const tickedNames = ticked.map(entry => (entry.whole ? entry.group.name : `${entry.group.name}（${entry.items.length} 条）`));
 
   useEffect(() => () => { attempt.current += 1; }, []);
 
@@ -144,11 +160,8 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
     );
   };
 
-  /** Tick or untick a category; ids of categories since deleted are dropped on the way. */
-  const toggleCategory = (id: string, on: boolean) => {
-    if (!settings) return;
-    const known = tickedIds.filter(item => item !== id && materialBook.groups.some(group => group.id === item));
-    void saveSettings({ ...settings, materials: on ? [...known, id] : known });
+  const saveTicked = (materials: string[]) => {
+    if (settings) void saveSettings({ ...settings, materials });
   };
 
   const chooseModel = (id: string) => {
@@ -163,16 +176,24 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
     setError(null);
     setAdopted(null);
     try {
-      let image: string | null = null;
-      if (withReference && reference) {
-        if (shrunk.current?.src !== reference) shrunk.current = { src: reference, data: await shrinkReference(reference) };
-        image = shrunk.current.data;
+      const sent: AssistReference[] = [];
+      if (withReference) {
+        const edge = references.length > 1 ? REFERENCES_EDGE : REFERENCE_EDGE;
+        // Only the copies of what is sent now are kept.
+        const kept = new Map<string, string>();
+        for (const item of references) {
+          const key = `${edge}:${item.src}`;
+          const data = shrunk.current.get(key) ?? await shrinkReference(item.src, edge);
+          kept.set(key, data);
+          sent.push({ data, name: item.name ?? "", note: item.note ?? "" });
+        }
+        shrunk.current = kept;
       }
       // The backend reads the materials from disk: an edit just made must be there first.
-      if (ticked.length > 0) await librarySaved("materials");
-      const text = await api.image.optimizePrompt(model, prompt, request.trim(), ticked.map(group => group.id), image);
+      if (tickedIds.length > 0) await librarySaved("materials");
+      const text = await api.image.optimizePrompt(model, prompt, request.trim(), tickedIds, sent);
       if (id === attempt.current) {
-        setResult({ text, from: prompt, withReference: image !== null, materials: ticked.map(group => group.name) });
+        setResult({ text, from: prompt, references: sent.length, materials: tickedNames });
       }
     } catch (cause) {
       if (id === attempt.current) setError(formatInvokeError(cause));
@@ -284,72 +305,40 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
           )}
         </div>
 
-        {reference && settings && (
+        {references.length > 0 && settings && (
           <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border/60 bg-background/60 p-1.5 pr-2.5">
-            <img src={reference} alt="" className="h-9 w-9 shrink-0 rounded bg-card object-cover ring-1 ring-border/60" />
+            <span className="flex shrink-0 -space-x-3">
+              {references.slice(0, 4).map(item => (
+                <img key={item.key} src={item.src} alt="" className="h-9 w-9 rounded bg-card object-cover ring-1 ring-border/60" />
+              ))}
+            </span>
             <Checkbox
               checked={withReference}
               disabled={running}
-              aria-label="附带底本"
+              aria-label="附带参考图"
               onCheckedChange={on => void saveSettings({ ...settings, skipReference: on !== true })}
               className="border-[#b83b38]/60 data-[state=checked]:border-[#b83b38] data-[state=checked]:bg-[#b83b38] data-[state=checked]:text-white"
             />
             <span className="min-w-0 font-serif text-xs leading-snug">
-              <span className="text-foreground/90">附带底本</span>
+              <span className="text-foreground/90">附带参考图{references.length > 1 && ` · ${references.length} 张`}</span>
               <span className="block text-[11px] text-muted-foreground">
-                让模型看着底本润色，写成「保留什么、改成什么」的改图指令；模型需支持识图
+                {references.length > 1
+                  ? "让模型看着图1、图2…润色，写成「从哪张图取什么、怎样组合」的改图指令；模型需支持识图"
+                  : "让模型看着底本润色，写成「保留什么、改成什么」的改图指令；模型需支持识图"}
               </span>
             </span>
           </label>
         )}
 
         {settings && materialBook.ready && (
-          <div data-prompt-assist-materials className="flex flex-wrap items-center gap-1.5 font-serif text-xs">
-            <span className="text-muted-foreground" title="勾选的分类会发给模型，由它按画面挑选合适的素材写进提示词；勾得越多，每次润色用的 token 越多。素材在下方画谱的「素材」页管理">
-              参考素材{ticked.length > 0 && (
-                <span className={cn("font-sans text-[10px] tabular-nums", tooManyMaterials && "font-semibold text-destructive")}
-                  title={tooManyMaterials ? `超过单次润色约 ${MAX_MATERIAL_CHARS} 字的上限，请少勾几个分类` : undefined}>
-                  {" "}· 约 {tickedChars} 字{tooManyMaterials && "，超出上限"}
-                </span>
-              )}
-            </span>
-            {categories.map(group => {
-              const on = tickedIds.includes(group.id);
-              return (
-                <label key={group.id} title={`${group.templates.length} 条素材 · 约 ${categoryChars(group)} 字`} className={cn(
-                  "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 transition-colors",
-                  on ? "border-[#b83b38]/35 bg-[#b83b38]/[0.05] dark:border-[#d94f4b]/35" : "border-border/60 bg-background/60 text-muted-foreground",
-                )}>
-                  <Checkbox
-                    checked={on}
-                    disabled={running}
-                    aria-label={`参考素材：${group.name}`}
-                    onCheckedChange={next => toggleCategory(group.id, next === true)}
-                    className="h-3.5 w-3.5 border-[#b83b38]/60 data-[state=checked]:border-[#b83b38] data-[state=checked]:bg-[#b83b38] data-[state=checked]:text-white"
-                  />
-                  {group.name}
-                  <span className="font-sans text-[10px] tabular-nums opacity-60">{group.templates.length}</span>
-                </label>
-              );
-            })}
-            {categories.length === 0 && <span className="text-[11px] text-muted-foreground">素材库是空的</span>}
-            {ticked.length > 0 && (
-              <button type="button" disabled={running} onClick={() => void saveSettings({ ...settings, materials: [] })}
-                className="rounded px-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50">
-                清空
-              </button>
-            )}
-            <button type="button" onClick={onManageMaterials} title="在下方画谱的素材页增删、修改素材和分类"
-              className="inline-flex items-center gap-1 rounded px-1 text-[11px] text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]">
-              <BookOpen className="h-3 w-3" /> 管理素材
-            </button>
-          </div>
+          <MaterialPicker categories={categories} ticked={ticked} disabled={running}
+            onChange={saveTicked} onManage={onManageMaterials} />
         )}
 
         {running && (
           <p className="flex items-center gap-1.5 font-serif text-xs text-muted-foreground" aria-live="polite">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            正在请求 {chosen?.label ?? model}{withReference && "（附带底本）"}{ticked.length > 0 && `，参考${ticked.map(group => group.name).join("、")}素材`}，推理模型可能要多等一会儿…
+            正在请求 {chosen?.label ?? model}{withReference && `（附带 ${references.length} 张参考图）`}{tickedNames.length > 0 && `，参考${tickedNames.join("、")}素材`}，推理模型可能要多等一会儿…
           </p>
         )}
         {error && !running && (
@@ -382,7 +371,9 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
             <div className="flex items-center justify-between">
               <span className="font-serif text-[11px] font-semibold text-foreground/90">
                 润色后（可以先改再采用）
-                {result.withReference && <span className="font-normal text-muted-foreground"> · 已对照底本</span>}
+                {result.references > 0 && (
+                  <span className="font-normal text-muted-foreground"> · {result.references > 1 ? `已对照 ${result.references} 张参考图` : "已对照底本"}</span>
+                )}
                 {result.materials.length > 0 && (
                   <span className="font-normal text-muted-foreground"> · 参考了{result.materials.join("、")}素材</span>
                 )}
@@ -450,6 +441,125 @@ export function PromptAssistPanel({ prompt, reference, onPromptChange, onClose, 
             }
           }}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The materials that go along to polishing: a whole category with its box, or, opened,
+ * only the materials ticked in it, so a long category costs no more than what is picked.
+ */
+function MaterialPicker({ categories, ticked, disabled, onChange, onManage }: {
+  categories: PromptGroup[];
+  ticked: ReturnType<typeof tickedMaterials>;
+  disabled: boolean;
+  onChange: (materials: string[]) => void;
+  onManage: () => void;
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const open = categories.find(group => group.id === openId);
+  const entryOf = (group: PromptGroup) => ticked.find(entry => entry.group.id === group.id);
+  const tickedChars = ticked.reduce((sum, entry) =>
+    sum + entry.items.reduce((size, item) => size + materialChars(item), charCount(entry.group.name) + 4), 0);
+  // An estimate: the backend counts exactly and refuses past its own limit.
+  const tooMany = tickedChars > MAX_MATERIAL_CHARS;
+
+  /** Every other category's ticks, then this one's as given: all of it, or these materials. */
+  const replace = (group: PromptGroup, itemIds: string[]) => {
+    const others = ticked.filter(entry => entry.group.id !== group.id)
+      .flatMap(entry => (entry.whole ? [entry.group.id] : entry.items.map(item => item.id)));
+    const own = itemIds.length === group.templates.length ? [group.id] : itemIds;
+    onChange([...others, ...own]);
+  };
+  const toggleItem = (group: PromptGroup, id: string, on: boolean) => {
+    const current = entryOf(group)?.items.map(item => item.id) ?? [];
+    const next = on ? [...current, id] : current.filter(item => item !== id);
+    replace(group, group.templates.map(item => item.id).filter(item => next.includes(item)));
+  };
+
+  const box = "border-[#b83b38]/60 data-[state=checked]:border-[#b83b38] data-[state=checked]:bg-[#b83b38] data-[state=checked]:text-white data-[state=indeterminate]:border-[#b83b38] data-[state=indeterminate]:bg-[#b83b38]/15 data-[state=indeterminate]:text-[#b83b38]";
+  return (
+    <div data-prompt-assist-materials className="space-y-1.5 font-serif text-xs">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-muted-foreground" title="勾选的分类整类发给模型；点分类旁的箭头可以只勾其中几条。模型按画面挑选合适的素材写进提示词，勾得越多，每次润色用的 token 越多。素材在下方画谱的「素材」页管理">
+          参考素材{ticked.length > 0 && (
+            <span className={cn("font-sans text-[10px] tabular-nums", tooMany && "font-semibold text-destructive")}
+              title={tooMany ? `超过单次润色约 ${MAX_MATERIAL_CHARS} 字的上限，请少勾一些` : undefined}>
+              {" "}· 约 {tickedChars} 字{tooMany && "，超出上限"}
+            </span>
+          )}
+        </span>
+        {categories.map(group => {
+          const entry = entryOf(group);
+          const state = entry?.whole ? true : entry ? "indeterminate" : false;
+          const expanded = openId === group.id;
+          return (
+            <span key={group.id} className={cn(
+              "inline-flex items-stretch rounded-md border transition-colors",
+              state ? "border-[#b83b38]/35 bg-[#b83b38]/[0.05] dark:border-[#d94f4b]/35" : "border-border/60 bg-background/60 text-muted-foreground",
+              expanded && "ring-1 ring-[#b83b38]/30",
+            )}>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 py-1 pl-2 pr-1" title={`${group.templates.length} 条素材`}>
+                <Checkbox
+                  checked={state}
+                  disabled={disabled}
+                  aria-label={`参考素材：${group.name}`}
+                  onCheckedChange={next => replace(group, next === true ? group.templates.map(item => item.id) : [])}
+                  className={cn("h-3.5 w-3.5", box)}
+                />
+                {group.name}
+                <span className="font-sans text-[10px] tabular-nums opacity-60">
+                  {entry && !entry.whole ? `${entry.items.length}/${group.templates.length}` : group.templates.length}
+                </span>
+              </label>
+              <button type="button" aria-expanded={expanded} aria-label={`挑选${group.name}里的素材`}
+                title="只勾其中几条" onClick={() => setOpenId(expanded ? null : group.id)}
+                className="rounded-r-md px-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground">
+                <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+              </button>
+            </span>
+          );
+        })}
+        {categories.length === 0 && <span className="text-[11px] text-muted-foreground">素材库是空的</span>}
+        {ticked.length > 0 && (
+          <button type="button" disabled={disabled} onClick={() => onChange([])}
+            className="rounded px-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50">
+            清空
+          </button>
+        )}
+        <button type="button" onClick={onManage} title="在下方画谱的素材页增删、修改素材和分类"
+          className="inline-flex items-center gap-1 rounded px-1 text-[11px] text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]">
+          <BookOpen className="h-3 w-3" /> 管理素材
+        </button>
+      </div>
+      {open && (
+        <div data-prompt-assist-category={open.name} className="rounded-lg border border-[#b83b38]/25 bg-background/70 p-2">
+          <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+            <span className="min-w-0 truncate">{open.name} · 只有勾上的几条会发给模型</span>
+            <span className="flex shrink-0 items-center gap-1">
+              <button type="button" disabled={disabled} className="rounded px-1 hover:text-foreground disabled:opacity-50"
+                onClick={() => replace(open, open.templates.map(item => item.id))}>全选</button>
+              <button type="button" disabled={disabled} className="rounded px-1 hover:text-foreground disabled:opacity-50"
+                onClick={() => replace(open, [])}>全不选</button>
+            </span>
+          </div>
+          <div className="flex max-h-48 flex-wrap gap-1 overflow-y-auto overscroll-contain">
+            {open.templates.map(item => {
+              const on = Boolean(entryOf(open)?.items.some(have => have.id === item.id));
+              return (
+                <label key={item.id} title={item.note ? `${item.note}\n${item.prompt}` : item.prompt} className={cn(
+                  "inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-0.5",
+                  on ? "border-[#b83b38]/35 bg-[#b83b38]/[0.05] dark:border-[#d94f4b]/35" : "border-border/50 text-muted-foreground",
+                )}>
+                  <Checkbox checked={on} disabled={disabled} aria-label={`参考素材：${open.name} · ${item.title}`}
+                    onCheckedChange={next => toggleItem(open, item.id, next === true)} className={cn("h-3 w-3", box)} />
+                  <span className="truncate">{item.title}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
       )}
     </div>
   );

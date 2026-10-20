@@ -47,7 +47,8 @@ export interface ImageGenerationRequest {
   size: string;
   quality: string;
   count: number;
-  imageData?: string | null;
+  /** Image-to-image references in the order the prompt names them (图1, 图2…); empty for text-to-image. */
+  images: string[];
 }
 
 export interface ImageGenerationResponse {
@@ -272,10 +273,37 @@ export interface PromptAssistSettings {
   model: string;
   /** "" means the built-in instruction. */
   instruction: string;
-  /** The user unticked sending the image-to-image reference along. */
+  /** The user unticked sending the image-to-image references along. */
   skipReference: boolean;
-  /** Material categories the user ticked to go along to polishing. */
+  /** What the user ticked to go along to polishing: whole material categories, or single materials in one. */
   materials: string[];
+}
+
+/** A reference image as the polishing model sees it, named when it came from the image materials. */
+export interface AssistReference {
+  data: string;
+  name?: string;
+  note?: string;
+}
+
+export interface ImageMaterial {
+  id: string;
+  name: string;
+  note: string;
+  /** The picture's file in the materials folder; the backend's to set. */
+  file: string;
+}
+
+export interface ImageMaterialGroup {
+  id: string;
+  name: string;
+  items: ImageMaterial[];
+}
+
+export interface ImageMaterialLibrary {
+  groups: ImageMaterialGroup[];
+  /** Where the pictures are kept. */
+  directory: string;
 }
 
 export interface PromptAssistState {
@@ -323,9 +351,18 @@ const imageApi = {
   loadPromptAssist: () => invoke<PromptAssistState>("load_prompt_assist"),
   savePromptAssistSettings: (settings: PromptAssistSettings) =>
     invoke<PromptAssistSettings>("save_prompt_assist_settings", { settings }),
-  /** `materials` are the ticked material category ids; `reference` is a data URL the model sees beside the prompt. */
-  optimizePrompt: (model: string, prompt: string, request: string, materials: string[], reference?: string | null) =>
-    invoke<string>("optimize_image_prompt", { model, prompt, request, materials, reference: reference ?? null }),
+  /** `materials` are the ticked category and material ids; `references` are the images the model sees, in order. */
+  optimizePrompt: (model: string, prompt: string, request: string, materials: string[], references: AssistReference[]) =>
+    invoke<string>("optimize_image_prompt", { model, prompt, request, materials, references }),
+  loadImageMaterials: () => invoke<ImageMaterialLibrary>("load_image_materials"),
+  /** Names, notes, order and groups; pictures left out are deleted. */
+  saveImageMaterials: (library: ImageMaterialLibrary) =>
+    invoke<ImageMaterialLibrary>("save_image_materials", { library }),
+  addImageMaterials: (groupId: string, images: { name: string; dataUrl: string }[]) =>
+    invoke<ImageMaterialLibrary>("add_image_materials", { groupId, images }),
+  /** The original picture, or a copy no larger than `edge` for the grid. */
+  loadImageMaterial: (id: string, edge?: number) =>
+    invoke<string>("load_image_material", { id, edge: edge ?? null }),
 };
 
 const targetsApi = {

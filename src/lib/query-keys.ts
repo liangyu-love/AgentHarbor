@@ -29,6 +29,7 @@ export const queryKeys = {
   imagePromptLibrary: ["image-prompt-library"],
   imagePromptMaterials: ["image-prompt-materials"],
   imagePromptAssist: ["image-prompt-assist"],
+  imageMaterials: ["image-materials"],
   codexThreads: ["threads", "codex"],
   conversations: (source: "codex" | "claudeCode") => ["threads", source],
   threadDetails: (key: string, source: "codex" | "claudeCode" = "codex") => ["threads", source, "details", key],

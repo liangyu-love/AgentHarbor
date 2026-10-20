@@ -78,11 +78,11 @@ export async function testImageAssist({ page, reset, captureDir }) {
   });
   await page.locator("[data-image-reference] input[type=file]")
     .setInputFiles({ name: "reference.png", mimeType: "image/png", buffer: Buffer.from(large, "base64") });
-  const attach = panel.getByRole("checkbox", { name: "附带底本" });
+  const attach = panel.getByRole("checkbox", { name: "附带参考图" });
   await eventually(async () => assert.equal(await attach.getAttribute("aria-checked"), "true"));
   await panel.getByRole("button", { name: "润色", exact: true }).click();
   await eventually(async () => assert.equal((await requests(page)).length, 4));
-  const sent = await page.evaluate(() => window.review.assistRequests[3].reference);
+  const sent = await page.evaluate(() => window.review.assistRequests[3].references[0].data);
   assert.match(sent, /^data:image\/jpeg;base64,/);
   const size = await page.evaluate(async src => {
     const image = new Image();
@@ -98,17 +98,17 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.promptAssist.settings.skipReference === true);
   await panel.getByRole("button", { name: "重新润色", exact: true }).click();
   await eventually(async () => assert.equal((await requests(page)).length, 5));
-  assert.equal(await page.evaluate(() => window.review.assistRequests[4].reference), null);
+  assert.deepEqual(await page.evaluate(() => window.review.assistRequests[4].references), []);
   console.log("PASS AI polish sends a shrunk reference by default and remembers when it is left out");
 
   // Material categories go along only once ticked, and the ticks are remembered.
   const materials = panel.locator("[data-prompt-assist-materials]");
-  const outfits = materials.getByRole("checkbox", { name: "参考素材：服装" });
+  const outfits = materials.getByRole("checkbox", { name: "参考素材：服装", exact: true });
   await outfits.waitFor();
   assert.equal(await materials.getByRole("checkbox").count(), 2, "an empty category is not offered");
   assert.deepEqual(await page.evaluate(() => window.review.assistRequests[4].materials), [], "nothing goes along unticked");
   await answer(page, 4, "保留橘猫，背景换成霓虹雨夜");
-  await materials.getByRole("checkbox", { name: "参考素材：动作" }).click();
+  await materials.getByRole("checkbox", { name: "参考素材：动作", exact: true }).click();
   await outfits.click();
   await page.waitForFunction(() => window.review.promptAssist.settings.materials.length === 2);
   await materials.getByText(/约 \d+ 字/).waitFor();
@@ -128,6 +128,29 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await page.waitForFunction(() => window.review.promptAssist.settings.materials.length === 0);
   console.log("PASS AI polish sends only the ticked material categories and remembers them");
 
+  // A category opens to tick single materials: only those go along, and ticking all of them is the whole category.
+  await materials.getByRole("button", { name: "挑选服装里的素材" }).click();
+  const outfitItems = materials.locator('[data-prompt-assist-category="服装"]');
+  await outfitItems.getByRole("checkbox", { name: "参考素材：服装 · 老钱静奢" }).click();
+  await page.waitForFunction(() => JSON.stringify(window.review.promptAssist.settings.materials) === '["m3"]');
+  assert.equal(await outfits.getAttribute("aria-checked"), "mixed");
+  await materials.getByText("1/2").waitFor();
+  await materials.getByRole("checkbox", { name: "参考素材：动作", exact: true }).click();
+  await panel.getByRole("button", { name: "重新润色", exact: true }).click();
+  await eventually(async () => assert.equal((await requests(page)).length, 8));
+  assert.deepEqual(await page.evaluate(() => window.review.assistRequests[7].materials), ["m3", "m-pose"], "single materials in library order");
+  await answer(page, 7, "回眸的少女，米白真丝衬衫");
+  await panel.getByText("参考了服装（1 条）、动作素材", { exact: false }).waitFor();
+  if (captureDir) await panel.screenshot({ path: path.join(captureDir, "image-assist-material-items.png"), animations: "disabled" });
+  await outfitItems.getByRole("checkbox", { name: "参考素材：服装 · JK 制服" }).click();
+  await page.waitForFunction(() => JSON.stringify(window.review.promptAssist.settings.materials) === '["m-pose","m-outfit"]');
+  assert.equal(await outfits.getAttribute("aria-checked"), "true");
+  await outfitItems.getByRole("button", { name: "全不选" }).click();
+  await page.waitForFunction(() => JSON.stringify(window.review.promptAssist.settings.materials) === '["m-pose"]');
+  await materials.getByRole("button", { name: "清空" }).click();
+  await page.waitForFunction(() => window.review.promptAssist.settings.materials.length === 0);
+  console.log("PASS a material category opens to send only the materials ticked in it");
+
   // The materials are one click away from the polishing panel.
   await materials.getByRole("button", { name: "管理素材" }).click();
   const library = page.locator("[data-prompt-library]");
@@ -135,4 +158,70 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await page.locator('[data-prompt-template="JK 制服"]').waitFor();
   await library.getByRole("tab", { name: "提示词灵感" }).click();
   console.log("PASS managing materials opens the materials book of the 画谱");
+
+  // Pictures from the image book join the references after the uploaded one, named for the polishing model.
+  await library.getByRole("tab", { name: "图片" }).click();
+  const girl = page.locator('[data-image-material="短发女生"]');
+  await girl.getByRole("button", { name: "短发女生：加入参考图" }).click();
+  const strip = page.locator("[data-image-reference]");
+  await eventually(async () => assert.equal(await strip.locator("[data-reference]").count(), 2));
+  await strip.locator('[data-reference="图2"]').getByText("短发女生").waitFor();
+  await girl.getByText("图2").waitFor();
+  if (captureDir) await strip.screenshot({ path: path.join(captureDir, "image-references.png"), animations: "disabled" });
+  await attach.click();
+  await page.waitForFunction(() => window.review.promptAssist.settings.skipReference === false);
+  await panel.getByRole("button", { name: "重新润色", exact: true }).click();
+  await eventually(async () => assert.equal((await requests(page)).length, 9));
+  const references = await page.evaluate(() => window.review.assistRequests[8].references.map(({ name, note }) => ({ name, note })));
+  assert.deepEqual(references, [{ name: "", note: "" }, { name: "短发女生", note: "只参考脸和发型" }]);
+  const firstSize = await page.evaluate(async () => {
+    const image = new Image();
+    image.src = window.review.assistRequests[8].references[0].data;
+    await image.decode();
+    return [image.naturalWidth, image.naturalHeight];
+  });
+  assert.deepEqual(firstSize, [1024, 512], "several references go at a smaller size");
+  await answer(page, 8, "图1的橘猫换上图2女生的发型");
+  await panel.getByText("已对照 2 张参考图", { exact: false }).waitFor();
+  console.log("PASS AI polish sends every reference in order, with the image material's name and note");
+
+  // Generating sends the references in their order; dragging with the keyboard reorders them.
+  await panel.getByRole("button", { name: "采用", exact: true }).click();
+  await strip.locator('[data-reference="图1"]').getByRole("button", { name: /^图1/ }).press("Alt+ArrowRight");
+  await strip.locator('[data-reference="图1"]').getByText("短发女生").waitFor();
+  const before = await page.evaluate(() => window.review.imageRequests.length);
+  await page.locator("[data-image-generate]").click();
+  await page.waitForFunction(count => window.review.imageRequests.length === count + 1, before);
+  const images = await page.evaluate(() => window.review.imageRequests.at(-1).images);
+  assert.equal(images.length, 2);
+  assert.equal(images[0], await page.evaluate(() => window.review.imageMaterialData["img-girl"]));
+  await page.evaluate(() => window.review.imageResolvers.at(-1)());
+  // Clicking the picture again takes it back out.
+  await girl.getByRole("button", { name: "短发女生：已是图1，点击移出参考图" }).click();
+  await eventually(async () => assert.equal(await strip.locator("[data-reference]").count(), 1));
+  console.log("PASS references are generated in order, reordered from the keyboard, and toggled from the image book");
+
+  // Pictures are added to a group by file, renamed with a note, and deleted.
+  await library.locator('input[aria-label="添加图片素材"]').setInputFiles([
+    { name: "碎花裙.png", mimeType: "image/png", buffer: Buffer.from(large, "base64") },
+  ]);
+  const dress = page.locator('[data-image-material="碎花裙"]');
+  await dress.waitFor();
+  if (captureDir) await library.screenshot({ path: path.join(captureDir, "image-materials-book.png"), animations: "disabled" });
+  assert.deepEqual(await page.evaluate(() => window.review.imageMaterials.groups[0].items.map(item => item.name)), ["短发女生", "碎花裙"]);
+  await dress.hover();
+  await dress.getByRole("button", { name: "编辑「碎花裙」" }).click();
+  const editDialog = page.getByRole("dialog", { name: "图片素材" });
+  await editDialog.getByRole("textbox", { name: "图片备注" }).fill("只参考裙子");
+  await editDialog.getByRole("button", { name: "保存" }).click();
+  await editDialog.waitFor({ state: "detached" });
+  await page.waitForFunction(() => window.review.imageMaterials.groups[0].items[1].note === "只参考裙子");
+  await dress.hover();
+  await dress.getByRole("button", { name: "删除「碎花裙」" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "删除图片" }).click();
+  await dress.waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => window.review.imageMaterials.groups[0].items.length), 1);
+  await strip.getByRole("button", { name: "移除图1" }).click();
+  await library.getByRole("tab", { name: "提示词灵感" }).click();
+  console.log("PASS image materials are added, annotated and deleted in the image book");
 }

@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useRef, useState } from "react";
 import { PageActiveContext } from "@/components/layout/page-stage";
 import { toast } from "@/hooks/use-toast";
 import { api, type GalleryItem } from "@/lib/api";
@@ -9,7 +9,7 @@ import { useGenerationQueue } from "./use-generation-queue";
 import { useImageConnection } from "./use-image-connection";
 import { useImageGallery } from "./use-image-gallery";
 import { WorkbenchHeader } from "./workbench-header";
-import { fileToDataUrl } from "./workbench-types";
+import { MAX_REFERENCES, fileToDataUrl, type ReferenceImage } from "./workbench-types";
 
 export function ImageWorkbenchPage() {
   const pageActive = useContext(PageActiveContext);
@@ -22,12 +22,37 @@ export function ImageWorkbenchPage() {
   });
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState(1);
-  const [imageData, setImageData] = useState<string | null>(null);
+  const [references, setReferences] = useState<ReferenceImage[]>([]);
+  // Adds can land after an await (a gallery or material original loading); they build on the latest list.
+  const latestReferences = useRef(references);
+  latestReferences.current = references;
 
-  const upload = async (file: File | undefined) => {
-    if (!file) return;
+  /**
+   * Append references after the ones loaded; a picture already there is not added
+   * twice, and past 16 the rest are left out. Returns how many were added.
+   */
+  const addReferences = (incoming: Omit<ReferenceImage, "key">[]) => {
+    const references = latestReferences.current;
+    const fresh = incoming.filter((item, index) => !references.some(have => have.src === item.src
+      || (item.materialId && have.materialId === item.materialId))
+      && incoming.findIndex(other => other.src === item.src) === index);
+    const room = Math.max(0, MAX_REFERENCES - references.length);
+    const added = fresh.slice(0, room).map(item => ({ ...item, key: crypto.randomUUID() }));
+    if (added.length > 0) {
+      latestReferences.current = [...references, ...added];
+      setReferences(latestReferences.current);
+    }
+    if (fresh.length > room) {
+      toast({ title: `参考图最多 ${MAX_REFERENCES} 张`, description: `有 ${fresh.length - room} 张没有加入`, variant: "destructive" });
+    }
+    return added.length;
+  };
+
+  const upload = async (files: File[]) => {
+    if (files.length === 0) return;
     try {
-      setImageData(await fileToDataUrl(file));
+      const sources = await Promise.all(files.map(fileToDataUrl));
+      addReferences(sources.map(src => ({ src })));
       setError(null);
     } catch {
       setError("image.errors.input");
@@ -48,11 +73,17 @@ export function ImageWorkbenchPage() {
     document.querySelector("[data-image-prompt]")?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
   };
 
-  /** Make a finished image the next generation's reference, and bring the reference into view. */
+  /** Add a finished image to the next generation's references, and bring them into view. */
   const takeAsReference = (src: string) => {
-    setImageData(src);
+    const references = latestReferences.current;
+    if (references.some(item => item.src === src)) {
+      toast({ title: "这张图已在参考图里", variant: "success" });
+    } else if (addReferences([{ src }]) === 0) {
+      return;
+    } else {
+      toast({ title: `已加入参考图 · 图${references.length + 1}`, description: "下次生成将用参考图做图生图", variant: "success" });
+    }
     setError(null);
-    toast({ title: "已载入为底本", description: "下次生成将以这张图做图生图", variant: "success" });
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     document.querySelector("[data-image-reference]")?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
   };
@@ -76,7 +107,7 @@ export function ImageWorkbenchPage() {
       size: connection.size,
       quality: connection.quality,
       count,
-      imageData,
+      images: references.map(item => item.src),
     });
   };
 
@@ -93,8 +124,10 @@ export function ImageWorkbenchPage() {
           setPrompt={setPrompt}
           count={count}
           setCount={setCount}
-          imageData={imageData}
-          setImageData={setImageData}
+          references={references}
+          setReferences={setReferences}
+          addReferences={addReferences}
+          removeReference={key => setReferences(current => current.filter(item => item.key !== key))}
           upload={upload}
           error={error}
           canGenerate={canGenerate}

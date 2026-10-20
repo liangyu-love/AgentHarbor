@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/utils";
-import { Brush, ImagePlus, Palette, Upload, X } from "lucide-react";
+import { Brush, ImagePlus, Palette } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SecretInput } from "@/components/ui/secret-input";
@@ -18,13 +17,14 @@ import { InkModelCombobox } from "./ink-model-combobox";
 import { PromptLibrary } from "./prompt-library";
 import { PromptAssistPanel, PromptAssistToggle } from "./prompt-assist";
 import { SaveAsTemplateButton } from "./prompt-template-dialog";
+import { ReferenceStrip } from "./reference-strip";
 import { rememberedBook } from "./use-prompt-library";
 import type { ImageConnection } from "./use-image-connection";
-import { SIZES, type GenerationJob } from "./workbench-types";
+import { SIZES, type GenerationJob, type ReferenceImage } from "./workbench-types";
 
-/** The left scroll: connection, parameters, prompt, reference image and the generate button. */
+/** The left scroll: connection, parameters, prompt, reference images and the generate button. */
 export function GenerationForm({
-  connection, prompt, setPrompt, count, setCount, imageData, setImageData, upload,
+  connection, prompt, setPrompt, count, setCount, references, setReferences, addReferences, removeReference, upload,
   error, canGenerate, generationJobs, onGenerate,
 }: {
   connection: ImageConnection;
@@ -32,26 +32,20 @@ export function GenerationForm({
   setPrompt: (prompt: string) => void;
   count: number;
   setCount: (count: number) => void;
-  imageData: string | null;
-  setImageData: (data: string | null) => void;
-  upload: (file: File | undefined) => Promise<void>;
+  references: ReferenceImage[];
+  setReferences: (references: ReferenceImage[]) => void;
+  /** Append references; returns how many were added. */
+  addReferences: (references: Omit<ReferenceImage, "key">[]) => number;
+  removeReference: (key: string) => void;
+  upload: (files: File[]) => Promise<void>;
   error: string | null;
   canGenerate: boolean;
   generationJobs: GenerationJob[];
   onGenerate: () => void;
 }) {
   const { t } = useTranslation();
-  const inputRef = useRef<HTMLInputElement>(null);
   const [assistOpen, setAssistOpen] = useState(false);
   const [libraryKind, setLibraryKind] = useState(rememberedBook);
-  // A newly loaded reference glows briefly, so a load from the canvas or gallery is seen.
-  const [freshReference, setFreshReference] = useState(false);
-  useEffect(() => {
-    if (!imageData) return;
-    setFreshReference(true);
-    const timer = window.setTimeout(() => setFreshReference(false), 1400);
-    return () => window.clearTimeout(timer);
-  }, [imageData]);
   const selectedQuality = connection.qualityOptions.find(item => item.value === connection.quality);
   return (
     <div className="ink-scroll-frame min-w-0 p-4 transition-all duration-300 sm:p-5 sm:p-6">
@@ -227,7 +221,7 @@ export function GenerationForm({
         </div>
 
         {assistOpen && (
-          <PromptAssistPanel prompt={prompt} reference={imageData} onPromptChange={setPrompt} onClose={() => setAssistOpen(false)}
+          <PromptAssistPanel prompt={prompt} references={references} onPromptChange={setPrompt} onClose={() => setAssistOpen(false)}
             onManageMaterials={() => {
               setLibraryKind("materials");
               const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -235,65 +229,11 @@ export function GenerationForm({
             }} />
         )}
 
-        <PromptLibrary kind={libraryKind} onKindChange={setLibraryKind} prompt={prompt} onPromptChange={setPrompt} />
+        <PromptLibrary kind={libraryKind} onKindChange={setLibraryKind} prompt={prompt} onPromptChange={setPrompt}
+          references={references} onAddReferences={addReferences}
+          onRemoveReference={removeReference} />
 
-        {/* 图生图参考底本 */}
-        <div data-image-reference data-fresh={freshReference || undefined} className={cn(
-          "rounded-xl border bg-background/50 p-3.5 transition-[border-color,background-color,box-shadow] duration-500 motion-reduce:transition-none",
-          imageData ? "border-solid border-border" : "border-dashed border-border/80",
-          freshReference && "border-[#b83b38]/55 bg-[#b83b38]/[0.04] shadow-[0_0_0_3px_rgba(184,59,56,0.12)] dark:border-[#d94f4b]/55",
-        )}>
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="font-serif text-xs font-semibold text-foreground/90">
-                展卷摹画 · 载入底本 (可选)
-              </p>
-              <p className="font-serif text-[11px] text-muted-foreground">
-                PNG / JPG / WebP，单张 ≤ 20 MB；成图可点「用作底本」载入。
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                ref={inputRef}
-                className="hidden"
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={event => void upload(event.target.files?.[0])}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="font-serif text-xs h-8 gap-1.5"
-                onClick={() => inputRef.current?.click()}
-              >
-                <Upload className="h-3.5 w-3.5" />
-                选入画稿
-              </Button>
-              {imageData && (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                  onClick={() => setImageData(null)}
-                  aria-label="移除画稿"
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          </div>
-          {imageData && (
-            <div className="mt-3 relative rounded-lg border p-1 bg-card/60">
-              <img
-                src={imageData}
-                alt="待摹画底本"
-                className="max-h-48 rounded object-contain mx-auto"
-              />
-            </div>
-          )}
-        </div>
+        <ReferenceStrip references={references} setReferences={setReferences} upload={upload} />
 
         {error && (
           <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive font-serif">

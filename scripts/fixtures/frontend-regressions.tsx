@@ -925,9 +925,38 @@ api.image.savePromptAssistSettings = async settings => {
   return { ...settings };
 };
 // Each polish waits until the test answers or fails it.
-api.image.optimizePrompt = (model, prompt, request, materials, reference) => new Promise((resolve, reject) => {
-  controls.review.assistRequests.push({ model, prompt, request, materials, reference: reference ?? null, resolve, reject });
+api.image.optimizePrompt = (model, prompt, request, materials, references) => new Promise((resolve, reject) => {
+  controls.review.assistRequests.push({ model, prompt, request, materials, references, resolve, reject });
 });
+// Like image_materials.rs: a save keeps each picture by id, an add appends to its group.
+api.image.loadImageMaterials = async () => structuredClone(controls.review.imageMaterials);
+api.image.saveImageMaterials = async library => {
+  const known = new Map(controls.review.imageMaterials.groups.flatMap(group => group.items).map(item => [item.id, item.file]));
+  const groups = library.groups.map(group => ({ ...group, items: group.items.map(item => {
+    if (!known.has(item.id)) throw "image.errors.imageMaterialsInvalid";
+    return { ...item, file: known.get(item.id) };
+  }) }));
+  controls.review.imageMaterials = { ...controls.review.imageMaterials, groups };
+  return structuredClone(controls.review.imageMaterials);
+};
+api.image.addImageMaterials = async (groupId, images) => {
+  const library = structuredClone(controls.review.imageMaterials);
+  const group = library.groups.find(item => item.id === groupId);
+  if (!group) throw "image.errors.imageMaterialsInvalid";
+  for (const image of images) {
+    const id = "img-" + (controls.review.imageMaterialSeq = (controls.review.imageMaterialSeq ?? 0) + 1);
+    controls.review.imageMaterialData[id] = image.dataUrl;
+    group.items.push({ id, name: image.name, note: "", file: id + ".png" });
+  }
+  controls.review.imageMaterials = library;
+  return structuredClone(library);
+};
+api.image.loadImageMaterial = async (id, edge) => {
+  (controls.review.imageMaterialLoads ??= []).push({ id, edge: edge ?? null });
+  const data = controls.review.imageMaterialData[id];
+  if (!data) throw "image.errors.notFound";
+  return data;
+};
 // Like add_presets in image_prompts.rs: same-named groups join, what is there is skipped.
 api.image.addPromptPresets = async kind => {
   const key = promptBook(kind);
@@ -1503,7 +1532,10 @@ controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,
   promptLibrary: { groups: [] }, promptSaves: 0, failPromptSave: false,
   promptMaterials: { groups: [
-    { id: "m-outfit", name: "服装", templates: [{ id: "m1", title: "JK 制服", note: "日系校园", prompt: "水手服，百褶裙", pinned: false }] },
+    { id: "m-outfit", name: "服装", templates: [
+      { id: "m1", title: "JK 制服", note: "日系校园", prompt: "水手服，百褶裙", pinned: false },
+      { id: "m3", title: "老钱静奢", note: "", prompt: "米白真丝衬衫，驼色阔腿西裤", pinned: false },
+    ] },
     { id: "m-pose", name: "动作", templates: [{ id: "m2", title: "回眸", note: "", prompt: "回头望向镜头", pinned: false }] },
     { id: "m-angle", name: "视角", templates: [] },
   ] },
@@ -1512,6 +1544,10 @@ controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?
     { id: "codex/gpt-5.5", label: "GPT-5.5", sourceName: "Codex", kind: "account" },
     { id: "smart", label: "Smart", sourceName: "Smart", kind: "aggregate" },
   ] }, assistRequests: [],
+  imageMaterials: { directory: "C:/synthetic/image-materials", groups: [
+    { id: "ig-people", name: "人物", items: [{ id: "img-girl", name: "短发女生", note: "只参考脸和发型", file: "img-girl.png" }] },
+  ] },
+  imageMaterialData: { "img-girl": galleryArt("gallery-7") },
   balanceRequests: [], balanceResolvers: [], balanceRejectors: [], balanceCredentialSaves: [],
   restartCalls: [], recoveryApplyCalls: 0, recoveredCalls: 0, deleteCalls: [], openedPath: null,
   holdThumbnails: false, holdOriginal: false, labels: {

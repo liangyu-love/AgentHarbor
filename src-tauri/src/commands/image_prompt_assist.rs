@@ -1,7 +1,7 @@
 //! Prompt polishing for the image workbench: one request through the local
 //! router to any text model a relay, account or aggregate offers.
 
-use super::image::{paths, MAX_PROMPT_CHARS};
+use super::image::{paths, MAX_PROMPT_CHARS, MAX_REFERENCE_IMAGES};
 use super::image_prompts::{read_library, LibraryKind, PromptGroup};
 use crate::core::{
     gateway, models_dev, repository::Repository, router, router_proxy, routing_runtime, storage,
@@ -9,20 +9,24 @@ use crate::core::{
 use crate::platform::paths::CodexPaths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{sync::Mutex, time::Duration};
+use std::{collections::HashSet, sync::Mutex, time::Duration};
 use tauri::State;
 
 const SETTINGS_FILE: &str = "image-prompt-assist.json";
 const MAX_INSTRUCTION_CHARS: usize = 8_000;
 const MAX_REQUEST_CHARS: usize = 500;
 const MAX_MODEL_ID_CHARS: usize = 300;
-/// Material categories sent along; past this the user is asked to tick fewer.
+/// Materials sent along; past this the user is asked to tick fewer.
 const MAX_MATERIAL_CHARS: usize = 24_000;
-const MAX_MATERIAL_IDS: usize = 100;
+/// Whole categories and single materials ticked, together.
+const MAX_MATERIAL_IDS: usize = 500;
 const MAX_MATERIAL_ID_CHARS: usize = 64;
 const MAX_OUTPUT_TOKENS: u64 = 4096;
 /// The workbench sends a downscaled copy; this only stops something far larger.
 const MAX_REFERENCE_CHARS: usize = 8 * 1024 * 1024;
+/// What names a reference from the image materials, as the model reads it.
+const MAX_REFERENCE_NAME_CHARS: usize = 80;
+const MAX_REFERENCE_NOTE_CHARS: usize = 200;
 const REFERENCE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 /// Reasoning models can think for a while before they answer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
@@ -37,8 +41,9 @@ pub const DEFAULT_INSTRUCTION: &str = "你是 GPT Image 生图提示词优化助
 - 只输出优化后的提示词本身。";
 
 /// What the user chose: the model last used, their own instruction ("" for the default),
-/// whether the reference image is left out of polishing, and the material categories
-/// ticked to go along (none until the user ticks one: materials cost tokens).
+/// whether the reference images are left out of polishing, and the materials ticked to
+/// go along (none until the user ticks one: materials cost tokens). A ticked id is a
+/// whole category or a single material in one.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistSettings {
@@ -50,6 +55,18 @@ pub struct AssistSettings {
     pub skip_reference: bool,
     #[serde(default)]
     pub materials: Vec<String>,
+}
+
+/// One image-to-image reference as the polishing model sees it: a downscaled copy,
+/// and its name and note when it came from the image materials.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistReference {
+    pub data: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,16 +124,24 @@ fn material_ids_fit(ids: &[String]) -> bool {
             .all(|id| id.chars().count() <= MAX_MATERIAL_ID_CHARS)
 }
 
-/// The ticked material categories, in the library's order, as the model reads them;
-/// "" when none is ticked or the ticked ones are empty.
+/// The ticked materials, in the library's order and under their categories, as the
+/// model reads them: a ticked category brings all of its materials, a ticked
+/// material only itself. "" when nothing ticked is left.
 fn materials_text(groups: &[PromptGroup], ids: &[String]) -> Result<String, String> {
+    let ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
     let mut text = String::new();
-    for group in groups.iter().filter(|group| ids.contains(&group.id)) {
-        if group.templates.is_empty() {
+    for group in groups {
+        let whole = ids.contains(group.id.as_str());
+        let items: Vec<_> = group
+            .templates
+            .iter()
+            .filter(|item| whole || ids.contains(item.id.as_str()))
+            .collect();
+        if items.is_empty() {
             continue;
         }
         text.push_str(&format!("## {}\n", group.name));
-        for item in &group.templates {
+        for item in items {
             let content = item.prompt.split_whitespace().collect::<Vec<_>>().join(" ");
             match item.note.as_str() {
                 "" => text.push_str(&format!("- {}：{content}\n", item.title)),
@@ -162,15 +187,22 @@ fn load_state(paths: &CodexPaths) -> Result<AssistState, String> {
 }
 
 /// The user turn's text: the prompt to rewrite, the materials to draw on, and the
-/// one-off requirement if any. With a reference image the prompt becomes an edit
-/// of it, as image-to-image expects.
-fn user_message(prompt: &str, request: &str, materials: &str, with_reference: bool) -> String {
-    let lead = if with_reference {
-        "附图是这次图生图的底本。请对照底本优化下面的生图提示词，写成改图指令：\
-         说明要保留底本的哪些部分（如主体、构图、画风），以及要改成什么样；\
-         不要重复描述底本里不变的细节，也不要和底本的实际内容矛盾。"
-    } else {
-        "请优化下面的生图提示词："
+/// one-off requirement if any. With reference images the prompt becomes an edit
+/// of them, as image-to-image expects; several are named 图1, 图2… in the order the
+/// image API receives them.
+fn user_message(prompt: &str, request: &str, materials: &str, references: usize) -> String {
+    let lead = match references {
+        0 => "请优化下面的生图提示词：".to_owned(),
+        1 => "附图是这次图生图的底本。请对照底本优化下面的生图提示词，写成改图指令：\
+              说明要保留底本的哪些部分（如主体、构图、画风），以及要改成什么样；\
+              不要重复描述底本里不变的细节，也不要和底本的实际内容矛盾。"
+            .to_owned(),
+        count => format!(
+            "附图是这次图生图的 {count} 张参考图，按顺序编号为图1到图{count}，生图时也按这个顺序传入。\
+             请对照参考图优化下面的生图提示词，写成改图指令：用「图1」「图2」这样的编号指代各图，\
+             说明从每张图里取什么（如人物、服装、姿势、场景、画风）、怎样组合，以及要改成什么样；\
+             不要重复描述图里不变的细节，也不要和参考图的实际内容矛盾。"
+        ),
     };
     let mut message = format!("{lead}\n<prompt>\n{}\n</prompt>", prompt.trim());
     if !materials.is_empty() {
@@ -206,20 +238,45 @@ fn reference_block(data_url: &str) -> Result<Value, String> {
     }))
 }
 
-/// The user turn: the text alone, or the reference image before it.
+/// What labels a reference before its image: 图N, and its material name and note.
+fn reference_label(index: usize, reference: &AssistReference) -> String {
+    let clip = |text: &str, limit: usize| text.trim().chars().take(limit).collect::<String>();
+    let name = clip(&reference.name, MAX_REFERENCE_NAME_CHARS);
+    let note = clip(&reference.note, MAX_REFERENCE_NOTE_CHARS);
+    match (name.as_str(), note.as_str()) {
+        ("", _) => format!("图{}", index + 1),
+        (name, "") => format!("图{}：{name}", index + 1),
+        (name, note) => format!("图{}：{name}（{note}）", index + 1),
+    }
+}
+
+/// The user turn: the text alone, or each reference image after its label, then the text.
+/// A single unnamed reference goes without a label, as the one 底本.
 fn user_content(
     prompt: &str,
     request: &str,
     materials: &str,
-    reference: Option<&str>,
+    references: &[AssistReference],
 ) -> Result<Value, String> {
-    let Some(reference) = reference else {
-        return Ok(json!(user_message(prompt, request, materials, false)));
-    };
-    Ok(json!([
-        reference_block(reference)?,
-        { "type": "text", "text": user_message(prompt, request, materials, true) },
-    ]))
+    if references.is_empty() {
+        return Ok(json!(user_message(prompt, request, materials, 0)));
+    }
+    if references.len() > MAX_REFERENCE_IMAGES {
+        return Err("image.errors.assistReference".into());
+    }
+    let labelled = references.len() > 1 || !references[0].name.trim().is_empty();
+    let mut blocks = Vec::with_capacity(references.len() * 2 + 1);
+    for (index, reference) in references.iter().enumerate() {
+        if labelled {
+            blocks.push(json!({ "type": "text", "text": reference_label(index, reference) }));
+        }
+        blocks.push(reference_block(&reference.data)?);
+    }
+    blocks.push(json!({
+        "type": "text",
+        "text": user_message(prompt, request, materials, references.len()),
+    }));
+    Ok(Value::Array(blocks))
 }
 
 /// The text of a Messages reply, without a code fence a model may wrap it in.
@@ -260,7 +317,7 @@ async fn polish(
     prompt: String,
     request: String,
     materials: Vec<String>,
-    reference: Option<String>,
+    references: Vec<AssistReference>,
 ) -> Result<String, String> {
     check_input(&model, &prompt, &request)?;
     if !material_ids_fit(&materials) {
@@ -275,7 +332,7 @@ async fn polish(
             materials_text(&library.groups, &materials)?
         }
     };
-    let content = user_content(&prompt, &request, &materials, reference.as_deref())?;
+    let content = user_content(&prompt, &request, &materials, &references)?;
     {
         let _guard = routing_runtime::mutation_guard().await;
         routing_runtime::ensure_available(&paths).await?;
@@ -356,7 +413,7 @@ pub async fn optimize_image_prompt(
     prompt: String,
     request: String,
     materials: Option<Vec<String>>,
-    reference: Option<String>,
+    references: Option<Vec<AssistReference>>,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
     polish(
@@ -365,7 +422,7 @@ pub async fn optimize_image_prompt(
         prompt,
         request,
         materials.unwrap_or_default(),
-        reference,
+        references.unwrap_or_default(),
     )
     .await
 }
@@ -421,11 +478,12 @@ mod tests {
     #[test]
     fn the_user_turn_carries_the_prompt_and_a_one_off_requirement() {
         assert_eq!(
-            user_message("  雨夜橘猫 ", "", "", false),
+            user_message("  雨夜橘猫 ", "", "", 0),
             "请优化下面的生图提示词：\n<prompt>\n雨夜橘猫\n</prompt>"
         );
-        assert!(user_message("雨夜橘猫", " 赛博朋克 ", "", false)
-            .ends_with("\n这次的额外要求：赛博朋克"));
+        assert!(
+            user_message("雨夜橘猫", " 赛博朋克 ", "", 0).ends_with("\n这次的额外要求：赛博朋克")
+        );
     }
 
     #[test]
@@ -475,6 +533,22 @@ mod tests {
             materials_text(&groups, &ids(&["empty", "gone"])).unwrap(),
             ""
         );
+        // A single material goes along on its own, under its category.
+        assert_eq!(
+            materials_text(&groups, &ids(&["回眸"])).unwrap(),
+            "## 动作
+- 回眸：回头望向镜头
+"
+        );
+        assert_eq!(
+            materials_text(&groups, &ids(&["回眸", "pose", "JK 制服"])).unwrap(),
+            "## 服装
+- JK 制服（日系校园）：水手服， 百褶裙
+## 动作
+- 回眸：回头望向镜头
+",
+            "a material ticked inside a ticked category is not repeated"
+        );
         let long = vec![PromptGroup {
             id: "long".into(),
             name: "长".into(),
@@ -485,7 +559,7 @@ mod tests {
             "image.errors.assistMaterials"
         );
 
-        let text = user_message("雨夜少女", "赛博朋克", "## 动作\n- 回眸：回头\n", false);
+        let text = user_message("雨夜少女", "赛博朋克", "## 动作\n- 回眸：回头\n", 0);
         let materials = text
             .find("<materials>\n## 动作\n- 回眸：回头\n</materials>")
             .unwrap();
@@ -495,17 +569,35 @@ mod tests {
             "materials come with the rule on what school styles are not paired with"
         );
         assert!(text.ends_with("\n这次的额外要求：赛博朋克"), "{text}");
-        assert!(!user_message("猫", "", "", false).contains("<materials>"));
+        assert!(!user_message("猫", "", "", 0).contains("<materials>"));
+    }
+
+    fn reference(data: &str, name: &str, note: &str) -> AssistReference {
+        AssistReference {
+            data: data.into(),
+            name: name.into(),
+            note: note.into(),
+        }
     }
 
     #[test]
     fn a_reference_goes_before_the_text_and_asks_for_an_edit() {
         assert_eq!(
-            user_content("猫", "", "", None).unwrap(),
-            json!(user_message("猫", "", "", false))
+            user_content("猫", "", "", &[]).unwrap(),
+            json!(user_message("猫", "", "", 0))
         );
-        let content =
-            user_content("把猫换成狗", "", "", Some("data:image/jpeg;base64,/9j/")).unwrap();
+        let content = user_content(
+            "把猫换成狗",
+            "",
+            "",
+            &[reference("data:image/jpeg;base64,/9j/", "", "")],
+        )
+        .unwrap();
+        assert_eq!(
+            content.as_array().unwrap().len(),
+            2,
+            "one unnamed 底本 has no label"
+        );
         assert_eq!(
             content[0],
             json!({ "type": "image", "source": {
@@ -520,11 +612,60 @@ mod tests {
             "data:image/png;base64,",
         ] {
             assert_eq!(
-                user_content("猫", "", "", Some(bad)).unwrap_err(),
+                user_content("猫", "", "", &[reference(bad, "", "")]).unwrap_err(),
                 "image.errors.assistReference",
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn several_references_are_numbered_in_the_order_they_are_generated_with() {
+        let content = user_content(
+            "图1的女生穿上图2的裙子",
+            "",
+            "",
+            &[
+                reference("data:image/png;base64,AAAA", "", ""),
+                reference("data:image/jpeg;base64,/9j/", " 碎花裙 ", "法式茶歇"),
+                reference("data:image/webp;base64,UklG", "教室", ""),
+            ],
+        )
+        .unwrap();
+        let blocks = content.as_array().unwrap();
+        let labels: Vec<_> = blocks
+            .iter()
+            .filter(|block| block["type"] == "text")
+            .filter_map(|block| block["text"].as_str())
+            .take(3)
+            .collect();
+        assert_eq!(labels, ["图1", "图2：碎花裙（法式茶歇）", "图3：教室"]);
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[3]["source"]["media_type"], "image/jpeg");
+        let text = blocks.last().unwrap()["text"].as_str().unwrap();
+        assert!(text.starts_with("附图是这次图生图的 3 张参考图"), "{text}");
+        assert!(text.contains("图1到图3"));
+
+        // A single reference from the image materials is named too.
+        let named = user_content(
+            "猫",
+            "",
+            "",
+            &[reference("data:image/png;base64,AAAA", "橘猫", "")],
+        )
+        .unwrap();
+        assert_eq!(named[0]["text"], "图1：橘猫");
+        assert!(named[2]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("附图是这次图生图的底本"));
+
+        let too_many =
+            vec![reference("data:image/png;base64,AAAA", "", ""); MAX_REFERENCE_IMAGES + 1];
+        assert_eq!(
+            user_content("猫", "", "", &too_many).unwrap_err(),
+            "image.errors.assistReference"
+        );
     }
 
     #[test]

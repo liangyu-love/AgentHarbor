@@ -18,15 +18,17 @@ use std::{
 use tauri::State;
 
 pub(super) const MAX_PROMPT_CHARS: usize = 32_000;
+/// GPT Image edits take up to 16 input images.
+pub(super) const MAX_REFERENCE_IMAGES: usize = 16;
 /// A high-quality 8 MP PNG (3840x2160, or what `auto` picks) runs past 30 MB;
 /// rejecting it would discard an image that was already paid for.
-const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Room for `count` base64 images plus the JSON around them.
 fn max_response_bytes(count: u8) -> usize {
     usize::from(count.max(1)) * MAX_IMAGE_BYTES.div_ceil(3) * 4 + 1024 * 1024
 }
 /// Grid thumbnails stay sharp at the widest masonry column on a 2x screen.
-const THUMBNAIL_EDGE: u32 = 640;
+pub(super) const THUMBNAIL_EDGE: u32 = 640;
 /// The album stage asks for more, still far below a full original.
 const MAX_THUMBNAIL_EDGE: u32 = 2048;
 /// JPEG keeps opaque previews a tenth of their PNG size in the in-memory cache.
@@ -34,7 +36,7 @@ const THUMBNAIL_JPEG_QUALITY: u8 = 86;
 const MAX_THUMBNAIL_DIMENSION: u32 = 8192;
 const MAX_THUMBNAIL_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_THUMBNAIL_DECODE_BYTES: u64 = 128 * 1024 * 1024;
-static THUMBNAIL_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+pub(super) static THUMBNAIL_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static IMAGE_GENERATION_JOBS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static IMAGE_KEYS_LOCK: Mutex<()> = Mutex::new(());
 
@@ -153,7 +155,9 @@ pub struct ImageGenerationRequest {
     pub quality: String,
     #[serde(default = "default_count")]
     pub count: u8,
-    pub image_data: Option<String>,
+    /// Image-to-image inputs in the order the prompt names them (图1, 图2…); none for text-to-image.
+    #[serde(default)]
+    pub images: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -223,10 +227,13 @@ fn validate(request: &ImageGenerationRequest) -> Result<(), String> {
     if !(1..=4).contains(&request.count) {
         return Err("image.errors.count".into());
     }
+    if request.images.len() > MAX_REFERENCE_IMAGES {
+        return Err("image.errors.inputCount".into());
+    }
     if request
-        .image_data
-        .as_deref()
-        .is_some_and(|value| value.len() > MAX_IMAGE_BYTES * 2)
+        .images
+        .iter()
+        .any(|value| value.len() > MAX_IMAGE_BYTES * 2)
     {
         return Err("image.errors.inputTooLarge".into());
     }
@@ -512,28 +519,36 @@ async fn generate(
     .map_err(|_| "newapi.errors.network")?;
     let endpoint = newapi::endpoint(
         &connection,
-        if request.image_data.is_some() {
+        if !request.images.is_empty() {
             "v1/images/edits"
         } else {
             "v1/images/generations"
         },
     )?;
     let auth = newapi::auth_header(&connection.api_key)?;
-    let response = if let Some(image_data) = request.image_data.as_deref() {
-        let image_data = image_data.to_owned();
-        let (bytes, mime, extension) =
-            super::blocking(move || decode_image_data(&image_data)).await?;
+    let response = if !request.images.is_empty() {
+        let images = request.images.clone();
+        let decoded = super::blocking(move || {
+            images
+                .iter()
+                .map(|image| decode_image_data(image))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await?;
         let mut form = multipart::Form::new()
             .text("model", request.model.clone())
             .text("prompt", request.prompt.clone())
             .text("size", request.size.clone())
             .text("quality", request.quality.clone())
             .text("n", request.count.to_string());
-        let part = multipart::Part::bytes(bytes)
-            .file_name(format!("input.{extension}"))
-            .mime_str(&mime)
-            .map_err(|_| "image.errors.input".to_owned())?;
-        form = form.part("image[]", part);
+        // Repeated `image[]` parts keep their order, so 图1 is the first one sent.
+        for (index, (bytes, mime, extension)) in decoded.into_iter().enumerate() {
+            let part = multipart::Part::bytes(bytes)
+                .file_name(format!("input-{}.{extension}", index + 1))
+                .mime_str(&mime)
+                .map_err(|_| "image.errors.input".to_owned())?;
+            form = form.part("image[]", part);
+        }
         client
             .post(endpoint)
             .header(AUTHORIZATION, auth)
@@ -702,7 +717,7 @@ pub fn save_image_key(
     write_key(&paths(&repo)?, &base_url, &api_key)
 }
 
-fn decode_data_url(value: &str) -> Result<(Vec<u8>, String), String> {
+pub(super) fn decode_data_url(value: &str) -> Result<(Vec<u8>, String), String> {
     let value = value.trim();
     let (meta, data) = value
         .split_once(',')
@@ -1126,9 +1141,14 @@ fn gallery_thumbnail(
     target: &std::path::Path,
     edge: u32,
 ) -> Result<String, String> {
-    let edge = edge.clamp(1, MAX_THUMBNAIL_EDGE);
     let (_, bytes) = read_gallery_image(paths, target)?;
-    let (_, decoded) = decode_bounded_image(&bytes)?;
+    thumbnail_data_url(&bytes, edge)
+}
+
+/// A copy of the image no wider or taller than `edge`, as a data URL.
+pub(super) fn thumbnail_data_url(bytes: &[u8], edge: u32) -> Result<String, String> {
+    let edge = edge.clamp(1, MAX_THUMBNAIL_EDGE);
+    let (_, decoded) = decode_bounded_image(bytes)?;
     let (width, height) = (decoded.width(), decoded.height());
     let thumbnail = if width > edge || height > edge {
         decoded.thumbnail(edge, edge)
@@ -1244,7 +1264,7 @@ mod tests {
             size: default_size(),
             quality: "max".into(),
             count: 1,
-            image_data: None,
+            images: Vec::new(),
         };
         for size in [
             "auto",
@@ -1288,6 +1308,11 @@ mod tests {
         request.quality = "unknown".into();
         assert_eq!(validate(&request).unwrap_err(), "image.errors.quality");
         request.quality = default_quality();
+        request.images = vec!["data:image/png;base64,AA==".into(); MAX_REFERENCE_IMAGES];
+        assert!(validate(&request).is_ok(), "up to 16 reference images");
+        request.images.push("data:image/png;base64,AA==".into());
+        assert_eq!(validate(&request).unwrap_err(), "image.errors.inputCount");
+        request.images.clear();
         request.prompt.push('画');
         assert_eq!(validate(&request).unwrap_err(), "image.errors.prompt");
     }
@@ -1493,7 +1518,7 @@ mod tests {
                 size: default_size(),
                 quality: default_quality(),
                 count: 1,
-                image_data: None,
+                images: Vec::new(),
             },
             &paths,
         ))
@@ -1544,7 +1569,10 @@ mod tests {
                     size: "3840x2160".into(),
                     quality: "max".into(),
                     count: 1,
-                    image_data: edit.then(|| data_url.clone()),
+                    images: match edit {
+                        true => vec![data_url.clone(), data_url.clone()],
+                        false => Vec::new(),
+                    },
                 },
                 &paths,
             ))
@@ -1557,7 +1585,8 @@ mod tests {
                 assert!(headers
                     .to_ascii_lowercase()
                     .contains("multipart/form-data; boundary="));
-                assert!(body.contains("name=\"image[]\"; filename=\"input.png\""));
+                assert!(body.contains("name=\"image[]\"; filename=\"input-1.png\""));
+                assert!(body.contains("name=\"image[]\"; filename=\"input-2.png\""));
                 for (field, value) in [
                     ("model", "gpt-image-2.5-flare"),
                     ("quality", "max"),
@@ -2037,7 +2066,7 @@ mod tests {
             size: default_size(),
             quality: default_quality(),
             count: 1,
-            image_data: None,
+            images: Vec::new(),
         };
         let started = std::time::Instant::now();
         let result = tauri::async_runtime::block_on(async {

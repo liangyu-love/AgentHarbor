@@ -23,16 +23,20 @@ export const LIBRARY_BOOKS = {
   },
 } as const;
 
+/** The 画谱's books: the two of text, and the pictures kept as image materials. */
+export type LibraryBook = PromptLibraryKind | "images";
+
 /** The book the 画谱 last showed. */
-export function rememberedBook(): PromptLibraryKind {
+export function rememberedBook(): LibraryBook {
   try {
-    return localStorage.getItem(storageKeys.imagePromptBook) === "materials" ? "materials" : "prompts";
+    const book = localStorage.getItem(storageKeys.imagePromptBook);
+    return book === "materials" || book === "images" ? book : "prompts";
   } catch {
     return "prompts";
   }
 }
 
-export function rememberBook(kind: PromptLibraryKind) {
+export function rememberBook(kind: LibraryBook) {
   try {
     localStorage.setItem(storageKeys.imagePromptBook, kind);
   } catch {

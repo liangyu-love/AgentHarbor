@@ -10,6 +10,7 @@ pub mod desktop_exit;
 pub mod gateway;
 pub mod hotspot;
 pub mod image;
+pub mod image_materials;
 pub mod image_prompt_assist;
 pub mod image_prompts;
 pub mod mcp;

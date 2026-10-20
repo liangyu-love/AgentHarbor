@@ -43,9 +43,9 @@ export async function testImageViewer({ page, reset, captureDir }) {
   const reference = page.locator("[data-image-reference] img");
   await card("gallery-1.png").hover();
   await card("gallery-1.png").getByRole("button", { name: "用作底本" }).click();
-  await page.waitForFunction(() => window.review.lastToast === "已载入为底本");
+  await page.waitForFunction(() => window.review.lastToast === "已加入参考图 · 图1");
   assert.match(await reference.getAttribute("src"), /^data:image\//);
-  await page.getByRole("button", { name: "移除画稿" }).click();
+  await page.getByRole("button", { name: "移除图1" }).click();
   await reference.waitFor({ state: "detached" });
   console.log("PASS a gallery image loads as the reference for image-to-image");
 
@@ -151,7 +151,7 @@ export async function testImageViewer({ page, reset, captureDir }) {
   const generated = await canvas.locator("img").first().getAttribute("src");
   await canvas.getByRole("button", { name: "用作底本" }).click();
   await eventually(async () => assert.equal(await reference.getAttribute("src"), generated));
-  await page.getByRole("button", { name: "移除画稿" }).click();
+  await page.getByRole("button", { name: "移除图1" }).click();
   await reference.waitFor({ state: "detached" });
   await canvas.locator("img").first().click();
   await viewer.waitFor();
@@ -160,9 +160,9 @@ export async function testImageViewer({ page, reset, captureDir }) {
   assert.equal(await reference.getAttribute("src"), generated);
   await page.locator("[data-image-generate]").click();
   await page.waitForFunction(() => window.review.imageRequests.length === 2);
-  assert.equal(await page.evaluate(() => window.review.imageRequests[1].imageData), generated);
+  assert.deepEqual(await page.evaluate(() => window.review.imageRequests[1].images), [generated]);
   await page.evaluate(() => window.review.imageResolvers[1]());
-  await page.getByRole("button", { name: "移除画稿" }).click();
+  await page.getByRole("button", { name: "移除图1" }).click();
   console.log("PASS a generated image loads as the reference from the canvas and the preview");
 
   // Generating again resends the canvas's own request, reference included, in that canvas's place.
@@ -172,7 +172,7 @@ export async function testImageViewer({ page, reset, captureDir }) {
   await jobs.first().getByRole("button", { name: "用相同请求重新生成，替换本次画布" }).click();
   await page.waitForFunction(() => window.review.imageRequests.length === 3);
   const resent = await page.evaluate(() => window.review.imageRequests[2]);
-  assert.equal(resent.imageData, generated, "the reference sent then, not the empty slot now");
+  assert.deepEqual(resent.images, [generated], "the references sent then, not the empty slot now");
   assert.equal(resent.prompt, "雪山晨光，航拍");
   assert.equal(await jobs.count(), 2);
   assert.equal(await jobs.first().getAttribute("data-generation-job-status"), "running");
