@@ -21,6 +21,45 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   assert.equal(await cell("review", "cursor").getAttribute("data-state"), "occupied");
   console.log("PASS the Skills matrix shows each agent's folder: linked, free, taken or missing");
 
+  // ---- search by name or description, and filter by the agent a skill is on
+  const search = page.getByRole("searchbox", { name: await tr("skills.searchPlaceholder") });
+  await search.fill("diffs");
+  await row("sample").waitFor({ state: "detached" });
+  await row("review").waitFor();
+  await page.locator("[data-skills-shown]").getByText(await tr("skills.shown", { shown: 1, count: 2 }), { exact: true }).waitFor();
+  await page.getByRole("button", { name: await tr("skills.clearSearch") }).click();
+  await row("sample").waitFor();
+  const channel = (id) => page.locator(`[data-agent-channel="${id}"]`);
+  await channel("claudeCode").click();
+  assert.equal(await channel("claudeCode").getAttribute("aria-pressed"), "true");
+  await row("review").waitFor({ state: "detached" });
+  await row("sample").waitFor();
+  await channel("pi").click();
+  await page.getByRole("button", { name: await tr("skills.clearFilters") }).click();
+  await row("review").waitFor();
+  assert.equal(await channel("all").getAttribute("aria-pressed"), "true", "clearing the filters shows every agent again");
+
+  // An agent's own skills are grouped by agent, and a kind can be hidden and stays hidden.
+  await page.getByRole("radio", { name: new RegExp(`^${await tr("skills.tabs.unmanaged")}`) }).click();
+  const own = page.locator("[data-skills-unmanaged]");
+  await own.locator('[data-skills-group="claudeCode"] [data-unmanaged-skill="notes"]').waitFor();
+  await channel("codex").click();
+  await own.locator('[data-unmanaged-skill="notes"]').waitFor({ state: "detached" });
+  await own.locator('[data-unmanaged-skill="old"]').waitFor();
+  await channel("all").click();
+  await own.locator('[data-skills-kind="external"]').click();
+  await own.locator('[data-unmanaged-skill="linked"]').waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.skill-hidden-kinds")), '["external"]');
+  await own.locator('[data-skills-kind="external"]').click();
+  await own.locator('[data-unmanaged-skill="linked"]').waitFor();
+  // Hiding every kind empties the list; clearing the filters shows them all again.
+  for (const kind of ["importable", "legacy", "external"]) await own.locator(`[data-skills-kind="${kind}"]`).click();
+  await own.getByRole("button", { name: await tr("skills.clearFilters") }).click();
+  await own.locator('[data-unmanaged-skill="linked"]').waitFor();
+  await eventually(async () => assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.skill-hidden-kinds")), "[]"));
+  await page.getByRole("radio", { name: new RegExp(`^${await tr("skills.tabs.library")}`) }).click();
+  console.log("PASS skills are searched by name or description and filtered by agent, and an agent's own skills by kind");
+
   // ---- a switch links one agent and the page waits for it
   await page.evaluate(() => { window.review.skillHold = true; });
   await cell("sample", "cursor").click();

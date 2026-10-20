@@ -1962,10 +1962,22 @@
     "resync": "按开关重写各 Agent 配置",
     "copyAll": "复制全部为 mcpServers JSON",
     "copied": "已复制到剪贴板",
-    "searchPlaceholder": "搜索名称、命令或地址…",
+    "searchPlaceholder": "搜索名称、命令、地址或备注…",
     "empty": "清单里还没有 MCP 服务器",
     "emptyHint": "添加一个，或从各 Agent 导入已经配置好的服务器。",
     "noFilterResults": "没有找到匹配的 MCP 服务器",
+    "clearFilters": "清除筛选",
+    "shown": "{{shown}} / {{count}} 个服务器",
+    "transports": "传输",
+    "showTransport": "点击显示这种传输",
+    "hideTransport": "点击隐藏这种传输",
+    "channels": {
+      "label": "按 Agent 渠道筛选",
+      "all": "全部",
+      "pending": "{{count}} 待同步",
+      "unmanaged": "+{{count}} 未纳入",
+      "unreadable": "读取失败"
+    },
     "clearSearch": "清空搜索",
     "server": "服务器",
     "count": "{{count}} 个服务器",
@@ -2364,9 +2376,22 @@
     "addHint": "选择一个包含 SKILL.md 的文件夹",
     "more": "更多操作",
     "openLibrary": "打开 Skills 库目录",
-    "searchPlaceholder": "搜索名称、描述…",
+    "searchPlaceholder": "搜索 Skill 名字、标题或描述…",
     "clearSearch": "清空搜索",
     "noFilterResults": "没有找到匹配的 Skill",
+    "clearFilters": "清除筛选",
+    "shown": "{{shown}} / {{count}} 个 Skill",
+    "channels": {
+      "label": "按 Agent 渠道筛选",
+      "all": "全部",
+      "unmanaged": "+{{count}} 未纳入"
+    },
+    "kinds": {
+      "label": "显示",
+      "importable": "可纳入",
+      "show": "点击显示这一类",
+      "hide": "点击隐藏这一类"
+    },
     "count": "{{count}} 个 Skill",
     "skill": "Skill",
     "tabs": {

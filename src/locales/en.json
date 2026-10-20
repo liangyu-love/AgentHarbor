@@ -1962,10 +1962,22 @@
     "resync": "Rewrite agent configs from the switches",
     "copyAll": "Copy all as mcpServers JSON",
     "copied": "Copied to the clipboard",
-    "searchPlaceholder": "Search name, command or URL…",
+    "searchPlaceholder": "Search names, commands, URLs or notes…",
     "empty": "No MCP servers in the list yet",
     "emptyHint": "Add one, or import the servers your agents already have.",
     "noFilterResults": "No MCP server matches",
+    "clearFilters": "Clear filters",
+    "shown": "{{shown}} of {{count}} servers",
+    "transports": "Transport",
+    "showTransport": "Show this transport",
+    "hideTransport": "Hide this transport",
+    "channels": {
+      "label": "Filter by agent",
+      "all": "All",
+      "pending": "{{count}} to sync",
+      "unmanaged": "+{{count}} unmanaged",
+      "unreadable": "Unreadable"
+    },
     "clearSearch": "Clear search",
     "server": "Server",
     "count": "{{count}} servers",
@@ -2364,9 +2376,22 @@
     "addHint": "Choose a folder with a SKILL.md",
     "more": "More actions",
     "openLibrary": "Open the skills library folder",
-    "searchPlaceholder": "Search name or description…",
+    "searchPlaceholder": "Search skill names, titles or descriptions…",
     "clearSearch": "Clear search",
     "noFilterResults": "No skill matches",
+    "clearFilters": "Clear filters",
+    "shown": "{{shown}} of {{count}} skills",
+    "channels": {
+      "label": "Filter by agent",
+      "all": "All",
+      "unmanaged": "+{{count}} unmanaged"
+    },
+    "kinds": {
+      "label": "Show",
+      "importable": "Can bring in",
+      "show": "Show this kind",
+      "hide": "Hide this kind"
+    },
     "count": "{{count}} skills",
     "skill": "Skill",
     "tabs": {

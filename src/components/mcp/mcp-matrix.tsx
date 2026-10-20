@@ -3,6 +3,7 @@ import { AlertTriangle, Check, CircleDot, Copy, Minus, MoreHorizontal, Pencil, P
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+import { AGENT_GLYPHS, ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -50,7 +51,7 @@ export function McpMatrix({ view, servers, library, onEdit, onDelete }: {
       <table className="w-full min-w-[760px] border-separate border-spacing-0 text-sm">
         <thead>
           <tr>
-            <th scope="col" className="sticky left-0 z-10 bg-card px-3 py-3 text-left text-xs font-medium text-muted-foreground sm:px-4">
+            <th scope="col" className="sticky left-0 z-10 bg-card px-3 py-3 text-left text-xs font-medium text-muted-foreground sm:px-5">
               {t("mcp.server")}
             </th>
             {MCP_APPS.map(app => {
@@ -62,10 +63,11 @@ export function McpMatrix({ view, servers, library, onEdit, onDelete }: {
                       <button type="button" data-mcp-column={app} disabled={library.busy || !target?.installed}
                         title={target?.installed ? target.path : t("mcp.column.notInstalled")}
                         className={cn(
-                          "inline-flex max-w-[6.5rem] flex-col items-center rounded-md px-1.5 py-1 text-xs font-medium leading-tight transition-colors hover:bg-muted disabled:hover:bg-transparent",
+                          "inline-flex max-w-[6.5rem] flex-col items-center gap-1 rounded-lg px-1.5 py-1.5 text-[11px] font-medium leading-tight transition-colors hover:bg-muted disabled:hover:bg-transparent",
                           target?.installed ? "text-foreground" : "text-muted-foreground/60",
                           target?.error && "text-destructive",
                         )}>
+                        <ClientGlyph client={AGENT_GLYPHS[app]} className="h-4 w-4" />
                         {t(`mcp.apps.${app}`)}
                         {!target?.installed && <span className="text-[10px] font-normal">{t("mcp.column.notInstalled")}</span>}
                       </button>
@@ -86,7 +88,7 @@ export function McpMatrix({ view, servers, library, onEdit, onDelete }: {
         <tbody>
           {servers.map(server => (
             <tr key={server.name} data-mcp-server={server.name} className="group">
-              <th scope="row" className="sticky left-0 z-10 w-36 max-w-36 border-t border-border/50 bg-card px-3 py-2.5 text-left font-normal shadow-[1px_0_0_hsl(var(--border)/0.5)] sm:w-auto sm:max-w-[18rem] sm:px-4">
+              <th scope="row" className="sticky left-0 z-10 w-36 max-w-36 border-t border-border/50 bg-card px-3 py-2.5 text-left font-normal shadow-[1px_0_0_hsl(var(--border)/0.5)] sm:w-auto sm:max-w-[18rem] sm:px-5">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-mono text-[13px] font-semibold text-foreground">{server.name}</span>
                   <span className="shrink-0 rounded bg-muted px-1.5 py-px text-[10px] uppercase text-muted-foreground">{server.spec.transport}</span>

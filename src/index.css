@@ -1839,6 +1839,32 @@ html[data-has-custom-bg="true"] .group-tabs { backdrop-filter: blur(16px) satura
 .harbor-well { border-radius: 18px; background: hsl(var(--muted) / 0.5); }
 .dark .harbor-well { background: hsl(var(--muted) / 0.38); }
 
+/* Agent channels: a tile per agent that filters the page and tallies it. */
+.agent-channels { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.6rem, 1fr)); gap: 0.45rem; }
+@media (max-width: 639px) {
+  .agent-channels { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 8.5rem; overflow-x: auto; margin: -0.25rem; padding: 0.25rem; scrollbar-width: none; }
+  .agent-channels::-webkit-scrollbar { display: none; }
+}
+.agent-channel { display: flex; min-width: 0; align-items: center; gap: 0.65rem; padding: 0.6rem 0.7rem; border-radius: 16px; text-align: left; background: hsl(var(--muted) / 0.45); transition: background-color 180ms ease, box-shadow 220ms ease; }
+.agent-channel:hover { background: hsl(var(--muted) / 0.8); }
+.agent-channel:focus-visible { outline: none; box-shadow: 0 0 0 2px hsl(var(--ring)); }
+.agent-channel[aria-pressed="true"] { background: hsl(var(--card) / var(--card-alpha)); box-shadow: 0 0 0 1px hsl(var(--primary) / 0.55), 0 10px 24px -18px hsl(var(--primary) / 0.55); }
+.agent-channel-muted { opacity: 0.55; }
+.agent-channel-muted[aria-pressed="true"] { opacity: 1; }
+.agent-channel-glyph { display: grid; width: 2.1rem; height: 2.1rem; flex: none; place-items: center; border-radius: 0.75rem; background: hsl(var(--card) / var(--card-alpha)); box-shadow: inset 0 0 0 1px hsl(var(--border) / 0.85); transition: transform 260ms cubic-bezier(0.16, 1, 0.3, 1); }
+.agent-channel:hover .agent-channel-glyph, .agent-channel[aria-pressed="true"] .agent-channel-glyph { transform: rotate(-6deg) scale(1.05); }
+.agent-channel[aria-pressed="true"] .agent-channel-glyph { color: hsl(var(--primary)); }
+@media (prefers-reduced-motion: reduce) {
+  .agent-channel, .agent-channel-glyph { transition: none; }
+  .agent-channel:hover .agent-channel-glyph, .agent-channel[aria-pressed="true"] .agent-channel-glyph { transform: none; }
+}
+/* A filter chip that hides one kind of entry when switched off. */
+.kind-chip { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.22rem 0.65rem; border-radius: 999px; font-size: 11.5px; color: hsl(var(--muted-foreground)); box-shadow: inset 0 0 0 1px hsl(var(--border)); transition: background-color 160ms ease, color 160ms ease; }
+.kind-chip:hover { color: hsl(var(--foreground)); }
+.kind-chip[aria-pressed="true"] { color: hsl(var(--foreground)); background: hsl(var(--muted) / 0.8); }
+.kind-chip[aria-pressed="false"] { text-decoration: line-through; opacity: 0.7; }
+.kind-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px hsl(var(--ring)); }
+
 /* Injection page: a rail of the five clients and the chosen client's panel. */
 .inject-console { display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
 .inject-rail { display: flex; gap: 0.4rem; overflow-x: auto; padding: 0.7rem; border-bottom: 1px solid hsl(var(--border) / 0.7); background: hsl(var(--muted) / 0.35); scrollbar-width: none; }

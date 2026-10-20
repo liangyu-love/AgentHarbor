@@ -11,6 +11,7 @@ export const storageKeys = {
   threadsViewMode: "threads_view_mode",
   mcpTargets: "agentharbor.mcp-targets",
   skillTargets: "agentharbor.skill-targets",
+  skillHiddenKinds: "agentharbor.skill-hidden-kinds",
   instructionSource: "agentharbor.instruction-source",
   instructionPresets: "agentharbor.instruction-presets.v1",
   threadsSource: "threads_source",

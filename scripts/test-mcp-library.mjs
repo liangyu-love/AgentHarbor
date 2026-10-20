@@ -25,6 +25,28 @@ export async function testMcpLibrary({ page, reset, captureDir }) {
   await capture("mcp-library-top.png");
   console.log("PASS the MCP matrix shows every agent's state and locks what an agent cannot hold");
 
+  // ---- search, the agent a server is on, and its transport narrow the list
+  const search = page.getByRole("searchbox", { name: await tr("mcp.searchPlaceholder") });
+  await search.fill("文档");
+  await row("filesystem").waitFor({ state: "detached" });
+  await row("docs").waitFor();
+  await page.locator("[data-mcp-shown]").getByText(await tr("mcp.shown", { shown: 1, count: 6 }), { exact: true }).waitFor();
+  await search.press("Escape");
+  await row("filesystem").waitFor();
+  const channel = (id) => page.locator(`[data-agent-channel="${id}"]`);
+  await channel("claudeCode").click();
+  await row("legacy-sse").waitFor();
+  await row("docs").waitFor({ state: "detached" });
+  await page.locator('[data-mcp-transport="sse"]').click();
+  await row("legacy-sse").waitFor({ state: "detached" });
+  await row("filesystem").waitFor();
+  await channel("pi").click();
+  await page.getByRole("button", { name: await tr("mcp.clearFilters") }).click();
+  await row("legacy-sse").waitFor();
+  assert.equal(await page.locator('[data-mcp-transport="sse"]').getAttribute("aria-pressed"), "true", "clearing shows every transport again");
+  assert.equal(await row("tool-1").count(), 1);
+  console.log("PASS MCP servers are searched and filtered by agent and transport");
+
   // ---- a switch writes one agent and the page waits for it
   await page.evaluate(() => { window.review.mcpHold = true; });
   await cell("docs", "claudeCode").click();

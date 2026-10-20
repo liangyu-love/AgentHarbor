@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, Network, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { McpApp } from "@/types";
 import claudeMark from "@/assets/client-marks/claude.svg";
 import codexMark from "@/assets/client-marks/openai.svg";
 import openCodeMark from "@/assets/client-marks/opencode.svg";
 import { HARNESS_MARK_PATH, HARNESS_MARK_VIEWBOX } from "./harness-mark";
 
 export type ShortcutTarget = "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "harness" | "aggregation";
+
+/** The mark of each agent the MCP and Skills pages write to. */
+export const AGENT_GLYPHS: Record<McpApp, ShortcutTarget> = {
+  codex: "codex", claudeCode: "claudeCode", openCode: "opencode", pi: "pi", cursor: "cursor", harness: "harness", claudeDesktop: "claudeDesktop",
+};
 
 // Provider marks are shared with the client cards; Claude's small badge
 // distinguishes desktop from CLI without adding a second text row.

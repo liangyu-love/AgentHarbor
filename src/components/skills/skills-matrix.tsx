@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, Check, FolderOpen, Minus, MoreHorizontal, Power, PowerOff, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { AGENT_GLYPHS, ClientGlyph } from "@/components/newapi/configuration-shortcuts";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -36,7 +37,7 @@ export function SkillsMatrix({ view, skills, library, onUninstall }: {
       <table className="w-full min-w-[720px] border-separate border-spacing-0 text-sm">
         <thead>
           <tr>
-            <th scope="col" className="sticky left-0 z-10 bg-card px-3 py-3 text-left text-xs font-medium text-muted-foreground sm:px-4">
+            <th scope="col" className="sticky left-0 z-10 bg-card px-3 py-3 text-left text-xs font-medium text-muted-foreground sm:px-5">
               {t("skills.skill")}
             </th>
             {SKILL_APPS.map(app => {
@@ -48,9 +49,10 @@ export function SkillsMatrix({ view, skills, library, onUninstall }: {
                       <button type="button" data-skills-column={app} disabled={library.busy || !target?.installed}
                         title={target?.installed ? target.dir : t("skills.column.notInstalled")}
                         className={cn(
-                          "inline-flex max-w-[6.5rem] flex-col items-center rounded-md px-1.5 py-1 text-xs font-medium leading-tight transition-colors hover:bg-muted disabled:hover:bg-transparent",
+                          "inline-flex max-w-[6.5rem] flex-col items-center gap-1 rounded-lg px-1.5 py-1.5 text-[11px] font-medium leading-tight transition-colors hover:bg-muted disabled:hover:bg-transparent",
                           target?.installed ? "text-foreground" : "text-muted-foreground/60",
                         )}>
+                        <ClientGlyph client={AGENT_GLYPHS[app]} className="h-4 w-4" />
                         {t(`skills.apps.${app}`)}
                         {!target?.installed && <span className="text-[10px] font-normal">{t("skills.column.notInstalled")}</span>}
                       </button>
@@ -71,7 +73,7 @@ export function SkillsMatrix({ view, skills, library, onUninstall }: {
         <tbody>
           {skills.map(skill => (
             <tr key={skill.name} data-skill={skill.name}>
-              <th scope="row" className="sticky left-0 z-10 w-40 max-w-40 border-t border-border/50 bg-card px-3 py-2.5 text-left font-normal shadow-[1px_0_0_hsl(var(--border)/0.5)] sm:w-auto sm:max-w-[20rem] sm:px-4">
+              <th scope="row" className="sticky left-0 z-10 w-40 max-w-40 border-t border-border/50 bg-card px-3 py-2.5 text-left font-normal shadow-[1px_0_0_hsl(var(--border)/0.5)] sm:w-auto sm:max-w-[20rem] sm:px-5">
                 <div className="flex min-w-0 items-baseline gap-2">
                   <span className="truncate font-mono text-[13px] font-semibold text-foreground">{skill.name}</span>
                   {skill.title && skill.title !== skill.name && <span className="truncate text-xs text-muted-foreground">{skill.title}</span>}
