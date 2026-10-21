@@ -189,6 +189,8 @@ pub struct UnmanagedSkill {
     pub external: bool,
     /// The library already has a skill by this name.
     pub in_library: bool,
+    /// That skill has other contents, so importing this one would be refused.
+    pub conflict: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -362,6 +364,8 @@ fn backups(context: &SkillContext) -> Vec<SkillBackupSummary> {
 fn view(context: &SkillContext, failures: Vec<SkillFailure>) -> SkillLibraryView {
     let skills = library_skills(context);
     let in_library = |name: &str| skills.iter().any(|skill| skill.name == name);
+    // Only a copy with the same contents is imported; another is refused.
+    let conflict = |name: &str, path: &Path| in_library(name) && !same_tree(path, &context.copy_of(name));
     let mut unmanaged = Vec::new();
     for target in context.targets.iter().filter(|target| target.installed) {
         for path in entries(&target.dir) {
@@ -379,6 +383,7 @@ fn view(context: &SkillContext, failures: Vec<SkillFailure>) -> SkillLibraryView
             if let Some(info) = info(&path) {
                 unmanaged.push(UnmanagedSkill {
                     in_library: in_library(&name),
+                    conflict: !external && conflict(&name, &path),
                     info,
                     app: target.app,
                     legacy_disabled: false,
@@ -395,6 +400,7 @@ fn view(context: &SkillContext, failures: Vec<SkillFailure>) -> SkillLibraryView
             if let Some(info) = info(&path) {
                 unmanaged.push(UnmanagedSkill {
                     in_library: in_library(&info.name),
+                    conflict: conflict(&info.name, &path),
                     info,
                     app: *app,
                     legacy_disabled: true,
@@ -901,6 +907,19 @@ mod tests {
             "review",
             "# Another review",
         );
+        // The list says so first: only a copy with the library's contents is offered.
+        skill(&temp.path().join(".cursor/skills"), "old", "# Old");
+        let view = load_skills(&context).unwrap();
+        let listed = |name: &str| {
+            let skill = view
+                .unmanaged
+                .iter()
+                .find(|skill| skill.info.name == name && skill.app == SkillApp::Cursor)
+                .unwrap();
+            (skill.in_library, skill.conflict)
+        };
+        assert_eq!(listed("review"), (true, true));
+        assert_eq!(listed("old"), (true, false));
         let view = import_skills(
             &context,
             &[SkillImport {

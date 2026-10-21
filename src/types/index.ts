@@ -268,6 +268,8 @@ export interface UnmanagedSkill extends SkillInfo {
   /** A link another tool made; shown, not imported. */
   external: boolean;
   inLibrary: boolean;
+  /** The library's skill by this name has other contents; importing is refused. */
+  conflict: boolean;
 }
 
 export interface SkillBackupSummary {

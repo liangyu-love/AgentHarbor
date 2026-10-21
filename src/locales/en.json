@@ -2436,6 +2436,8 @@
       "legacy": "Turned off before",
       "external": "Managed by another tool",
       "inLibrary": "Name in library",
+      "conflict": "Name in library · different contents",
+      "conflictHint": "The library's skill by this name has other contents, so importing is refused rather than overwriting either copy. Keep the one you want and remove or rename the other.",
       "empty": "Every agent's skills are in the library"
     },
     "backups": {

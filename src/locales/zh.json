@@ -2436,6 +2436,8 @@
       "legacy": "旧版停用",
       "external": "其他工具管理",
       "inLibrary": "清单已有同名",
+      "conflict": "清单已有同名 · 内容不同",
+      "conflictHint": "清单里的同名 Skill 和这份内容不一样，纳入会被拒绝，以免覆盖其中一份。需要哪份，就在对应位置删掉或改名另一份。",
       "empty": "各 Agent 的 Skill 都已在清单中"
     },
     "backups": {

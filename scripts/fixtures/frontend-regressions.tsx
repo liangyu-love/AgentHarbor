@@ -615,9 +615,10 @@ const skillSeed = (mode: string) => mode === "overview" ? {
     { name: "review", title: "Review", description: "Checks diffs", apps: ["codex"], occupied: ["cursor"] },
   ],
   unmanaged: [
-    { name: "notes", title: "Notes", description: "Claude notes", path: "C:/synthetic/claudeCode/skills/notes", app: "claudeCode", legacyDisabled: false, external: false, inLibrary: false },
-    { name: "old", title: "Old", description: "Turned off before", path: "C:/synthetic/app/disabled-skills/old", app: "codex", legacyDisabled: true, external: false, inLibrary: false },
-    { name: "linked", title: "Linked", description: "cc-switch managed", path: "C:/synthetic/claudeCode/skills/linked", app: "claudeCode", legacyDisabled: false, external: true, inLibrary: false },
+    { name: "notes", title: "Notes", description: "Claude notes", path: "C:/synthetic/claudeCode/skills/notes", app: "claudeCode", legacyDisabled: false, external: false, inLibrary: false, conflict: false },
+    { name: "old", title: "Old", description: "Turned off before", path: "C:/synthetic/app/disabled-skills/old", app: "codex", legacyDisabled: true, external: false, inLibrary: false, conflict: false },
+    { name: "linked", title: "Linked", description: "cc-switch managed", path: "C:/synthetic/claudeCode/skills/linked", app: "claudeCode", legacyDisabled: false, external: true, inLibrary: false, conflict: false },
+    { name: "review", title: "Review", description: "An older copy", path: "C:/synthetic/claudeCode/skills/review", app: "claudeCode", legacyDisabled: false, external: false, inLibrary: true, conflict: true },
   ],
   backups: [{ id: "backup-gone", skillID: "gone", name: "gone", title: null, relativePath: "gone", backupPath: "C:/synthetic/app/skill-backups/backup-gone/skill", createdAt: 1_700_000_000 }],
 };

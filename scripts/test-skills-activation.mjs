@@ -53,7 +53,7 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   await own.locator('[data-skills-kind="external"]').click();
   await own.locator('[data-unmanaged-skill="linked"]').waitFor();
   // Hiding every kind empties the list; clearing the filters shows them all again.
-  for (const kind of ["importable", "legacy", "external"]) await own.locator(`[data-skills-kind="${kind}"]`).click();
+  for (const kind of ["importable", "legacy", "external", "inLibrary"]) await own.locator(`[data-skills-kind="${kind}"]`).click();
   await own.getByRole("button", { name: await tr("skills.clearFilters") }).click();
   await own.locator('[data-unmanaged-skill="linked"]').waitFor();
   await eventually(async () => assert.equal(await page.evaluate(() => localStorage.getItem("agentharbor.skill-hidden-kinds")), "[]"));
@@ -89,12 +89,17 @@ export async function testSkillsActivation({ page, reset, captureDir }) {
   const linked = unmanaged.locator('[data-unmanaged-skill="linked"]');
   await linked.getByText(await tr("skills.unmanaged.external"), { exact: true }).waitFor();
   assert.equal(await linked.getByRole("button").count(), 0, "another tool's link is not brought in");
+  // A name the library holds with other contents is marked and offered no import that would fail.
+  const differing = unmanaged.locator('[data-unmanaged-skill="review"]');
+  await differing.getByText(await tr("skills.unmanaged.conflict"), { exact: true }).waitFor();
+  assert.equal(await differing.getByRole("button").count(), 0, "a differing copy is not offered for import");
   await unmanaged.locator('[data-unmanaged-skill="old"]').getByText(await tr("skills.unmanaged.legacy"), { exact: true }).waitFor();
   await unmanaged.locator('[data-unmanaged-skill="notes"]').getByRole("button", { name: await tr("skills.unmanaged.import") }).click();
   await unmanaged.locator('[data-unmanaged-skill="notes"]').waitFor({ state: "detached" });
   assert.deepEqual((await calls("import")).at(-1).items, [{ name: "notes", app: "claudeCode", legacyDisabled: false }]);
   await unmanaged.getByRole("button", { name: await tr("skills.unmanaged.importAll") }).click();
   await unmanaged.locator('[data-unmanaged-skill="old"]').waitFor({ state: "detached" });
+  assert.deepEqual((await calls("import")).at(-1).items.map(item => item.name), ["old"], "importing all leaves the differing copy out");
   await page.getByRole("radio", { name: new RegExp(`^${await tr("skills.tabs.library")}`) }).click();
   await row("notes").waitFor();
   assert.equal(await cell("notes", "claudeCode").getAttribute("aria-checked"), "true", "a skill brought in stays on where it was");

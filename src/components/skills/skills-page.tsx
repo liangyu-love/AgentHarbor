@@ -28,6 +28,8 @@ const KINDS: Kind[] = ["importable", "legacy", "external", "inLibrary"];
 
 const kindOf = (skill: UnmanagedSkill): Kind =>
   skill.external ? "external" : skill.inLibrary ? "inLibrary" : skill.legacyDisabled ? "legacy" : "importable";
+/** Another tool's link stays where it is; a name the library holds with other contents is refused. */
+const canImport = (skill: UnmanagedSkill) => !skill.external && !skill.conflict;
 
 /** The search matches the folder name, the title and the description. */
 const matches = (needle: string, skill: Pick<SkillInfo, "name" | "title" | "description">) =>
@@ -94,7 +96,7 @@ export function SkillsPage() {
   }
   if (!view) return <p role="status" className="p-4 text-muted-foreground">{t("baseline.loading")}</p>;
 
-  const importable = view.unmanaged.filter(skill => !skill.external);
+  const importable = view.unmanaged.filter(canImport);
   const pick = async () => {
     const path = await api.pickFolder().catch(() => null);
     if (path) setAdding(path);
@@ -239,7 +241,7 @@ function UnmanagedList({ view, library, needle, channel, kinds: { hidden, toggle
   const { t } = useTranslation();
   const inChannel = view.unmanaged.filter(skill => (channel === "all" || skill.app === channel) && matches(needle, skill));
   const shown = inChannel.filter(skill => !hidden.includes(kindOf(skill)));
-  const importable = shown.filter(skill => !skill.external);
+  const importable = shown.filter(canImport);
   const bring = (items: UnmanagedSkill[]) => void library.run(
     () => api.importSkills(items.map(item => ({ name: item.name, app: item.app, legacyDisabled: item.legacyDisabled }))),
     () => t("skills.imported", { count: items.length }),
@@ -291,11 +293,13 @@ function UnmanagedList({ view, library, needle, channel, kinds: { hidden, toggle
                     {skill.title && skill.title !== skill.name && <span className="truncate text-xs text-muted-foreground">{skill.title}</span>}
                     {skill.legacyDisabled && <span className="rounded bg-amber-500/10 px-1.5 py-px text-[10px] text-amber-700 dark:text-amber-300">{t("skills.unmanaged.legacy")}</span>}
                     {skill.external && <span className="rounded bg-muted px-1.5 py-px text-[10px] text-muted-foreground">{t("skills.unmanaged.external")}</span>}
-                    {skill.inLibrary && <span className="rounded bg-primary/10 px-1.5 py-px text-[10px] text-primary">{t("skills.unmanaged.inLibrary")}</span>}
+                    {skill.conflict
+                      ? <span className="rounded bg-amber-500/10 px-1.5 py-px text-[10px] text-amber-700 dark:text-amber-300" title={t("skills.unmanaged.conflictHint")}>{t("skills.unmanaged.conflict")}</span>
+                      : skill.inLibrary && <span className="rounded bg-primary/10 px-1.5 py-px text-[10px] text-primary">{t("skills.unmanaged.inLibrary")}</span>}
                   </div>
                   <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={skill.path}>{skill.description || skill.path}</p>
                 </div>
-                {!skill.external && (
+                {canImport(skill) && (
                   <Button size="sm" variant="outline" className="h-8 shrink-0" disabled={library.busy} onClick={() => bring([skill])}>
                     {t("skills.unmanaged.import")}
                   </Button>
