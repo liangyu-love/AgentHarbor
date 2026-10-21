@@ -173,7 +173,9 @@ fn leftover(object: &CstObject, previous_port: u16) -> bool {
 }
 
 /// Puts back what AgentHarbor changed. A key the user has since changed is
-/// theirs and stays as it is.
+/// theirs and stays as it is. A local proxy from before that no longer
+/// listens (a tool that has since quit) is not put back: Cursor could not
+/// reach anything through it, its sign-in included.
 pub fn release(lease: &Lease) -> Result<(), String> {
     let text = read(&lease.path)?;
     if text.trim().is_empty() {
@@ -183,7 +185,9 @@ pub fn release(lease: &Lease) -> Result<(), String> {
     let object = root.object_value_or_set();
     for (key, written) in &lease.written {
         if current(&object, key).as_ref() == Some(written) {
-            set(&object, key, lease.originals.get(key).and_then(Option::as_ref));
+            let original = lease.originals.get(key).and_then(Option::as_ref);
+            let dead_proxy = key == "http.proxy" && original.and_then(Value::as_str).is_some_and(|proxy| !super::proxy_answers(proxy));
+            set(&object, key, original.filter(|_| !dead_proxy));
         }
     }
     let updated = root.to_string();
@@ -283,18 +287,33 @@ mod tests {
     fn a_loopback_proxy_on_another_port_is_the_users_when_the_lease_is_lost() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        // The same managed keys as AgentHarbor writes, but the proxy is the user's own tool.
+        // The same managed keys as AgentHarbor writes, but the proxy is the user's own tool, still running.
+        let users_proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = format!("http://127.0.0.1:{}", users_proxy.local_addr().unwrap().port());
         std::fs::write(
             &path,
-            "{\n  \"http.proxy\": \"http://127.0.0.1:7890\",\n  \"http.proxySupport\": \"on\",\n  \"cursor.general.disableHttp2\": true,\n  \"http.experimental.systemCertificatesV2\": true\n}\n",
+            format!("{{\n  \"http.proxy\": \"{proxy}\",\n  \"http.proxySupport\": \"on\",\n  \"cursor.general.disableHttp2\": true,\n  \"http.experimental.systemCertificatesV2\": true\n}}\n"),
         )
         .unwrap();
         let lease = apply(&path, "http://127.0.0.1:4567", None, 4567).unwrap();
-        assert_eq!(lease.original_proxy().as_deref(), Some("http://127.0.0.1:7890"));
+        assert_eq!(lease.original_proxy().as_deref(), Some(proxy.as_str()));
         release(&lease).unwrap();
         let value: Value = json5::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(value["http.proxy"], "http://127.0.0.1:7890");
+        assert_eq!(value["http.proxy"], proxy);
         assert_eq!(value["cursor.general.disableHttp2"], true);
+    }
+
+    #[test]
+    fn a_local_proxy_that_quit_is_not_put_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        // Another tool's local proxy, left in the settings after it quit.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        std::fs::write(&path, format!("{{\n  \"editor.fontSize\": 14,\n  \"http.proxy\": \"http://127.0.0.1:{port}\"\n}}\n")).unwrap();
+        let lease = apply(&path, "http://127.0.0.1:4567", None, 0).unwrap();
+        release(&lease).unwrap();
+        let value: Value = json5::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value, serde_json::json!({ "editor.fontSize": 14 }));
     }
 
     #[test]
