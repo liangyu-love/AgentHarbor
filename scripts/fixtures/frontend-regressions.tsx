@@ -48,6 +48,7 @@ import i18n from "@/lib/i18n";
 import { errorKey, errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { claudeOneMDefaults, clientDefaults } from "@/lib/client-config";
 import { mergeModelCatalog } from "@/lib/provider-models";
+import { shrinkReference } from "@/components/image-workbench/prompt-assist";
 import { darkScrimFloor } from "@/lib/wallpaper-contrast";
 import { installFileDropGuard } from "@/lib/file-drop-guard";
 
@@ -1528,7 +1529,7 @@ controls.review = { mount, darkScrimFloor, usageEntry, t: (key: string, options?
       ? { ...provider, balance: { ...provider.balance, remaining } } : provider) };
     for (const callback of controls.review.balanceUpdateListeners ?? []) callback();
   },
-  realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], thumbnailEdges: [], originalCalls: [], thumbnailResolvers: [],
+  realBalanceQuery, clientDefaults, claudeOneMDefaults, mergeModelCatalog, shrinkReference, errors: { errorKey, errorMessage, formatInvokeError }, getState: () => state, pixel, accessCalls: [], thumbnailCalls: [], thumbnailEdges: [], originalCalls: [], thumbnailResolvers: [],
   modelResolutionFixture, modelResolutionRequests: [], modelResolutionResolvers: [], modelResolutionRejectors: [], holdModelResolutions: false, modelResolutionPatches: {},
   navigatedTo: null, proxySettingsOpened: false,
   imageRequests: [], imageResolvers: [], imageCancels: {}, cancelledJobs: [], gallerySaves: 0, failGallerySave: false,

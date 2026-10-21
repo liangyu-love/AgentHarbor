@@ -224,4 +224,21 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await strip.getByRole("button", { name: "移除图1" }).click();
   await library.getByRole("tab", { name: "提示词灵感" }).click();
   console.log("PASS image materials are added, annotated and deleted in the image book");
+
+  // A busy photo is sent smaller, within the budget, instead of past a relay's input limit.
+  const shrunk = await page.evaluate(async () => {
+    const canvas = Object.assign(document.createElement("canvas"), { width: 2400, height: 1600 });
+    const context = canvas.getContext("2d");
+    const noise = context.createImageData(canvas.width, canvas.height);
+    for (let i = 0; i < noise.data.length; i += 1) noise.data[i] = (i * 2654435761 >>> 13) & 255;
+    context.putImageData(noise, 0, 0);
+    const data = await window.review.shrinkReference(canvas.toDataURL("image/png"), 1568, 200_000);
+    const image = new Image();
+    image.src = data;
+    await image.decode();
+    return { length: data.length, width: image.naturalWidth };
+  });
+  assert.ok(shrunk.length <= 200_000, `the copy fits the budget: ${shrunk.length}`);
+  assert.ok(shrunk.width < 1568 && shrunk.width >= 512, `only as small as it must be: ${shrunk.width}`);
+  console.log("PASS a busy reference is shrunk to fit the polishing budget");
 }

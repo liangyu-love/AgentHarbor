@@ -35,22 +35,37 @@ const MAX_MATERIAL_CHARS = 24000;
 const REFERENCE_EDGE = 1568;
 /** Several references go smaller, so the request stays light. */
 const REFERENCES_EDGE = 1024;
+/**
+ * Data URL characters all references may take together. Some relays count an
+ * image's base64 as text against their input limit (a 1568px photo came to
+ * 141k "tokens"), so a busy picture is sent smaller rather than refused.
+ */
+const REFERENCE_BUDGET = 200_000;
+const MIN_REFERENCE_EDGE = 512;
+const REFERENCE_QUALITIES = [0.85, 0.72];
 
-/** A JPEG copy of the reference small enough for any relay, flattened onto white. */
-async function shrinkReference(src: string, edge: number): Promise<string> {
+/** A JPEG copy of the reference within `budget` characters, flattened onto white. */
+export async function shrinkReference(src: string, edge: number, budget: number): Promise<string> {
   const image = new Image();
   image.src = src;
   await image.decode();
-  const scale = Math.min(1, edge / Math.max(image.naturalWidth, image.naturalHeight));
+  const longest = Math.max(image.naturalWidth, image.naturalHeight);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
   const context = canvas.getContext("2d");
   if (!context) throw new Error("无法读取底本");
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.88);
+  for (let size = Math.min(edge, longest); ; size = Math.max(MIN_REFERENCE_EDGE, Math.round(size * 0.8))) {
+    const scale = size / longest;
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    for (const [step, quality] of REFERENCE_QUALITIES.entries()) {
+      const data = canvas.toDataURL("image/jpeg", quality);
+      const last = size <= MIN_REFERENCE_EDGE && step === REFERENCE_QUALITIES.length - 1;
+      if (data.length <= budget || last) return data;
+    }
+  }
 }
 
 /** The 「AI 润色」 switch beside the prompt label. */
@@ -179,11 +194,12 @@ export function PromptAssistPanel({ prompt, references, onPromptChange, onClose,
       const sent: AssistReference[] = [];
       if (withReference) {
         const edge = references.length > 1 ? REFERENCES_EDGE : REFERENCE_EDGE;
+        const budget = Math.floor(REFERENCE_BUDGET / references.length);
         // Only the copies of what is sent now are kept.
         const kept = new Map<string, string>();
         for (const item of references) {
-          const key = `${edge}:${item.src}`;
-          const data = shrunk.current.get(key) ?? await shrinkReference(item.src, edge);
+          const key = `${edge}:${budget}:${item.src}`;
+          const data = shrunk.current.get(key) ?? await shrinkReference(item.src, edge, budget);
           kept.set(key, data);
           sent.push({ data, name: item.name ?? "", note: item.note ?? "" });
         }
