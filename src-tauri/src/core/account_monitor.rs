@@ -72,16 +72,14 @@ fn candidate_executables() -> Vec<CodexExecutable> {
 
 fn find_codex_executable() -> Option<CodexExecutable> {
     let mut candidates = candidate_executables();
-    if let Some(path) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&path) {
-            #[cfg(windows)]
-            {
-                candidates.push(CodexExecutable::Direct(directory.join("codex.exe")));
-                candidates.push(CodexExecutable::WindowsScript(directory.join("codex.cmd")));
-            }
-            #[cfg(not(windows))]
-            candidates.push(CodexExecutable::Direct(directory.join("codex")));
+    for directory in super::account_sources::cli::path_dirs() {
+        #[cfg(windows)]
+        {
+            candidates.push(CodexExecutable::Direct(directory.join("codex.exe")));
+            candidates.push(CodexExecutable::WindowsScript(directory.join("codex.cmd")));
         }
+        #[cfg(not(windows))]
+        candidates.push(CodexExecutable::Direct(directory.join("codex")));
     }
     let mut script_fallback = None;
     for candidate in candidates {

@@ -129,6 +129,26 @@ pub(crate) fn current_environment_text(name: &str) -> Option<String> {
     })
 }
 
+/// PATH as a process started now gets it: the machine's entries, then the
+/// user's. An installer that added a folder since this app started is in it.
+#[cfg(target_os = "windows")]
+pub(crate) fn current_path() -> Option<String> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let machine = registry_text(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        "Path",
+    );
+    let user = registry_text(HKEY_CURRENT_USER, "Environment", "Path");
+    let joined: Vec<String> = [machine, user]
+        .into_iter()
+        .flatten()
+        .map(|part| part.trim_matches(';').to_owned())
+        .filter(|part| !part.is_empty())
+        .collect();
+    (!joined.is_empty()).then(|| joined.join(";"))
+}
+
 /// A current-user DWORD value, or `None` when the key or value is missing.
 #[cfg(target_os = "windows")]
 pub(crate) fn user_registry_dword(subkey: &str, name: &str) -> Option<u32> {

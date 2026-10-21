@@ -40,11 +40,23 @@ fn file_names(name: &str) -> Vec<String> {
     }
 }
 
+/// The folders on PATH: on Windows the PATH a terminal opened now gets first,
+/// since an installer may have added its folder after this app started.
+pub fn path_dirs() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let current = crate::platform::windows::current_path().map(std::ffi::OsString::from);
+    #[cfg(not(windows))]
+    let current: Option<std::ffi::OsString> = None;
+    current
+        .into_iter()
+        .chain(std::env::var_os("PATH"))
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .collect()
+}
+
 /// The first of `names` in `dirs`, then on PATH, that `accept` takes.
 pub fn find(names: &[&str], dirs: &[PathBuf], accept: impl Fn(&Path) -> bool) -> Option<PathBuf> {
-    let path_dirs = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .unwrap_or_default();
+    let path_dirs = path_dirs();
     for (dir, own) in dirs.iter().map(|dir| (dir, true)).chain(path_dirs.iter().map(|dir| (dir, false))) {
         if !dir.is_absolute() {
             continue;

@@ -121,7 +121,7 @@ pub fn launch(
             let folder = folder
                 .filter(|folder| folder.is_dir())
                 .ok_or("clients.errors.launchFolder")?;
-            open_terminal(&format!("{}{command}", proxy_prelude(direct_hosts)), folder)
+            open_terminal(&format!("{}{command}", environment_prelude(direct_hosts)), folder)
         }
     }
 }
@@ -152,12 +152,12 @@ pub fn direct_relay_hosts(paths: &crate::platform::paths::CodexPaths, target: Ta
     hosts
 }
 
-/// PowerShell that gives a new terminal the proxy variables a terminal opened
-/// now has: this app's environment is the one it started with, from before
-/// the terminal proxy last changed. While a proxy applies, `direct_hosts`
-/// join `NO_PROXY`.
+/// PowerShell that gives a new terminal the PATH and proxy variables a
+/// terminal opened now has: this app's environment is the one it started
+/// with, from before a CLI's installer moved it or the terminal proxy last
+/// changed. While a proxy applies, `direct_hosts` join `NO_PROXY`.
 #[cfg(windows)]
-fn proxy_prelude(direct_hosts: &[String]) -> String {
+fn environment_prelude(direct_hosts: &[String]) -> String {
     let mut values = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]
         .map(|name| (name, crate::platform::windows::current_environment_text(name)));
     let proxied = values[..3]
@@ -166,18 +166,21 @@ fn proxy_prelude(direct_hosts: &[String]) -> String {
     if proxied && !direct_hosts.is_empty() {
         values[3].1 = Some(with_hosts(values[3].1.as_deref(), direct_hosts));
     }
-    values
+    let path = crate::platform::windows::current_path()
+        .map(|path| format!("$env:Path='{}'; ", path.replace('\'', "''")))
+        .unwrap_or_default();
+    path + &values
         .iter()
         .map(|(name, value)| match value {
             Some(value) => format!("$env:{name}='{}'; ", value.replace('\'', "''")),
             None => format!("Remove-Item Env:{name} -ErrorAction SilentlyContinue; "),
         })
-        .collect()
+        .collect::<String>()
 }
 
 /// Shell that adds `direct_hosts` to the terminal's bypass lists.
 #[cfg(not(windows))]
-fn proxy_prelude(direct_hosts: &[String]) -> String {
+fn environment_prelude(direct_hosts: &[String]) -> String {
     if direct_hosts.is_empty() {
         return String::new();
     }
@@ -321,8 +324,9 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_terminal_gets_the_proxy_variables_set_now() {
-        let prelude = proxy_prelude(&[]);
+    fn a_terminal_gets_the_path_and_proxy_variables_set_now() {
+        let prelude = environment_prelude(&[]);
+        assert!(prelude.starts_with("$env:Path='"), "a CLI an installer just moved is found");
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
             assert!(prelude.contains(&format!("$env:{name}=")) || prelude.contains(&format!("Env:{name} ")));
         }
