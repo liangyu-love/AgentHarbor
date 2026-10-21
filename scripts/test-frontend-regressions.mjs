@@ -48,6 +48,7 @@ import { testClaudeCliOfficial } from "./test-claude-cli-official.mjs";
 import { testCursorInjection } from "./test-cursor-injection.mjs";
 import { testClientAccess } from "./test-client-access.mjs";
 import { eventually } from "./eventually.mjs";
+import { testGalleryAlbum } from "./test-gallery-album.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -198,6 +199,8 @@ try {
     await testCursorInjection({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "client-access") {
     await testClientAccess({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "gallery-album") {
+    await testGalleryAlbum({ page, reset });
   } else {
   await reset("compact");
   const errorCases = await page.evaluate(() => {
@@ -1595,6 +1598,7 @@ try {
   await gallerySection.getByRole("radio", { name: "瀑布流", exact: true }).click();
   await page.evaluate(() => localStorage.removeItem("agentharbor.gallery-view"));
   console.log("PASS gallery keeps whole images in masonry, folds to its title bar, and plays an album");
+  await testGalleryAlbum({ page, reset });
   await testAccountThreadNavigation({ page, reset, captureDir });
   await testSidebarCapsule({ page, reset, captureDir });
   await testScrollPaging({ page, reset, captureDir });

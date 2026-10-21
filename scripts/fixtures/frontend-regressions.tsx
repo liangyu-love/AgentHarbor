@@ -919,7 +919,11 @@ api.image.saveToGallery = async (_dataUrls, meta) => {
   return { directory: "C:/synthetic", files: ["C:/synthetic/generated.png"] };
 };
 api.image.saveFile = async (path, dataUrl) => { (controls.review.imageFileSaves ??= []).push({ path, dataUrl }); };
-api.image.listGallery = async () => ({ directory: "C:/synthetic", items: galleryItems });
+api.image.listGallery = async () => {
+  // A real gallery is read from disk: the panel shows its placeholders first.
+  if (controls.review.slowGallery) await new Promise(resolve => setTimeout(resolve, 600));
+  return { directory: "C:/synthetic", items: galleryItems };
+};
 // Like image_prompts.rs, the saved copy is what the next load returns.
 const promptBook = (kind = "prompts") => (kind === "materials" ? "promptMaterials" : "promptLibrary");
 api.image.loadPromptLibrary = async kind => structuredClone(controls.review[promptBook(kind)]);
