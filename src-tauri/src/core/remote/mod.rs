@@ -563,3 +563,197 @@ mod tests {
         );
     }
 }
+
+/// Against a real host: `AGENTHARBOR_TEST_REMOTE_HOST` names a host (a
+/// `~/.ssh/config` alias works) signed in with a key; set
+/// `AGENTHARBOR_TEST_REMOTE_PASSPHRASE` for an encrypted key and
+/// `AGENTHARBOR_TEST_REMOTE_TRUST` to the fingerprint of a host not in
+/// `~/.ssh/known_hosts`. Codex and Claude Code there are configured with a
+/// synthetic relay and restored; both must be unconfigured to begin with.
+#[cfg(test)]
+mod real_remote {
+    use super::*;
+    use crate::core::{
+        client_config::{ClientAccessMode, ClientOptions, ConfigManager, ConfigRequest},
+        newapi,
+        router::{ModelProtocol, Provider, Store},
+        targets::TargetId,
+    };
+
+    const KEY: &str = "sk-agentharbor-remote-test-not-a-real-key";
+
+    fn synthetic_relays() -> Store {
+        let model = |id: &str, protocol| newapi::Model {
+            id: id.into(),
+            protocol: Some(protocol),
+            ..Default::default()
+        };
+        let relay = |id: &str, protocol, model_id: &str| Provider {
+            id: id.into(),
+            name: format!("Remote test {id}"),
+            base_url: "https://relay.agentharbor-test.invalid".into(),
+            api_key: KEY.into(),
+            enabled: true,
+            protocol,
+            model: model_id.into(),
+            models: vec![model(model_id, protocol)],
+            ..Default::default()
+        };
+        Store {
+            providers: vec![
+                relay("responses", ModelProtocol::Responses, "gpt-test"),
+                relay("messages", ModelProtocol::AnthropicMessages, "claude-test"),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn real_remote_codex_and_claude_code_apply_and_restore() {
+        let host =
+            std::env::var("AGENTHARBOR_TEST_REMOTE_HOST").expect("AGENTHARBOR_TEST_REMOTE_HOST");
+        let data = tempfile::tempdir().unwrap();
+        let store = RemoteStore::new(data.path());
+        let saved = store
+            .save_host(RemoteHostInput {
+                id: None,
+                name: host.clone(),
+                host,
+                port: None,
+                user: None,
+                auth: RemoteAuth::Key,
+                identity_file: None,
+                password: None,
+                passphrase: std::env::var("AGENTHARBOR_TEST_REMOTE_PASSPHRASE").ok(),
+                clear_passphrase: false,
+            })
+            .unwrap();
+        let trust = std::env::var("AGENTHARBOR_TEST_REMOTE_TRUST").ok();
+        let home = match store.test(&saved.id, trust.clone()) {
+            ConnectionTest::Connected { home } => home,
+            ConnectionTest::UnknownHost {
+                fingerprint,
+                algorithm,
+            } => {
+                panic!("unknown host key {algorithm} {fingerprint}: set AGENTHARBOR_TEST_REMOTE_TRUST after checking it")
+            }
+            ConnectionTest::HostKeyChanged { fingerprint } => {
+                panic!("host key changed: {fingerprint}")
+            }
+            ConnectionTest::Failed { error } => panic!("connection failed: {error}"),
+        };
+        let session = Arc::new(store.connect(&saved.id, trust).unwrap());
+        assert_eq!(session.home(), home);
+        let journals = store.journal_dir(&saved.id).unwrap();
+        let relays = synthetic_relays();
+        let at = |rest: &str| PathBuf::from(format!("{home}/{rest}"));
+
+        // Codex: config, key and catalog are written, then all taken back.
+        let codex_config = at(".codex/config.toml");
+        let before = session.read(&codex_config).unwrap();
+        // This test's journals are its own: a host configured for real would
+        // lose the key block it shares, so such a host is refused.
+        assert!(
+            !before
+                .as_deref()
+                .unwrap_or_default()
+                .contains("agentharbor_remote"),
+            "Codex on this host is configured by AgentHarbor; use an unconfigured host"
+        );
+        let env_before = session.read(&at(".codex/.env")).unwrap();
+        let codex =
+            codex::CodexRemote::new(session.as_ref(), &home, &journals, data.path(), Vec::new());
+        assert!(
+            !codex.status(Some(&relays)).configured,
+            "Codex must start unconfigured"
+        );
+        let request = codex::CodexRemoteRequest {
+            provider_id: "responses".into(),
+            model: "gpt-test".into(),
+            web_search: false,
+        };
+        let preview = codex.preview(&relays, &request, false).unwrap();
+        assert!(!preview.content.contains(KEY));
+        codex
+            .apply(&relays, &request, &preview.revision, false)
+            .unwrap();
+        let written = session.read(&codex_config).unwrap().unwrap();
+        let document: toml::Value = toml::from_str(&written).unwrap();
+        assert_eq!(
+            document["model_provider"].as_str(),
+            Some("agentharbor_remote")
+        );
+        assert_eq!(document["web_search"].as_str(), Some("disabled"));
+        assert_eq!(
+            document["model_providers"]["agentharbor_remote"]["base_url"].as_str(),
+            Some("https://relay.agentharbor-test.invalid/v1")
+        );
+        let env = session.read(&at(".codex/.env")).unwrap().unwrap();
+        assert!(env.contains(KEY));
+        assert!(session
+            .read(&at(".codex/agentharbor-models.json"))
+            .unwrap()
+            .is_some());
+        let status = codex.status(Some(&relays));
+        assert!(
+            status.configured && !status.conflict && !status.stale,
+            "{:?}",
+            status.conflict_fields
+        );
+        codex.restore(false).unwrap();
+        assert_eq!(session.read(&codex_config).unwrap(), before);
+        assert_eq!(session.read(&at(".codex/.env")).unwrap(), env_before);
+        assert!(session
+            .read(&at(".codex/agentharbor-models.json"))
+            .unwrap()
+            .is_none());
+
+        // Claude Code through the shared configuration engine, direct.
+        let claude_settings = at(".claude/settings.json");
+        let before = session.read(&claude_settings).unwrap();
+        assert!(
+            !before
+                .as_deref()
+                .unwrap_or_default()
+                .contains("ANTHROPIC_BASE_URL"),
+            "Claude Code on this host already has a relay; use an unconfigured host"
+        );
+        let manager = ConfigManager::remote(data.path(), &journals, &home, session.clone());
+        assert!(
+            !manager
+                .status(TargetId::ClaudeCode, Some(&relays))
+                .configured,
+            "Claude Code must start unconfigured"
+        );
+        let request = ConfigRequest {
+            target_id: TargetId::ClaudeCode,
+            provider_id: "messages".into(),
+            model: "claude-test".into(),
+            context_window: None,
+            max_output_tokens: None,
+            options: ClientOptions {
+                access_mode: ClientAccessMode::Native,
+                ..Default::default()
+            },
+        };
+        let preview = manager.preview(&relays, &request).unwrap();
+        assert!(!preview.content.contains(KEY));
+        manager.apply(&relays, &request, &preview.revision).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&session.read(&claude_settings).unwrap().unwrap()).unwrap();
+        assert_eq!(
+            written["env"]["ANTHROPIC_BASE_URL"],
+            "https://relay.agentharbor-test.invalid"
+        );
+        assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], KEY);
+        let status = manager.status(TargetId::ClaudeCode, Some(&relays));
+        assert!(
+            status.configured && !status.conflict && !status.stale,
+            "{:?}",
+            status.conflict_fields
+        );
+        manager.restore(TargetId::ClaudeCode).unwrap();
+        assert_eq!(session.read(&claude_settings).unwrap(), before);
+    }
+}

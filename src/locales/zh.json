@@ -3352,6 +3352,8 @@
       "model": "默认模型",
       "models": "这个中转有 {{count}} 个 Responses 模型会出现在 Codex 的模型菜单里。",
       "noProviders": "没有能直连 Codex 的中转：需要已启用、填了密钥，并且有 Responses 协议的模型。",
+      "webSearch": "联网搜索",
+      "webSearchHint": "Codex 自带的 web_search 工具。直连时没有本地路由帮忙去掉它，中转不支持就会拒绝整个请求，所以默认关闭；确认中转支持再打开。",
       "previewTitle": "将写入的内容",
       "conflict": "这些字段在服务器上被改过，应用会覆盖它们：{{fields}}"
     },

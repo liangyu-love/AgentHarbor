@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import type { NewApiProvider } from "@/types/newapi";
 import type { RemoteCodexPreview, RemoteCodexStatus, RemoteHost } from "@/types/remote";
 import { remoteErrorKey } from "./remote-host-dialog";
@@ -30,6 +31,7 @@ export function RemoteCodexDialog({ host, status, providers, onClose, onApplied 
   const models = provider ? clientModels(provider, RESPONSES) : [];
   const [model, setModel] = useState(() =>
     status.request && models.includes(status.request.model) ? status.request.model : models[0] ?? "");
+  const [webSearch, setWebSearch] = useState(status.request?.webSearch ?? false);
   const [preview, setPreview] = useState<RemoteCodexPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +51,7 @@ export function RemoteCodexDialog({ host, status, providers, onClose, onApplied 
     if (busy || !provider || !model) return;
     setBusy(true);
     setError(null);
-    const request = { providerId, model };
+    const request = { providerId, model, webSearch };
     try {
       if (preview) {
         await api.remote.applyCodex(host.id, request, preview.revision, true);
@@ -93,6 +95,13 @@ export function RemoteCodexDialog({ host, status, providers, onClose, onApplied 
             <p className="text-[11px] leading-relaxed text-muted-foreground sm:col-span-2">
               {t("remote.codexDialog.models", { count: models.length })}
             </p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-muted/50 px-3 py-2.5 sm:col-span-2">
+              <div className="min-w-0 space-y-0.5">
+                <Label htmlFor="remote-codex-web-search">{t("remote.codexDialog.webSearch")}</Label>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">{t("remote.codexDialog.webSearchHint")}</p>
+              </div>
+              <Switch id="remote-codex-web-search" checked={webSearch} onCheckedChange={value => { setWebSearch(value); setPreview(null); }} />
+            </div>
           </fieldset>}
         {preview && <div className="min-w-0 space-y-2" data-remote-codex-preview>
           <p className="text-sm font-semibold">{t("remote.codexDialog.previewTitle")}</p>

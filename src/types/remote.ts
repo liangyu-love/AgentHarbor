@@ -51,6 +51,8 @@ export type RemoteConnectionTest =
 export interface RemoteCodexRequest {
   providerId: string;
   model: string;
+  /** Codex's web_search tool; off writes `web_search = "disabled"`, since a relay may refuse the tool. */
+  webSearch: boolean;
 }
 
 export interface RemoteCodexStatus {

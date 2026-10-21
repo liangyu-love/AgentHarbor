@@ -25,13 +25,14 @@ const END: &str = "# --- End AgentHarbor remote Codex key ---";
 const CATALOG_FILE: &str = "agentharbor-models.json";
 
 /// The configuration fields this app owns while Codex is configured.
-const MANAGED: [&[&str]; 6] = [
+const MANAGED: [&[&str]; 7] = [
     &["model"],
     &["model_provider"],
     &["model_catalog_json"],
     &["model_context_window"],
     &["model_auto_compact_token_limit"],
     &["model_providers", PROVIDER_KEY],
+    &["web_search"],
 ];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -39,6 +40,11 @@ const MANAGED: [&[&str]; 6] = [
 pub struct CodexRemoteRequest {
     pub provider_id: String,
     pub model: String,
+    /// Whether Codex offers its `web_search` tool. A direct connection has no
+    /// router to drop the tool for a relay that refuses it, so it is off
+    /// (`web_search = "disabled"`) unless the user knows the relay takes it.
+    #[serde(default)]
+    pub web_search: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -425,7 +431,7 @@ impl<'a> CodexRemote<'a> {
             // Never let a third-party endpoint pick up official sign-in tokens.
             "requires_openai_auth": false,
         });
-        let writes: [(&[&str], Option<Value>); 6] = [
+        let writes: [(&[&str], Option<Value>); 7] = [
             (&["model"], Some(request.model.clone().into())),
             (&["model_provider"], Some(PROVIDER_KEY.into())),
             (&["model_catalog_json"], Some(catalog_path.into())),
@@ -435,6 +441,10 @@ impl<'a> CodexRemote<'a> {
                 remote.threshold.map(Value::from),
             ),
             (&["model_providers", PROVIDER_KEY], Some(provider_entry)),
+            (
+                &["web_search"],
+                (!request.web_search).then(|| "disabled".into()),
+            ),
         ];
         for (path, value) in &writes {
             set(&mut document, path, value.as_ref())?;
@@ -717,6 +727,7 @@ mod tests {
         CodexRemoteRequest {
             provider_id: "p1".into(),
             model: "gpt-5.5".into(),
+            web_search: false,
         }
     }
 
@@ -743,6 +754,11 @@ mod tests {
             Some("https://relay.example.com/v1".into())
         );
         assert_eq!(field(&document, &["model"]), Some("gpt-5.5".into()));
+        assert_eq!(
+            field(&document, &["web_search"]),
+            Some("disabled".into()),
+            "the tool a direct relay may refuse is off"
+        );
         let env = files
             .read(Path::new("/home/u/.codex/.env"))
             .unwrap()

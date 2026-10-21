@@ -3352,6 +3352,8 @@
       "model": "Default model",
       "models": "{{count}} Responses models of this relay appear in Codex's model menu.",
       "noProviders": "No relay can serve Codex directly: it must be enabled, have a key and offer Responses models.",
+      "webSearch": "Web search",
+      "webSearchHint": "Codex's built-in web_search tool. A direct connection has no local router to drop it, and a relay that does not support it refuses the whole request, so it is off by default; turn it on only if the relay supports it.",
       "previewTitle": "What will be written",
       "conflict": "Changed on the server; applying replaces them: {{fields}}"
     },
