@@ -910,3 +910,44 @@ fn installed_user_picker_selection_is_allowed_outside_requested_ids() {
     manager.restore(request.target_id).unwrap();
     assert_eq!(read(&manager.paths.claude)["model"], "original");
 }
+
+/// Files kept in memory, standing in for a remote host.
+#[derive(Default)]
+struct RemoteFiles(Mutex<std::collections::BTreeMap<String, String>>);
+
+impl ClientFiles for RemoteFiles {
+    fn read(&self, path: &Path) -> Result<Option<String>, String> {
+        Ok(self.0.lock().unwrap().get(&path.to_string_lossy().into_owned()).cloned())
+    }
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        self.0.lock().unwrap().insert(path.to_string_lossy().into_owned(), String::from_utf8(bytes.to_vec()).unwrap());
+        Ok(())
+    }
+    fn remove(&self, path: &Path) -> Result<(), String> {
+        self.0.lock().unwrap().remove(&path.to_string_lossy().into_owned());
+        Ok(())
+    }
+}
+
+#[test]
+fn a_remote_claude_code_is_configured_direct_through_its_own_files() {
+    let (temp, _local, store, mut request) = fixture();
+    let files = Arc::new(RemoteFiles::default());
+    files.write(Path::new("/home/u/.claude/settings.json"), br#"{"theme":"dark"}"#).unwrap();
+    let journals = temp.path().join("remote-journal");
+    let manager = ConfigManager::remote(&temp.path().join("data"), &journals, "/home/u/", files.clone());
+    assert_eq!(manager.preview(&store, &request).err().as_deref(), Some("remote.errors.directOnly"));
+    request.options.access_mode = ClientAccessMode::Native;
+    apply(&manager, &store, &request);
+    let written: Value = serde_json::from_str(&files.read(Path::new("/home/u/.claude/settings.json")).unwrap().unwrap()).unwrap();
+    assert_eq!(written["theme"], "dark");
+    assert_eq!(written["env"]["ANTHROPIC_BASE_URL"], "https://relay.example/gateway");
+    assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], "upstream-secret");
+    assert!(journals.join("claude-code.dat").exists());
+    let status = manager.status(TargetId::ClaudeCode, Some(&store));
+    assert!(status.configured && !status.conflict && !status.stale);
+    assert_eq!(status.path, "/home/u/.claude/settings.json");
+    assert!(status.client_version.is_none());
+    manager.restore(TargetId::ClaudeCode).unwrap();
+    assert_eq!(files.read(Path::new("/home/u/.claude/settings.json")).unwrap().as_deref(), Some(r#"{"theme":"dark"}"#));
+}

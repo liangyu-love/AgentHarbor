@@ -36,7 +36,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -320,6 +320,36 @@ enum DirectProxy {
     System,
 }
 
+/// Where a manager reads and writes client files: this machine, or a remote
+/// host over SFTP.
+pub trait ClientFiles: Send + Sync {
+    fn read(&self, path: &Path) -> Result<Option<String>, String>;
+    /// Replaces `path` whole, so a client never reads half of it.
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String>;
+    /// Removes `path`; a missing file is already removed.
+    fn remove(&self, path: &Path) -> Result<(), String>;
+}
+
+struct LocalFiles;
+
+impl ClientFiles for LocalFiles {
+    fn read(&self, path: &Path) -> Result<Option<String>, String> {
+        read_text(path)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        storage::write_atomic(path, bytes).map_err(|_| "clients.errors.storage".into())
+    }
+
+    fn remove(&self, path: &Path) -> Result<(), String> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("clients.errors.storage".into()),
+        }
+    }
+}
+
 pub struct ConfigManager {
     data_dir: PathBuf,
     /// App data directory, used to read the models.dev catalog snapshot.
@@ -327,6 +357,10 @@ pub struct ConfigManager {
     official_home: Option<PathBuf>,
     paths: ClientPaths,
     network: Network,
+    files: Arc<dyn ClientFiles>,
+    /// Configuring a remote host: direct Claude Code only, and nothing of
+    /// this machine (its Claude Code version, its managed settings) applies.
+    remote: bool,
 }
 
 impl ConfigManager {
@@ -337,6 +371,32 @@ impl ConfigManager {
             official_home: None,
             paths,
             network: Network::default(),
+            files: Arc::new(LocalFiles),
+            remote: false,
+        }
+    }
+
+    /// The manager of a remote host's clients: files under the remote
+    /// `home`, reached through `files`, and journals in `journal_dir`.
+    pub fn remote(app_data_dir: &Path, journal_dir: &Path, home: &str, files: Arc<dyn ClientFiles>) -> Self {
+        let home = home.trim_end_matches('/');
+        let at = |rest: &str| PathBuf::from(format!("{home}/{rest}"));
+        Self {
+            data_dir: journal_dir.to_path_buf(),
+            app_data_dir: app_data_dir.to_path_buf(),
+            official_home: None,
+            paths: ClientPaths {
+                claude: at(".claude/settings.json"),
+                claude_user: at(".claude.json"),
+                opencode: at(".config/opencode/opencode.json"),
+                pi: at(".pi/agent/models.json"),
+                cursor: at(".config/Cursor/User"),
+                cursor_cli: at(".cursor"),
+                harness: at(".dsh"),
+            },
+            network: Network::default(),
+            files,
+            remote: true,
         }
     }
 
@@ -402,7 +462,14 @@ impl ConfigManager {
     pub fn list_with(&self, store: Option<&Store>) -> Vec<ClientStatus> {
         [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
             .into_iter()
-            .map(|id| {
+            .map(|id| self.status(id, store))
+            .chain(std::iter::once(self.harness_status(store)))
+            .collect()
+    }
+
+    /// One client's state, its direct configuration checked against `store`
+    /// for a card changed since it was written.
+    pub fn status(&self, id: TargetId, store: Option<&Store>) -> ClientStatus {
                 let adapter = adapter(id).expect("registered adapter");
                 let mut status = ClientStatus {
                     target_id: adapter.id(),
@@ -421,7 +488,7 @@ impl ConfigManager {
                     harness: None,
                     resume_pending: false,
                 };
-                if id == TargetId::ClaudeCode {
+                if id == TargetId::ClaudeCode && !self.remote {
                     status.client_version = version::detected();
                 }
                 let result = (|| -> Result<(), String> {
@@ -439,7 +506,7 @@ impl ConfigManager {
                             }
                             _ => false,
                         };
-                        let current = parse(read_text(&session.path)?.as_deref(), id)?;
+                        let current = parse(self.files.read(&session.path)?.as_deref(), id)?;
                         let conflict_paths = conflicting_paths(&current, session);
                         status.conflict = !conflict_paths.is_empty();
                         status.conflict_fields = conflict_paths
@@ -451,15 +518,12 @@ impl ConfigManager {
                             status.resume_pending = true;
                             status.request = Some(parked);
                         }
-                        parse(read_text(adapter.path(&self.paths))?.as_deref(), id)?;
+                        parse(self.files.read(adapter.path(&self.paths))?.as_deref(), id)?;
                     }
                     Ok(())
                 })();
                 status.error = result.err();
                 status
-            })
-            .chain(std::iter::once(self.harness_status(store)))
-            .collect()
     }
 
     fn session_path(&self, id: TargetId) -> PathBuf {
@@ -679,7 +743,7 @@ impl ConfigManager {
             .map_err(|_| "clients.errors.storage")?;
         adapter(id)?;
         let mut session = self.session(id)?.ok_or("clients.errors.notConfigured")?;
-        let current = read_text(&session.path)?;
+        let current = self.files.read(&session.path)?;
         let document = parse(current.as_deref(), id)?;
         let mut warnings = Vec::new();
         match policy {
@@ -867,6 +931,10 @@ impl ConfigManager {
         {
             return Err("clients.errors.limits".into());
         }
+        if self.remote && (request.needs_router() || request.aggregate_target().is_some() || mixed_models::is_mixed(request)) {
+            // A remote client cannot reach this machine's router.
+            return Err("remote.errors.directOnly".into());
+        }
         if request.needs_router() && store.router.bearer_token.is_empty() {
             return Err("clients.errors.router".into());
         }
@@ -876,7 +944,7 @@ impl ConfigManager {
             .map(|s| s.path.as_path())
             .unwrap_or_else(|| adapter.path(&self.paths))
             .to_path_buf();
-        let current = read_text(&path)?;
+        let current = self.files.read(&path)?;
         let mut document = parse(current.as_deref(), request.target_id)?;
         // Element-keyed arrays are rebuilt from the file as it is now with this
         // app's previous elements withdrawn, so user rows added after the last
@@ -1021,7 +1089,7 @@ impl ConfigManager {
         if previous.is_none() {
             takeover::takeover_warnings(&document, &edits, &mut warnings);
         }
-        if request.target_id == TargetId::ClaudeCode {
+        if request.target_id == TargetId::ClaudeCode && !self.remote {
             takeover::managed_settings_conflicts(&edits, &mut warnings);
         }
         warnings.sort_unstable();
@@ -1068,7 +1136,7 @@ impl ConfigManager {
         session: Option<&Session>,
         warnings: Vec<String>,
     ) -> Result<ConfigApplied, String> {
-        if read_text(path)? != current {
+        if self.files.read(path)? != current {
             return Err("clients.errors.changed".into());
         }
         let backup_path = self
@@ -1089,16 +1157,13 @@ impl ConfigManager {
             &serde_json::to_vec(&session).map_err(|_| "clients.errors.storage")?,
         )?;
         let write_result = (|| -> Result<(), String> {
-            if read_text(path)? != current {
+            if self.files.read(path)? != current {
                 return Err("clients.errors.changed".into());
             }
-            if let Some(text) = next {
-                storage::write_atomic(path, text.as_bytes())
-                    .map_err(|_| "clients.errors.storage")?;
-            } else if path.exists() {
-                std::fs::remove_file(path).map_err(|_| "clients.errors.storage")?;
+            match next {
+                Some(text) => self.files.write(path, text.as_bytes()),
+                None => self.files.remove(path),
             }
-            Ok(())
         })();
         if let Err(error) = write_result {
             secret_file::write(
@@ -1110,7 +1175,7 @@ impl ConfigManager {
         // Update session.installed to match what was actually written and will be read back.
         // This prevents false conflict detection due to JSON serialization/deserialization differences.
         if let Some(mut updated_session) = session.cloned() {
-            if let Ok(written_text) = read_text(path) {
+            if let Ok(written_text) = self.files.read(path) {
                 if let Ok(reparsed) = parse(written_text.as_deref(), id) {
                     updated_session.installed = reparsed;
                     // Update the changes' after values to match the reparsed document

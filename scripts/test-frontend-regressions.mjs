@@ -38,6 +38,7 @@ import { testAggregationBoard } from "./test-aggregation-board.mjs";
 import { testUiRound7 } from "./test-ui-round7.mjs";
 import { testAccountsSplit } from "./test-accounts-split.mjs";
 import { testGateway } from "./test-gateway.mjs";
+import { testRemoteHosts } from "./test-remote-hosts.mjs";
 import { testDashboardRecent } from "./test-dashboard-recent.mjs";
 import { testClaudeDesktopCard } from "./test-claude-desktop-card.mjs";
 import { testSkillsActivation } from "./test-skills-activation.mjs";
@@ -169,6 +170,8 @@ try {
     await testAccountsSplit({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "gateway") {
     await testGateway({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "remote-hosts") {
+    await testRemoteHosts({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "dashboard-recent") {
     await testDashboardRecent({ page, reset });
   } else if (process.env.FRONTEND_QA_SCOPE === "oauth-login") {
@@ -1627,6 +1630,7 @@ try {
   await testUiRound7({ page, reset, captureDir });
   await testAccountsSplit({ page, reset, captureDir });
   await testGateway({ page, reset, captureDir });
+  await testRemoteHosts({ page, reset, captureDir });
   await testDashboardRecent({ page, reset });
   await testClaudeDesktopCard({ page, reset, captureDir });
   await testCursorInjection({ page, reset, captureDir });

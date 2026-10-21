@@ -27,6 +27,7 @@ Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness 和 Curs
 - **通用网关**：一个本地地址加上 API Key，任何支持自定义 Base URL 的 agent 都能用上全部模型
 - **跨协议联网搜索**：各客户端自带的联网搜索在其他协议的模型上照样可用
 - **Cursor 接入**：在 Cursor 的 Agent、Tab 补全和提交信息中使用自己配置的模型
+- **远程主机**：通过 SSH 直接修改服务器上 Codex 和 Claude Code 的配置，服务器直连中转，可预览、可恢复
 - **一键启动**：改完配置后直接启动或重启对应客户端
 
 ### 账号

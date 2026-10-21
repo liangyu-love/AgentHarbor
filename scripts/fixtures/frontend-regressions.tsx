@@ -26,6 +26,7 @@ import { AccountsPage } from "@/components/accounts/accounts-page";
 import { UsagePage } from "@/components/usage/usage-page";
 import type { AccountSource, AccountSourceKind, AccountSourceListPayload, AccountSourceMethod } from "@/types/account-sources";
 import type { GatewayModel, GatewayState } from "@/types/gateway";
+import type { RemoteClients, RemoteHost, RemoteHostInput } from "@/types/remote";
 import type { CursorStatus } from "@/types/cursor";
 import { McpPage } from "@/components/mcp/mcp-page";
 import { CommandPalette } from "@/components/command-palette/command-palette";
@@ -277,6 +278,110 @@ const installGateway = () => {
       protocol: request.ingressProtocol, template: request.consumerProfile }, null, 2);
     return { configText, connection: {} } as unknown as ConnectionExportResult;
   };
+};
+// Remote hosts: an in-memory host list, a host key to trust once, and the
+// Codex and Claude Code of each host. Secrets are recorded only as given.
+const REMOTE_FINGERPRINT = "SHA256:fixtureHostKey0123456789abcdefghijklmnopqrstu";
+const installRemote = () => {
+  const review = controls.review;
+  review.remoteCalls = [];
+  review.remoteHosts = structuredClone(review.remoteHostsFixture ?? []) as RemoteHost[];
+  review.remoteTrusted = [...(review.remoteTrustedFixture ?? [])] as string[];
+  review.remoteClients = {} as Record<string, RemoteClients>;
+  const record = (...call: unknown[]) => review.remoteCalls.push(structuredClone(call));
+  const hostOf = (id: string): RemoteHost => {
+    const host = (review.remoteHosts as RemoteHost[]).find(entry => entry.id === id);
+    if (!host) throw "remote.errors.hostMissing";
+    return host;
+  };
+  const clientsOf = (id: string): RemoteClients => review.remoteClients[id] ??= {
+    home: "/home/ubuntu",
+    codex: { path: "/home/ubuntu/.codex/config.toml", configured: false, request: null, conflict: false, conflictFields: [], stale: false, error: null },
+    claudeCode: { targetId: "claudeCode", name: "Claude Code", path: "/home/ubuntu/.claude/settings.json", protocols: ["anthropicMessages"],
+      configured: false, conflict: false, error: null, providerId: null, model: null, request: null, conflictFields: [] },
+  };
+  const settle = (id: string) => {
+    const clients = clientsOf(id);
+    hostOf(id).inUse = clients.codex.configured || clients.claudeCode.configured;
+  };
+  const trusted = (id: string) => {
+    hostOf(id);
+    if (!(review.remoteTrusted as string[]).includes(id)) throw "remote.errors.unknownHost";
+  };
+  api.remote.hosts = async () => structuredClone(review.remoteHosts);
+  api.remote.sshAliases = async () => ["dev", "gpu-box"];
+  api.remote.save = async (input: RemoteHostInput) => {
+    record("save", input);
+    const existing = input.id ? hostOf(input.id) : undefined;
+    const hasPassword = input.auth === "password" && (!!input.password || !!existing?.hasPassword);
+    if (input.auth === "password" && !hasPassword) throw "remote.errors.passwordMissing";
+    const host: RemoteHost = {
+      id: existing?.id ?? `host-${review.remoteHosts.length + 1}`, name: input.name, host: input.host, port: input.port ?? null,
+      user: input.user ?? null, auth: input.auth, identityFile: input.identityFile ?? null, hasPassword,
+      hasPassphrase: input.auth === "key" && !input.clearPassphrase && (!!input.passphrase || !!existing?.hasPassphrase),
+      resolved: { hostName: input.host === "dev" ? "10.0.0.5" : input.host, port: input.port ?? 22,
+        user: input.user ?? (input.host === "dev" ? "ubuntu" : null), identityFiles: ["C:/Users/fixture/.ssh/id_ed25519"] },
+      inUse: existing?.inUse ?? false,
+    };
+    review.remoteHosts = existing ? review.remoteHosts.map((entry: RemoteHost) => entry.id === host.id ? host : entry) : [...review.remoteHosts, host];
+    return structuredClone(host);
+  };
+  api.remote.remove = async id => {
+    record("remove", id);
+    if (hostOf(id).inUse) throw "remote.errors.hostInUse";
+    review.remoteHosts = review.remoteHosts.filter((entry: RemoteHost) => entry.id !== id);
+  };
+  api.remote.test = async (id, trust) => {
+    record("test", id, trust ?? null);
+    hostOf(id);
+    if (trust === REMOTE_FINGERPRINT && !review.remoteTrusted.includes(id)) review.remoteTrusted.push(id);
+    return review.remoteTrusted.includes(id)
+      ? { status: "connected", home: "/home/ubuntu" }
+      : { status: "unknownHost", fingerprint: REMOTE_FINGERPRINT, algorithm: "ssh-ed25519" };
+  };
+  api.remote.clients = async id => { record("clients", id); trusted(id); return structuredClone(clientsOf(id)); };
+  api.remote.previewCodex = async (id, request, replace) => {
+    record("previewCodex", id, request, replace);
+    trusted(id);
+    return { path: clientsOf(id).codex.path, revision: "rev-codex", conflictFields: [],
+      content: `model = "${request.model}"\nmodel_provider = "agentharbor_remote"\nAGENTHARBOR_REMOTE_CODEX_KEY="[managed locally]"\n` };
+  };
+  api.remote.applyCodex = async (id, request, revision, replace) => {
+    record("applyCodex", id, request, revision, replace);
+    const clients = clientsOf(id);
+    clients.codex = { ...clients.codex, configured: true, request: { ...request } };
+    settle(id);
+    return { path: clients.codex.path };
+  };
+  api.remote.restoreCodex = async (id, replace) => {
+    record("restoreCodex", id, replace);
+    const clients = clientsOf(id);
+    clients.codex = { ...clients.codex, configured: false, request: null };
+    settle(id);
+    return { path: clients.codex.path };
+  };
+  api.remote.releaseCodex = async id => { record("releaseCodex", id); await api.remote.restoreCodex(id); };
+  api.remote.previewClaude = async (id, request, replace) => {
+    record("previewClaude", id, request, replace);
+    trusted(id);
+    return { path: clientsOf(id).claudeCode.path, revision: "rev-claude",
+      content: JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://mixed.invalid", ANTHROPIC_AUTH_TOKEN: "[managed locally]" }, model: request.model }, null, 2) };
+  };
+  api.remote.applyClaude = async (id, request, revision, replace) => {
+    record("applyClaude", id, request, revision, replace);
+    const clients = clientsOf(id);
+    clients.claudeCode = { ...clients.claudeCode, configured: true, providerId: request.providerId, model: request.model, request: structuredClone(request) };
+    settle(id);
+    return { path: clients.claudeCode.path, backupPath: "C:/synthetic/backup.dat", warnings: [] };
+  };
+  api.remote.restoreClaude = async (id, replace) => {
+    record("restoreClaude", id, replace);
+    const clients = clientsOf(id);
+    clients.claudeCode = { ...clients.claudeCode, configured: false, providerId: null, model: null, request: null };
+    settle(id);
+    return { path: clients.claudeCode.path, backupPath: "C:/synthetic/backup.dat", warnings: [] };
+  };
+  api.remote.releaseClaude = async id => { record("releaseClaude", id); await api.remote.restoreClaude(id); };
 };
 api.routing.diagnostics = async () => {
   if (controls.review.routeDiagnostics) return controls.review.routeDiagnostics;
@@ -1255,6 +1360,7 @@ function mount(mode: FixtureMode) {
   api.codexMenuOverflow = async () => structuredClone(controls.review.menuOverflow ?? { total: 12, limit: 100, cut: [] });
   installAccountSources();
   installGateway();
+  installRemote();
   controls.review.loginCalls = [];
   controls.review.cancelCalls = [];
   controls.review.cancelFailures = 0;

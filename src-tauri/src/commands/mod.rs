@@ -16,6 +16,7 @@ pub mod image_prompts;
 pub mod mcp;
 pub mod memory;
 pub mod newapi;
+pub mod remote;
 pub mod skills;
 pub mod system;
 pub mod targets;

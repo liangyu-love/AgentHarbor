@@ -1,0 +1,529 @@
+//! One SSH session to a remote host: the host key is checked, the user signs
+//! in with a key or a password, and files are read and written over SFTP.
+//! Writes go to a temporary file first and are moved into place, so a
+//! client never reads half a configuration.
+
+use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
+use russh::{client, ChannelMsg, Disconnect};
+use russh_sftp::client::{error::Error as SftpError, SftpSession};
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+/// Configuration files are small; anything larger is not one.
+const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// SSH runs on its own runtime so the synchronous configuration code can
+/// wait on it from any thread.
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("agentharbor-ssh")
+            .enable_all()
+            .build()
+            .expect("SSH runtime")
+    })
+}
+
+pub(super) fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    runtime().block_on(future)
+}
+
+/// Where to connect and how to sign in, already resolved through
+/// `~/.ssh/config`.
+pub struct Target {
+    /// The address connected to, which is also the name the host key is
+    /// recorded under.
+    pub host_name: String,
+    /// The name the user typed, when it is an alias: a known_hosts entry
+    /// under it is accepted too.
+    pub alias: String,
+    pub port: u16,
+    pub user: String,
+    pub method: Method,
+}
+
+pub enum Method {
+    Password(String),
+    Keys {
+        files: Vec<PathBuf>,
+        passphrase: Option<String>,
+    },
+}
+
+/// Files that hold host keys: the user's own known_hosts (read only) and
+/// the file of keys trusted from this app (read and appended).
+pub struct KnownHosts {
+    pub user: Option<PathBuf>,
+    pub app: PathBuf,
+}
+
+/// Why a connection did not open. `UnknownHost` carries what the user must
+/// confirm before the key is trusted.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectError {
+    UnknownHost {
+        fingerprint: String,
+        algorithm: String,
+    },
+    HostKeyChanged {
+        fingerprint: String,
+    },
+    /// An i18n key.
+    Failed(String),
+}
+
+impl ConnectError {
+    pub fn key(&self) -> String {
+        match self {
+            Self::UnknownHost { .. } => "remote.errors.unknownHost".into(),
+            Self::HostKeyChanged { .. } => "remote.errors.hostKeyChanged".into(),
+            Self::Failed(key) => key.clone(),
+        }
+    }
+}
+
+fn failed(key: &str) -> ConnectError {
+    ConnectError::Failed(key.into())
+}
+
+#[derive(Clone)]
+enum HostKeyIssue {
+    Unknown {
+        fingerprint: String,
+        algorithm: String,
+    },
+    Changed {
+        fingerprint: String,
+    },
+    Certificate,
+}
+
+struct Checker {
+    names: Vec<String>,
+    port: u16,
+    known: Arc<KnownHosts>,
+    /// The fingerprint the user confirmed for this host, if any.
+    trust: Option<String>,
+    issue: Arc<Mutex<Option<HostKeyIssue>>>,
+}
+
+impl Checker {
+    fn report(&self, issue: HostKeyIssue) -> Result<bool, russh::Error> {
+        if let Ok(mut slot) = self.issue.lock() {
+            *slot = Some(issue);
+        }
+        Ok(false)
+    }
+}
+
+impl client::Handler for Checker {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        server_key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        let PublicKeyOrCertificate::PublicKey { key, .. } = server_key else {
+            return self.report(HostKeyIssue::Certificate);
+        };
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        let files = self
+            .known
+            .user
+            .iter()
+            .chain(std::iter::once(&self.known.app));
+        for file in files {
+            for name in &self.names {
+                match keys::check_known_hosts_path(name, self.port, key, file) {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {}
+                    // A recorded key of the same type that differs: refuse,
+                    // whatever the user confirmed before.
+                    Err(keys::Error::KeyChanged { .. }) => {
+                        return self.report(HostKeyIssue::Changed { fingerprint });
+                    }
+                    // A line this parser cannot read hides nothing it could
+                    // check; the other file and names still count.
+                    Err(_) => {}
+                }
+            }
+        }
+        if self.trust.as_deref() == Some(fingerprint.as_str()) {
+            let name = &self.names[0];
+            if keys::known_hosts::learn_known_hosts_path(name, self.port, key, &self.known.app)
+                .is_err()
+            {
+                log::warn!("could not record the trusted host key of {name}");
+            }
+            return Ok(true);
+        }
+        self.report(HostKeyIssue::Unknown {
+            fingerprint,
+            algorithm: key.algorithm().to_string(),
+        })
+    }
+}
+
+pub struct Connection {
+    handle: client::Handle<Checker>,
+    sftp: SftpSession,
+    home: String,
+}
+
+fn not_found(error: &SftpError) -> bool {
+    matches!(error, SftpError::Status(status) if status.status_code == StatusCode::NoSuchFile)
+}
+
+async fn timed<T>(
+    future: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::time::timeout(OPERATION_TIMEOUT, future)
+        .await
+        .unwrap_or_else(|_| Err("remote.errors.timeout".into()))
+}
+
+impl Connection {
+    pub async fn open(
+        target: &Target,
+        known: Arc<KnownHosts>,
+        trust: Option<String>,
+    ) -> Result<Self, ConnectError> {
+        let issue = Arc::new(Mutex::new(None));
+        let mut names = vec![target.host_name.clone()];
+        if !target.alias.is_empty() && !target.alias.eq_ignore_ascii_case(&target.host_name) {
+            names.push(target.alias.clone());
+        }
+        let checker = Checker {
+            names,
+            port: target.port,
+            known,
+            trust,
+            issue: issue.clone(),
+        };
+        let config = Arc::new(client::Config {
+            inactivity_timeout: Some(Duration::from_secs(120)),
+            ..Default::default()
+        });
+        let stream = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio::net::TcpStream::connect((target.host_name.as_str(), target.port)),
+        )
+        .await
+        .map_err(|_| failed("remote.errors.timeout"))?
+        .map_err(|_| failed("remote.errors.unreachable"))?;
+        let handshake = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            client::connect_stream(config, stream, checker),
+        )
+        .await;
+        let mut handle = match handshake {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(_)) | Err(_) => {
+                let issue = issue.lock().ok().and_then(|slot| slot.clone());
+                return Err(match issue {
+                    Some(HostKeyIssue::Unknown {
+                        fingerprint,
+                        algorithm,
+                    }) => ConnectError::UnknownHost {
+                        fingerprint,
+                        algorithm,
+                    },
+                    Some(HostKeyIssue::Changed { fingerprint }) => {
+                        ConnectError::HostKeyChanged { fingerprint }
+                    }
+                    Some(HostKeyIssue::Certificate) => failed("remote.errors.hostCertificate"),
+                    None if handshake.is_err() => failed("remote.errors.timeout"),
+                    None => failed("remote.errors.handshake"),
+                });
+            }
+        };
+        tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, target))
+            .await
+            .unwrap_or_else(|_| Err(failed("remote.errors.timeout")))?;
+        let sftp = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            let channel = handle
+                .channel_open_session()
+                .await
+                .map_err(|_| failed("remote.errors.sftp"))?;
+            channel
+                .request_subsystem(true, "sftp")
+                .await
+                .map_err(|_| failed("remote.errors.sftp"))?;
+            SftpSession::new(channel.into_stream())
+                .await
+                .map_err(|_| failed("remote.errors.sftp"))
+        })
+        .await
+        .unwrap_or_else(|_| Err(failed("remote.errors.timeout")))?;
+        let home = sftp
+            .canonicalize(".")
+            .await
+            .map_err(|_| failed("remote.errors.sftp"))?;
+        Ok(Self { handle, sftp, home })
+    }
+
+    /// The signed-in user's home directory, as an absolute POSIX path.
+    pub fn home(&self) -> &str {
+        &self.home
+    }
+
+    pub async fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+        timed(async {
+            match self.sftp.metadata(path).await {
+                Ok(metadata) => {
+                    if metadata.is_dir() {
+                        return Err("remote.errors.read".into());
+                    }
+                    if metadata.size.is_some_and(|size| size > MAX_FILE_BYTES) {
+                        return Err("remote.errors.tooLarge".into());
+                    }
+                }
+                Err(error) if not_found(&error) => return Ok(None),
+                Err(_) => return Err("remote.errors.read".into()),
+            }
+            match self.sftp.read(path).await {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if not_found(&error) => Ok(None),
+                Err(_) => Err("remote.errors.read".into()),
+            }
+        })
+        .await
+    }
+
+    /// Replaces `path` with `bytes`: written beside it, then moved over it.
+    /// A symlink is followed so its target is replaced, not the link. A new
+    /// file is readable by its owner only; an existing one keeps its mode.
+    pub async fn write(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        timed(async {
+            let mut target = path.to_owned();
+            let mode = match self.sftp.symlink_metadata(path).await {
+                Ok(metadata) => {
+                    if metadata.is_symlink() {
+                        target = self
+                            .sftp
+                            .canonicalize(path)
+                            .await
+                            .map_err(|_| "remote.errors.write".to_owned())?;
+                        self.sftp
+                            .metadata(&target)
+                            .await
+                            .ok()
+                            .and_then(|metadata| metadata.permissions)
+                    } else {
+                        metadata.permissions
+                    }
+                }
+                Err(error) if not_found(&error) => None,
+                Err(_) => return Err("remote.errors.write".into()),
+            }
+            .map(|mode| mode & 0o7777)
+            .unwrap_or(0o600);
+            if let Some((parent, _)) = target.rsplit_once('/') {
+                self.create_dirs(parent).await?;
+            }
+            let temporary = format!("{target}.agentharbor-{}.tmp", uuid::Uuid::new_v4().simple());
+            let mut attributes = FileAttributes::empty();
+            attributes.permissions = Some(mode);
+            let written = async {
+                let mut file = self
+                    .sftp
+                    .open_with_flags_and_attributes(
+                        &temporary,
+                        OpenFlags::CREATE
+                            | OpenFlags::EXCLUDE
+                            | OpenFlags::WRITE
+                            | OpenFlags::TRUNCATE,
+                        attributes,
+                    )
+                    .await
+                    .map_err(|_| "remote.errors.write".to_owned())?;
+                file.write_all(bytes)
+                    .await
+                    .map_err(|_| "remote.errors.write".to_owned())?;
+                file.shutdown()
+                    .await
+                    .map_err(|_| "remote.errors.write".to_owned())?;
+                // The umask may have narrowed the mode it was created with.
+                let mut attributes = FileAttributes::empty();
+                attributes.permissions = Some(mode);
+                let _ = self.sftp.set_metadata(&temporary, attributes).await;
+                let status = self
+                    .exec(&format!(
+                        "mv -f -- {} {}",
+                        quote(&temporary),
+                        quote(&target)
+                    ))
+                    .await?;
+                if status != 0 {
+                    return Err("remote.errors.write".into());
+                }
+                Ok(())
+            }
+            .await;
+            if written.is_err() {
+                let _ = self.sftp.remove_file(&temporary).await;
+            }
+            written
+        })
+        .await
+    }
+
+    pub async fn remove(&self, path: &str) -> Result<(), String> {
+        timed(async {
+            match self.sftp.remove_file(path).await {
+                Ok(()) => Ok(()),
+                Err(error) if not_found(&error) => Ok(()),
+                Err(_) => Err("remote.errors.write".into()),
+            }
+        })
+        .await
+    }
+
+    async fn create_dirs(&self, dir: &str) -> Result<(), String> {
+        let mut missing = Vec::new();
+        let mut current = dir.trim_end_matches('/').to_owned();
+        while !current.is_empty() {
+            match self.sftp.metadata(&current).await {
+                Ok(metadata) if metadata.is_dir() => break,
+                Ok(_) => return Err("remote.errors.write".into()),
+                Err(error) if not_found(&error) => {
+                    missing.push(current.clone());
+                    current = current
+                        .rsplit_once('/')
+                        .map(|(parent, _)| parent.to_owned())
+                        .unwrap_or_default();
+                }
+                Err(_) => return Err("remote.errors.write".into()),
+            }
+        }
+        for dir in missing.into_iter().rev() {
+            let mut attributes = FileAttributes::empty();
+            attributes.permissions = Some(0o700);
+            if self.sftp.create_dir(&dir).await.is_err() {
+                return Err("remote.errors.write".into());
+            }
+            let _ = self.sftp.set_metadata(&dir, attributes).await;
+        }
+        Ok(())
+    }
+
+    /// Runs `command` through the user's shell and returns its exit status.
+    async fn exec(&self, command: &str) -> Result<u32, String> {
+        let mut channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|_| "remote.errors.exec".to_owned())?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|_| "remote.errors.exec".to_owned())?;
+        let mut status = None;
+        while let Some(message) = channel.wait().await {
+            if let ChannelMsg::ExitStatus { exit_status } = message {
+                status = Some(exit_status);
+            }
+        }
+        status.ok_or_else(|| "remote.errors.exec".into())
+    }
+
+    pub async fn close(self) {
+        let _ = self.sftp.close().await;
+        let _ = self
+            .handle
+            .disconnect(Disconnect::ByApplication, "", "en")
+            .await;
+    }
+}
+
+/// A POSIX shell word for `value`.
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+async fn authenticate(
+    handle: &mut client::Handle<Checker>,
+    target: &Target,
+) -> Result<(), ConnectError> {
+    match &target.method {
+        Method::Password(password) => {
+            let result = handle
+                .authenticate_password(target.user.clone(), password.clone())
+                .await
+                .map_err(|_| failed("remote.errors.handshake"))?;
+            if result.success() {
+                Ok(())
+            } else {
+                Err(failed("remote.errors.authPassword"))
+            }
+        }
+        Method::Keys { files, passphrase } => {
+            let mut error = "remote.errors.noKey";
+            for file in files {
+                let Ok(text) = std::fs::read_to_string(file) else {
+                    continue;
+                };
+                let key = match keys::decode_secret_key(&text, passphrase.as_deref()) {
+                    Ok(key) => key,
+                    Err(keys::Error::KeyIsEncrypted) => {
+                        error = "remote.errors.passphraseNeeded";
+                        continue;
+                    }
+                    Err(_) => {
+                        // An encrypted key that the stored passphrase does not open.
+                        let encrypted = matches!(
+                            keys::decode_secret_key(&text, None),
+                            Err(keys::Error::KeyIsEncrypted)
+                        );
+                        if passphrase.is_some() && encrypted {
+                            error = "remote.errors.passphraseWrong";
+                        } else if error == "remote.errors.noKey" {
+                            error = "remote.errors.keyUnreadable";
+                        }
+                        continue;
+                    }
+                };
+                let hash = if key.algorithm().is_rsa() {
+                    handle
+                        .best_supported_rsa_hash()
+                        .await
+                        .ok()
+                        .flatten()
+                        .flatten()
+                } else {
+                    None
+                };
+                let result = handle
+                    .authenticate_publickey(
+                        target.user.clone(),
+                        PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                    )
+                    .await
+                    .map_err(|_| failed("remote.errors.handshake"))?;
+                if result.success() {
+                    return Ok(());
+                }
+                error = "remote.errors.authKey";
+            }
+            Err(failed(error))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quote;
+
+    #[test]
+    fn quotes_shell_words() {
+        assert_eq!(quote("/home/a b/.codex"), "'/home/a b/.codex'");
+        assert_eq!(quote("it's"), r"'it'\''s'");
+    }
+}

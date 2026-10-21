@@ -81,6 +81,9 @@ hostname = "0.4"
 log = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process", "signal"] }
+# Edits Codex and Claude Code configuration on remote hosts over SSH/SFTP.
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3"
 # Serves Cursor's Agent protocol for the Cursor injection.
 cursor-engine = { path = "cursor-engine" }
 

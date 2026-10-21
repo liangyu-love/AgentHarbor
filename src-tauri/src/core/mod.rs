@@ -40,6 +40,7 @@ pub mod provider_probe;
 pub mod search_probe;
 pub mod quota_store;
 pub mod relay_usage;
+pub mod remote;
 pub mod usage_cache;
 pub mod usage_ledger;
 pub mod repository;

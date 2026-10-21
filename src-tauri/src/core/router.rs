@@ -23,6 +23,7 @@ mod config_snapshot;
 mod model_protocol_tests;
 #[path = "codex_native.rs"]
 mod native_config;
+pub(crate) use native_config::remote_plan;
 #[path = "router_transition.rs"]
 mod transition;
 pub use transition::{

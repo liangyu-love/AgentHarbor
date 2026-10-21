@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { ClaudeModels, ClientAccessMode, ClientConfigPreview, ClientConfigRequest, ClientStatus } from "@/types/clients";
+import type { ClaudeModels, ClientAccessMode, ClientConfigApplied, ClientConfigPreview, ClientConfigRequest, ClientStatus } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
 import { storageKeys } from "@/lib/storage-keys";
 import { errorKey } from "@/lib/invoke-error";
@@ -55,10 +55,20 @@ const sourceKind = (provider: NewApiProvider): SourceKind => provider.accountSou
 /** One model of Claude Code's combined menu, by its gateway id. */
 interface MixedEntry { id: string; label: string; target: ModelTargetRef; small: boolean }
 
-export function ConfigDialog({ client, providers, onClose, onApplied }: {
+/** A client on a remote host: configured direct only, through the host's own commands. */
+export interface RemoteConfigTarget {
+  hostName: string;
+  preview: (request: ClientConfigRequest, replaceConflicts: boolean) => Promise<ClientConfigPreview>;
+  apply: (request: ClientConfigRequest, revision: string, replaceConflicts: boolean) => Promise<ClientConfigApplied>;
+}
+
+export function ConfigDialog({ client, providers, onClose, onApplied, remote }: {
   client: ClientStatus; providers: NewApiProvider[]; onClose: () => void; onApplied: () => Promise<void>;
+  remote?: RemoteConfigTarget;
 }) {
   const { t } = useTranslation();
+  const previewConfig = remote ? remote.preview : api.targets.previewConfig;
+  const applyConfig = remote ? remote.apply : api.targets.applyConfig;
   const isClaude = client.targetId === "claudeCode";
   const isHarness = client.targetId === "harness";
   const harnessProfiles = client.harness?.profiles ?? [];
@@ -67,7 +77,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
   const [request, setRequest] = useState<ClientConfigRequest>(() => {
     const saved = client.request;
     if (saved?.modelSelection) return { ...saved, providerIds: saved.providerIds ?? [], claudeModels: saved.claudeModels ?? emptyRoles() };
-    const accessMode = saved?.accessMode ?? (client.configured ? "router" : "native");
+    const accessMode = remote ? "native" : saved?.accessMode ?? (client.configured ? "router" : "native");
     const protocols = clientProtocols(client, accessMode);
     const available = providers.filter(provider => !exclusionOf(provider, protocols, accessMode));
     const initial = available.find(provider => provider.id === client.providerId) ?? available[0];
@@ -443,7 +453,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           availableTargets: ids.map(aggregateId => ({ kind: "aggregate", aggregateId })) } };
       setRequest(restored); setProfileName(profile.name); setPreview(null); setBusy(true); setError(null);
       setSources({ relay: true, account: true, aggregate: true });
-      try { setPreview(await api.targets.previewConfig(profile.request, client.conflict)); }
+      try { setPreview(await previewConfig(profile.request, client.conflict)); }
       catch (cause) { setError(clientErrorKey(cause)); }
       finally { setBusy(false); }
       return;
@@ -457,7 +467,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
       }
       const restored = { ...profile.request, accessMode: "router" as const, providerId: "", providerIds: [], claudeModelIds: ids };
       setRequest(restored); setProfileName(profile.name); setPreview(null); setBusy(true); setError(null);
-      try { setPreview(await api.targets.previewConfig(restored, client.conflict)); }
+      try { setPreview(await previewConfig(restored, client.conflict)); }
       catch (cause) { setError(clientErrorKey(cause)); }
       finally { setBusy(false); }
       return;
@@ -505,7 +515,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
     try {
       // Show the change first; the user applies it with the regular Apply button,
       // just like a manual edit.
-      setPreview(await api.targets.previewConfig(profileRequest, client.conflict));
+      setPreview(await previewConfig(profileRequest, client.conflict));
     } catch (cause) {
       setError(clientErrorKey(cause));
     } finally { setBusy(false); }
@@ -547,7 +557,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         configuredRequest.harnessReasoningEffort = null;
       }
       if (preview) {
-        const applied = await api.targets.applyConfig(configuredRequest, preview.revision, client.conflict);
+        const applied = await applyConfig(configuredRequest, preview.revision, client.conflict);
         await onApplied();
         toast({
           title: t("clients.applied"),
@@ -557,7 +567,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           variant: applied.warnings?.length ? "destructive" : "success",
         });
         onClose();
-      } else { setPreview(await api.targets.previewConfig(configuredRequest, client.conflict)); }
+      } else { setPreview(await previewConfig(configuredRequest, client.conflict)); }
     } catch (cause) {
       setError(clientErrorKey(cause)); setPreview(null); await onApplied();
     } finally { setBusy(false); }
@@ -593,15 +603,17 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
         className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl md:h-[min(88vh,820px)]">
         <DialogHeader className="shrink-0 space-y-3 border-b border-border/70 px-5 pb-4 pt-5 sm:px-6">
           <div className="space-y-1 pr-8">
-            <DialogTitle className="font-display text-xl tracking-tight">{t("clients.configureTitle", { name: client.name })}</DialogTitle>
-            <DialogDescription>{t(request.accessMode === "native" ? "clients.nativeHint" : "clients.localHint")}</DialogDescription>
+            <DialogTitle className="font-display text-xl tracking-tight">{remote
+              ? t("remote.configureTitle", { name: client.name, host: remote.hostName })
+              : t("clients.configureTitle", { name: client.name })}</DialogTitle>
+            <DialogDescription>{t(remote ? "remote.directHint" : request.accessMode === "native" ? "clients.nativeHint" : "clients.localHint")}</DialogDescription>
           </div>
           <fieldset disabled={busy} className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2.5">
-            <div className="flex w-fit gap-1 rounded-lg border bg-muted/40 p-1" aria-label={t("clients.accessMode")}>
+            {!remote && <div className="flex w-fit gap-1 rounded-lg border bg-muted/40 p-1" aria-label={t("clients.accessMode")}>
               {(["native", "router"] as const).map(mode => <Button key={mode} type="button" size="sm" className="h-7"
                 variant={request.accessMode === mode ? "secondary" : "ghost"} aria-pressed={request.accessMode === mode}
                 disabled={busy} onClick={() => changeMode(mode)}>{t("clients.access" + (mode === "native" ? "Native" : "Router"))}</Button>)}
-            </div>
+            </div>}
             {routerMode && <section className="flex min-w-0 flex-wrap items-center gap-2" aria-labelledby="client-sources-label" data-client-sources>
               <p id="client-sources-label" className="text-xs font-medium text-muted-foreground">{t("clients.sources")}</p>
               <ModelSourceSwitches value={sources} disabled={busy} label={t("clients.sources")} onChange={changeSources}
@@ -623,7 +635,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
             {t(client.configured ? "clients.harnessProfileLocked" : "clients.harnessProfileHint")}
             {harnessDotenv && <span className="mt-0.5 block text-amber-700 dark:text-amber-300" data-harness-dotenv>{t("clients.warnings.harnessDotenv")}</span>}
           </p>}
-          {isClaude && <section className="space-y-2" aria-label={t("clients.savedProfiles")}>
+          {isClaude && !remote && <section className="space-y-2" aria-label={t("clients.savedProfiles")}>
             <div className="flex flex-wrap items-center gap-2">
               {claudeProfiles.length > 0
                 ? <Label htmlFor="claude-saved-profile" className="min-w-0 text-xs font-medium text-muted-foreground">{t("clients.savedProfiles")}</Label>
@@ -740,7 +752,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied }: {
           {/* Models: the default first, then which models each source writes. */}
           <div className="min-w-0 space-y-5 p-4 md:min-h-0 md:overflow-y-auto sm:px-5" data-client-config-models>
             <fieldset disabled={busy} className="min-w-0 space-y-5">
-              {request.accessMode === "native" && <DirectProxyNote name={client.name} isClaude={isClaude} provider={provider} />}
+              {request.accessMode === "native" && !remote && <DirectProxyNote name={client.name} isClaude={isClaude} provider={provider} />}
               <section className="space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-3.5" aria-labelledby="client-model-label">
                 <div className="flex items-center justify-between gap-2"><Label id="client-model-label" htmlFor="client-model" className="flex items-center gap-1.5">
                   <Star aria-hidden className="h-3.5 w-3.5 fill-amber-400 text-amber-500" />

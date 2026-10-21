@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { Layers3, Plug, Share2, X } from "lucide-react";
+import { Layers3, Plug, Server, Share2, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -31,6 +31,7 @@ import { ClientConsole, SELECT_CLIENT_EVENT } from "./client-console";
 import { InjectTabs, type InjectTab } from "./inject-tabs";
 import { CLIENTS, useRoutingLinks } from "./use-routing-links";
 import { WebSearchSettings } from "./web-search-settings";
+import { RemoteHostsPanel } from "./remote-hosts-panel";
 import { PortOwnerNotice } from "./port-owner-notice";
 import { useClientLaunch } from "./client-launch";
 
@@ -44,7 +45,7 @@ const tabForFold: Record<string, InjectTabId> = {
   aggregation: "routing",
 };
 
-type InjectTabId = "clients" | "gateway" | "routing";
+type InjectTabId = "clients" | "gateway" | "routing" | "remote";
 
 // Injection page: how Codex, Claude Code, Claude Desktop, OpenCode, Pi, Cursor and the aggregation
 // gateway reach the relays. The relays themselves live on their own page.
@@ -70,6 +71,7 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
   const { links } = useRoutingLinks(router);
   const gateway = useQuery({ queryKey: queryKeys.gateway, queryFn: api.gateway.state, refetchOnWindowFocus: false });
   const aggregates = useQuery({ queryKey: aggregationQueryKey, queryFn: api.aggregation.state });
+  const remoteHosts = useQuery({ queryKey: queryKeys.remoteHosts, queryFn: api.remote.hosts });
   const routed = CLIENTS.filter(client => links[client] === "routed").length;
   const direct = CLIENTS.filter(client => links[client] === "direct").length;
   // One group at a time. A shortcut that lands in another group switches to it;
@@ -96,6 +98,8 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
         state: t(gateway.data.running ? "gateway.running" : "gateway.stopped"), keys: gateway.data.keys.length }) },
     { id: "routing", icon: <Layers3 />, title: t("newapi.groups.routing"), description: t("newapi.groups.routingDesc"),
       summary: aggregates.data && t("newapi.groups.routingSummary", { count: aggregates.data.models.length }) },
+    { id: "remote", icon: <Server />, title: t("remote.groupTitle"), description: t("remote.groupDesc"),
+      summary: remoteHosts.data && (remoteHosts.data.length ? t("remote.groupSummary", { count: remoteHosts.data.length }) : t("remote.groupNone")) },
   ];
   const panel = (id: InjectTabId) => ({
     role: "tabpanel", id: `group-panel-${id}`, "aria-labelledby": `group-tab-${id}`,
@@ -174,6 +178,10 @@ export function NewApiPage({ onOpenRelays }: { onOpenRelays?: () => void }) {
 
       <section {...panel("gateway")}>
         <GatewayPanel providersRevision={state.dataUpdatedAt} />
+      </section>
+
+      <section {...panel("remote")}>
+        <RemoteHostsPanel providers={providers} />
       </section>
 
       <section {...panel("routing")}>

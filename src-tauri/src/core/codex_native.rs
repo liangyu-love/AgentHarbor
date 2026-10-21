@@ -381,6 +381,44 @@ fn load_configuration_plan(
     configuration_plan(store, provider, &catalog, &official.models)
 }
 
+/// What a Codex on a remote host is given for `provider`: the Responses
+/// root and key it calls directly, and the catalog and shared limits of the
+/// provider's Responses models, as the local native configuration has them.
+pub(crate) struct RemotePlan {
+    pub endpoint: String,
+    pub key: String,
+    pub catalog: serde_json::Value,
+    pub models: Vec<String>,
+    pub context: Option<u64>,
+    pub threshold: Option<u64>,
+}
+
+pub(crate) fn remote_plan(
+    store: &Store,
+    provider: &Provider,
+    models_dev: &models_dev::Catalog,
+    official_models: &[serde_json::Value],
+) -> Result<RemotePlan, String> {
+    if provider.router_only() {
+        return Err("accountSources.errors.routerOnly".into());
+    }
+    if !provider.has_route_credentials() {
+        return Err("newapi.errors.noActiveProvider".into());
+    }
+    let plan = configuration_plan(store, provider, models_dev, official_models);
+    if plan.models.is_empty() {
+        return Err("newapi.errors.nativeResponsesRequired".into());
+    }
+    Ok(RemotePlan {
+        endpoint: endpoint(provider)?,
+        key: api_key(provider)?,
+        catalog: plan.catalog,
+        models: plan.models,
+        context: plan.context,
+        threshold: plan.compression.threshold,
+    })
+}
+
 #[cfg(test)]
 fn catalog(paths: &CodexPaths, store: &Store, provider: &Provider) -> serde_json::Value {
     load_configuration_plan(paths, store, provider).catalog

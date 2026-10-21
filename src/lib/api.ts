@@ -34,6 +34,7 @@ import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview, ClientLaunch, HarnessReasoning } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
+import type { RemoteClients, RemoteCodexPreview, RemoteCodexRequest, RemoteConnectionTest, RemoteHost, RemoteHostInput } from "@/types/remote";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel, RouterPortBlock } from "@/types/newapi";
@@ -385,6 +386,29 @@ const targetsApi = {
     invoke<ClientConfigApplied>("reapply_client_config", { targetId, rebaseline }),
 };
 
+/** Remote hosts over SSH and the Codex and Claude Code configured on them, direct only. */
+const remoteApi = {
+  hosts: () => invoke<RemoteHost[]>("list_remote_hosts"),
+  sshAliases: () => invoke<string[]>("ssh_config_aliases"),
+  save: (input: RemoteHostInput) => invoke<RemoteHost>("save_remote_host", { input }),
+  remove: (id: string) => invoke<void>("delete_remote_host", { id }),
+  /** `trust` is the host key fingerprint the user confirmed. */
+  test: (id: string, trust?: string | null) => invoke<RemoteConnectionTest>("test_remote_host", { id, trust: trust ?? null }),
+  clients: (id: string) => invoke<RemoteClients>("remote_client_status", { id }),
+  previewCodex: (id: string, request: RemoteCodexRequest, replaceConflicts = false) =>
+    invoke<RemoteCodexPreview>("preview_remote_codex", { id, request, replaceConflicts }),
+  applyCodex: (id: string, request: RemoteCodexRequest, revision: string, replaceConflicts = false) =>
+    invoke<{ path: string }>("apply_remote_codex", { id, request, revision, replaceConflicts }),
+  restoreCodex: (id: string, replaceConflicts = false) => invoke<{ path: string }>("restore_remote_codex", { id, replaceConflicts }),
+  releaseCodex: (id: string) => invoke<void>("release_remote_codex", { id }),
+  previewClaude: (id: string, request: ClientConfigRequest, replaceConflicts = false) =>
+    invoke<ClientConfigPreview>("preview_remote_claude", { id, request, replaceConflicts }),
+  applyClaude: (id: string, request: ClientConfigRequest, revision: string, replaceConflicts = false) =>
+    invoke<ClientConfigApplied>("apply_remote_claude", { id, request, revision, replaceConflicts }),
+  restoreClaude: (id: string, replaceConflicts = false) => invoke<ClientConfigApplied>("restore_remote_claude", { id, replaceConflicts }),
+  releaseClaude: (id: string) => invoke<void>("release_remote_claude", { id }),
+};
+
 const conversationsApi = {
   details: (targetId: TargetId, key: string, threadId: string) =>
     invoke<CoreEnvelope<import("@/types/threads").ThreadDetails>>("get_conversation_details", { targetId, key, threadId }),
@@ -475,6 +499,7 @@ export const api = {
   claudeDesktop: claudeDesktopApi,
   image: imageApi,
   targets: targetsApi,
+  remote: remoteApi,
   conversations: conversationsApi,
   accounts: accountsApi,
   accountSources: accountSourcesApi,
