@@ -439,7 +439,6 @@ export function ProviderDialog({ open, provider, onOpenChange, onSaved }: Provid
             <ProviderModelEditor
               key={`${open}:${provider?.id ?? "new"}`}
               models={models}
-              providerName={draft.name}
               protocol={draft.protocol}
               defaultModel={draft.model}
               disabled={saving || fetchingModels}

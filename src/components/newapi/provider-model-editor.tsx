@@ -17,7 +17,6 @@ const PENDING_PAGE = 50;
 
 interface Props {
   models: NewApiModel[];
-  providerName: string;
   protocol: ModelProtocol;
   defaultModel: string;
   disabled: boolean;
@@ -94,7 +93,7 @@ function ModelFacts({ model, resolution, protocol, loading }: {
   );
 }
 
-export function ProviderModelEditor({ models, providerName, protocol, defaultModel, disabled, fetching, fetchError, resolutions, onFetch, onModelsChange, onDefaultModelChange }: Props) {
+export function ProviderModelEditor({ models, protocol, defaultModel, disabled, fetching, fetchError, resolutions, onFetch, onModelsChange, onDefaultModelChange }: Props) {
   const { t, i18n } = useTranslation();
   const [newModel, setNewModel] = useState("");
   const [reasoningDrafts, setReasoningDrafts] = useState<Record<string, string>>({});
@@ -263,7 +262,7 @@ export function ProviderModelEditor({ models, providerName, protocol, defaultMod
                 <div className="mt-3 grid gap-2.5 border-t border-dashed border-border/70 pt-3 md:grid-cols-[minmax(0,1fr)_minmax(0,170px)_minmax(0,1.25fr)]">
                   <label className="min-w-0 space-y-1">
                     <span className="block text-[10.5px] font-medium text-muted-foreground">{t("newapi.menuDisplayName")}</span>
-                    <Input className="h-8 rounded-lg text-xs" value={model.displayName === model.id && providerName.trim() ? `${providerName.trim()}/${model.id}` : model.displayName} disabled={disabled} aria-label={t("newapi.menuDisplayNameFor", { model: model.id })} onChange={event => patch(model.id, { displayName: event.target.value })} />
+                    <Input className="h-8 rounded-lg text-xs" value={model.displayName === model.id ? "" : model.displayName} placeholder={model.id} disabled={disabled} aria-label={t("newapi.menuDisplayNameFor", { model: model.id })} onChange={event => patch(model.id, { displayName: event.target.value.trim() ? event.target.value : model.id })} />
                   </label>
                   <div className="min-w-0 space-y-1">
                     <span className="block text-[10.5px] font-medium text-muted-foreground">{t("newapi.protocol")}</span>

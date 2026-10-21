@@ -711,6 +711,12 @@ fn load_store_unlocked(paths: &CodexPaths) -> Result<Store, String> {
                 }
             }
         }
+        // Earlier editors saved the menu's "Provider/" into the alias itself.
+        for provider in &mut store.providers {
+            if strip_alias_prefixes(&provider.name, &mut provider.models) {
+                changed = true;
+            }
+        }
         if store.version < STORE_VERSION {
             store.version = STORE_VERSION;
             changed = true;
@@ -972,6 +978,7 @@ fn validate_input(input: &mut ProviderInput) -> Result<(), String> {
     input.api_key = input.api_key.trim().to_owned();
     input.model = input.model.trim().to_owned();
     normalize_models(&mut input.models, &input.model)?;
+    strip_alias_prefixes(&input.name, &mut input.models);
     if input
         .compression
         .as_ref()
@@ -3572,12 +3579,40 @@ fn relay_catalog_entry(
     })
 }
 
+/// A model's own alias, without the "Provider/" a flat menu puts before it.
+/// Every client already names the provider beside the model, so a stored
+/// prefix only doubles it. A model ID is never cut, even one that starts so.
+fn bare_alias<'a>(provider_name: &str, alias: &'a str, model_id: &str) -> &'a str {
+    let alias = alias.trim();
+    let name = provider_name.trim();
+    if alias == model_id || name.is_empty() {
+        return alias;
+    }
+    alias
+        .get(..name.len())
+        .filter(|head| head.eq_ignore_ascii_case(name))
+        .and_then(|_| alias[name.len()..].trim_start().strip_prefix('/'))
+        .map(str::trim_start)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(alias)
+}
+
+/// Stores every alias bare; true when one changed.
+fn strip_alias_prefixes(provider_name: &str, models: &mut [newapi::Model]) -> bool {
+    let mut changed = false;
+    for model in models {
+        let bare = bare_alias(provider_name, &model.display_name, &model.id);
+        if bare.len() != model.display_name.len() {
+            model.display_name = bare.to_owned();
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn menu_display_name(provider_name: &str, alias: &str, model_id: &str) -> String {
-    let alias = if alias.trim().is_empty() {
-        model_id
-    } else {
-        alias.trim()
-    };
+    let alias = bare_alias(provider_name, alias, model_id);
+    let alias = if alias.is_empty() { model_id } else { alias };
     let prefix = format!("{}/", provider_name.trim());
     if alias.starts_with(&prefix) {
         alias.to_owned()
@@ -4036,6 +4071,7 @@ pub fn import_providers(paths: &CodexPaths, path: &Path) -> Result<ImportResult,
             skipped += 1;
             continue;
         }
+        strip_alias_prefixes(&name, &mut models);
         if name.is_empty()
             || store
                 .providers
@@ -5478,6 +5514,25 @@ base_url = "http://127.0.0.1:43127/codex/v1"
             menu_display_name("Woyao", "Woyao/model-a", "model-a"),
             "Woyao/model-a"
         );
+    }
+
+    #[test]
+    fn aliases_are_stored_without_the_menu_provider_prefix() {
+        assert_eq!(bare_alias("Command Code", "Command Code/deepseek-v4.1-flash", "deepseek-v4.1-flash"), "deepseek-v4.1-flash");
+        assert_eq!(bare_alias("Command Code", " command code / Fast DS ", "deepseek-v4.1-flash"), "Fast DS");
+        assert_eq!(bare_alias("Command Code", "Fast DS", "deepseek-v4.1-flash"), "Fast DS");
+        // A model ID is never cut, nor a prefix with nothing after it.
+        assert_eq!(bare_alias("MiniMaxAI", "MiniMaxAI/MiniMax-M3", "MiniMaxAI/MiniMax-M3"), "MiniMaxAI/MiniMax-M3");
+        assert_eq!(bare_alias("Command Code", "Command Code/", "x"), "Command Code/");
+        assert_eq!(bare_alias("Command Code", "Command Codex/a", "a"), "Command Codex/a");
+        let mut models = vec![
+            newapi::Model { id: "glm-5.3-flash".into(), display_name: "Command Code/glm-5.3-flash".into(), ..Default::default() },
+            newapi::Model { id: "claude-haiku-5-5".into(), display_name: "claude-haiku-5-5".into(), ..Default::default() },
+        ];
+        assert!(strip_alias_prefixes("Command Code", &mut models));
+        assert_eq!(models[0].display_name, "glm-5.3-flash");
+        assert!(!strip_alias_prefixes("Command Code", &mut models));
+        assert_eq!(menu_display_name("Command Code", &models[0].display_name, "glm-5.3-flash"), "Command Code/glm-5.3-flash");
     }
 
     #[test]
