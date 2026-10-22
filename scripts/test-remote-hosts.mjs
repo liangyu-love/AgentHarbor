@@ -63,8 +63,8 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
     "a new Codex is written as a profile beside its own default");
   await codex.getByText(await tr("remote.clients.configured", { provider: "Provider mixed", model: "responses-model" })).waitFor();
   await codex.locator("[data-remote-client-hint]").getByText(await tr("remote.clients.profileUse", { name: "relay" })).waitFor();
-  assert.equal(await panel.getByRole("button", { name: await tr("remote.delete") }).isDisabled(), true,
-    "a host with configured clients cannot be deleted");
+  // The host list refreshes after the clients: the button follows it.
+  await panel.getByRole("button", { name: await tr("remote.delete"), disabled: true }).waitFor();
   // The server's CLIs by version, and one small request through Codex.
   await codex.locator("[data-remote-client-version]").getByText("codex-cli 0.163.0").waitFor();
   await claude.locator("[data-remote-client-version]").getByText(await tr("remote.clients.notInstalled")).waitFor();
