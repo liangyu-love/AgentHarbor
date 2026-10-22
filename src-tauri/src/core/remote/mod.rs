@@ -204,7 +204,7 @@ impl RemoteStore {
     }
 
     fn view(&self, host: &StoredHost, config: &ssh_config::SshConfig) -> RemoteHostView {
-        let resolved = resolve(host, config);
+        let resolved = resolve(host, host_config(host, config));
         RemoteHostView {
             id: host.id.clone(),
             name: host.name.clone(),
@@ -239,11 +239,15 @@ impl RemoteStore {
             return Err("remote.errors.name".into());
         }
         let host = input.host.trim().to_owned();
-        if !valid_word(&host, 255) {
+        // A leading `-` would read as an option to `ssh -G`.
+        if !valid_word(&host, 255) || host.starts_with('-') {
             return Err("remote.errors.host".into());
         }
         let user = clean(input.user);
-        if user.as_deref().is_some_and(|user| !valid_word(user, 64)) {
+        if user
+            .as_deref()
+            .is_some_and(|user| !valid_word(user, 64) || user.starts_with('-'))
+        {
             return Err("remote.errors.user".into());
         }
         if input.port == Some(0) || input.tunnel_port == Some(0) {
@@ -424,7 +428,7 @@ impl RemoteStore {
 
     /// Where and how to sign in to `host`, through `~/.ssh/config`.
     fn target(&self, host: &StoredHost) -> Result<Target, ConnectError> {
-        let resolved = resolve(&host, &ssh_config::SshConfig::load());
+        let resolved = resolve(host, host_config(host, &ssh_config::SshConfig::load()));
         let user = resolved
             .user
             .ok_or_else(|| ConnectError::Failed("remote.errors.userMissing".into()))?;
@@ -485,8 +489,14 @@ struct Resolved {
     identity_files: Vec<PathBuf>,
 }
 
-fn resolve(host: &StoredHost, config: &ssh_config::SshConfig) -> Resolved {
-    let from_config = config.resolve(&host.host);
+/// What `~/.ssh/config` says of `host`: OpenSSH's own answer when its
+/// client is installed, else `config`'s.
+fn host_config(host: &StoredHost, config: &ssh_config::SshConfig) -> ssh_config::HostConfig {
+    ssh_config::openssh(&host.host, host.user.as_deref(), host.port)
+        .unwrap_or_else(|| config.resolve(&host.host))
+}
+
+fn resolve(host: &StoredHost, from_config: ssh_config::HostConfig) -> Resolved {
     let host_name = from_config.host_name.unwrap_or_else(|| host.host.clone());
     let user = host.user.clone().or(from_config.user);
     let home = dirs::home_dir().unwrap_or_default();
@@ -498,11 +508,18 @@ fn resolve(host: &StoredHost, config: &ssh_config::SshConfig) -> Resolved {
             &host_name,
             &remote_user,
         )],
-        None if !from_config.identity_files.is_empty() => from_config
-            .identity_files
-            .iter()
-            .map(|file| ssh_config::expand_identity(file, &home, &host_name, &remote_user))
-            .collect(),
+        None if !from_config.identity_files.is_empty() => {
+            let files: Vec<PathBuf> = from_config
+                .identity_files
+                .iter()
+                .map(|file| ssh_config::expand_identity(file, &home, &host_name, &remote_user))
+                .collect();
+            // OpenSSH lists its default names for a host that names none:
+            // the ones present come first.
+            let (present, absent): (Vec<PathBuf>, Vec<PathBuf>) =
+                files.into_iter().partition(|path| path.is_file());
+            present.into_iter().chain(absent).collect()
+        }
         None => DEFAULT_KEYS
             .iter()
             .map(|name| home.join(".ssh").join(name))
@@ -661,7 +678,7 @@ mod tests {
             passphrase: None,
             tunnel_port: None,
         };
-        let resolved = resolve(&stored, &config);
+        let resolved = resolve(&stored, config.resolve("dev"));
         assert_eq!(resolved.host_name, "10.1.2.3");
         assert_eq!(resolved.port, 2200);
         assert_eq!(resolved.user.as_deref(), Some("admin"));

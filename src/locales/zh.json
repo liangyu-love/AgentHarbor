@@ -3342,7 +3342,7 @@
       "authPrompt": "服务器还要求额外的验证（比如动态验证码），暂时不支持，请改用密钥登录",
     "addTitle": "添加远程主机",
     "editTitle": "编辑远程主机",
-    "hostDialogHint": "可以直接用 ~/.ssh/config 里的主机别名，地址、端口、用户和私钥会从那里读取。",
+    "hostDialogHint": "可以直接用 ~/.ssh/config 里的主机别名，地址、端口、用户和私钥会从那里读取（和 ssh 命令一样处理 Include、Match）。",
     "save": "保存",
     "configureTitle": "在 {{host}} 上配置 {{name}}",
     "directHint": "远程主机只支持直连：服务器直接访问所选中转，不经过这台电脑。",

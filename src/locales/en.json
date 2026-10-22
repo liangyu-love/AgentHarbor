@@ -3342,7 +3342,7 @@
       "authPrompt": "The server asks for more than the password (such as a one-time code), which is not supported yet. Sign in with a key instead",
     "addTitle": "Add remote host",
     "editTitle": "Edit remote host",
-    "hostDialogHint": "A host alias from ~/.ssh/config works as is: its address, port, user and key are read from there.",
+    "hostDialogHint": "A host alias from ~/.ssh/config works as is: its address, port, user and key are read from there, with Include and Match as the ssh command reads them.",
     "save": "Save",
     "configureTitle": "Configure {{name}} on {{host}}",
     "directHint": "Remote hosts are configured direct only: the server calls the chosen relay itself, not through this computer.",
