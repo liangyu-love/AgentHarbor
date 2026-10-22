@@ -59,8 +59,10 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
   await codexDialog.getByRole("button", { name: await tr("clients.apply") }).click();
   await codexDialog.waitFor({ state: "hidden" });
   assert.deepEqual((await calls("applyCodex")).at(-1),
-    ["applyCodex", "host-1", { providerId: "mixed", model: "responses-model", webSearch: false }, "rev-codex", true]);
+    ["applyCodex", "host-1", { providerId: "mixed", model: "responses-model", webSearch: false, profile: "relay" }, "rev-codex", true],
+    "a new Codex is written as a profile beside its own default");
   await codex.getByText(await tr("remote.clients.configured", { provider: "Provider mixed", model: "responses-model" })).waitFor();
+  await codex.locator("[data-remote-client-hint]").getByText(await tr("remote.clients.profileUse", { name: "relay" })).waitFor();
   assert.equal(await panel.getByRole("button", { name: await tr("remote.delete") }).isDisabled(), true,
     "a host with configured clients cannot be deleted");
   console.log("PASS Codex on a remote host is configured direct with one relay's Responses models");

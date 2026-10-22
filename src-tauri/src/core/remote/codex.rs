@@ -1,8 +1,12 @@
-//! Codex on a remote host, configured direct: `~/.codex/config.toml` points
-//! at the relay's Responses root, the key sits in `~/.codex/.env` (which
-//! Codex loads) and the relay's models are described in a catalog beside
-//! them. Only the fields named in [`MANAGED`] are touched; what they held
-//! before is journaled so a restore puts the file back as it was.
+//! Codex on a remote host, configured direct: a Codex config file points at
+//! the relay's Responses root, the key sits in `~/.codex/.env` (which Codex
+//! loads) and the relay's models are described in a catalog beside them.
+//! As the default the relay is written into `config.toml`; as a profile it
+//! gets a file of its own, `<name>.config.toml`, which Codex layers over
+//! `config.toml` for `codex -p <name>`, so plain `codex` and its official
+//! sign-in stay as they were. Only the fields named in [`MANAGED`] are
+//! touched; what they held before is journaled so a restore puts the file
+//! back as it was.
 
 use crate::core::{
     client_config::ClientFiles,
@@ -23,8 +27,9 @@ const ENV_NAME: &str = "AGENTHARBOR_REMOTE_CODEX_KEY";
 const BEGIN: &str = "# --- AgentHarbor remote Codex key (managed, do not edit) ---";
 const END: &str = "# --- End AgentHarbor remote Codex key ---";
 const CATALOG_FILE: &str = "agentharbor-models.json";
+const CONFIG_FILE: &str = "config.toml";
 
-/// The configuration fields this app owns while Codex is configured.
+/// The configuration fields this app owns in the file it writes.
 const MANAGED: [&[&str]; 7] = [
     &["model"],
     &["model_provider"],
@@ -34,6 +39,15 @@ const MANAGED: [&[&str]; 7] = [
     &["model_providers", PROVIDER_KEY],
     &["web_search"],
 ];
+
+/// A Codex profile name: what `codex -p` takes and a file name can carry.
+fn valid_profile(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,14 +59,36 @@ pub struct CodexRemoteRequest {
     /// (`web_search = "disabled"`) unless the user knows the relay takes it.
     #[serde(default)]
     pub web_search: bool,
+    /// A profile name writes the relay into `<name>.config.toml` (run with
+    /// `codex -p <name>`) and leaves `config.toml` as it was; none makes the
+    /// relay the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+impl CodexRemoteRequest {
+    /// The file under `~/.codex` the relay is written to.
+    fn file(&self) -> String {
+        match &self.profile {
+            Some(name) => format!("{name}.config.toml"),
+            None => CONFIG_FILE.into(),
+        }
+    }
+}
+
+fn config_file() -> String {
+    CONFIG_FILE.into()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Journal {
     request: CodexRemoteRequest,
-    /// config.toml before the first apply; `None` when it did not exist.
+    /// The file under `~/.codex` that was written.
+    #[serde(default = "config_file")]
+    file: String,
+    /// The file before the first apply; `None` when it did not exist.
     original: Option<String>,
-    /// config.toml as last written.
+    /// The file as last written.
     installed: String,
     /// Each managed field before the first apply, by dotted path.
     before: BTreeMap<String, Option<Value>>,
@@ -103,7 +139,15 @@ pub struct CodexRemote<'a> {
     official: Vec<Value>,
 }
 
+/// A file put back the way a journal says, as read and as it will be.
+struct Undo {
+    path: PathBuf,
+    current: Option<String>,
+    next: Option<String>,
+}
+
 struct Plan {
+    path: PathBuf,
     current: Option<String>,
     next: String,
     env_current: Option<String>,
@@ -111,6 +155,8 @@ struct Plan {
     catalog: Vec<u8>,
     journal: Journal,
     conflicts: Vec<String>,
+    /// The file a previous apply wrote in the other mode, put back first.
+    switched: Option<Undo>,
     revision: String,
 }
 
@@ -322,15 +368,11 @@ impl<'a> CodexRemote<'a> {
     }
 
     fn path(&self, name: &str) -> PathBuf {
-        PathBuf::from(format!("{}/.codex/{name}", self.home))
+        PathBuf::from(self.display(name))
     }
 
-    fn config_path(&self) -> PathBuf {
-        self.path("config.toml")
-    }
-
-    fn display(&self) -> String {
-        format!("{}/.codex/config.toml", self.home)
+    fn display(&self, name: &str) -> String {
+        format!("{}/.codex/{name}", self.home)
     }
 
     fn load_journal(&self) -> Result<Option<Journal>, String> {
@@ -355,12 +397,11 @@ impl<'a> CodexRemote<'a> {
     /// than back to what they were. Picking another of the catalog's models
     /// is using Codex, not a conflict.
     fn conflicts(document: &DocumentMut, journal: &Journal) -> Vec<String> {
-        let now = fields(document);
         MANAGED
             .iter()
-            .map(|path| dotted(path))
-            .filter(|key| {
-                let current = now.get(key).cloned().flatten();
+            .filter(|path| {
+                let key = dotted(path);
+                let current = field(document, path);
                 if key == "model"
                     && current
                         .as_ref()
@@ -369,10 +410,57 @@ impl<'a> CodexRemote<'a> {
                 {
                     return false;
                 }
-                current != journal.after.get(key).cloned().flatten()
-                    && current != journal.before.get(key).cloned().flatten()
+                current != journal.after.get(&key).cloned().flatten()
+                    && current != journal.before.get(&key).cloned().flatten()
             })
+            .map(|path| dotted(path))
             .collect()
+    }
+
+    /// What `journal`'s file goes back to: its exact original when nothing
+    /// else changed it, else its managed fields put back. A profile file
+    /// left with nothing else in it goes.
+    fn undo(&self, journal: &Journal, replace_conflicts: bool) -> Result<Undo, String> {
+        let path = self.path(&journal.file);
+        let current = self.files.read(&path)?;
+        let next = if current.as_deref() == Some(journal.installed.as_str()) {
+            journal.original.clone()
+        } else {
+            let mut document = parse(current.as_deref())?;
+            if !Self::conflicts(&document, journal).is_empty() && !replace_conflicts {
+                return Err("clients.errors.conflict".into());
+            }
+            for path in MANAGED {
+                set(
+                    &mut document,
+                    path,
+                    journal
+                        .before
+                        .get(&dotted(path))
+                        .cloned()
+                        .flatten()
+                        .as_ref(),
+                )?;
+            }
+            let text = document.to_string();
+            (journal.file == CONFIG_FILE || journal.original.is_some() || !text.trim().is_empty())
+                .then_some(text)
+        };
+        Ok(Undo {
+            path,
+            current,
+            next,
+        })
+    }
+
+    fn write_undo(&self, undo: &Undo) -> Result<(), String> {
+        if self.files.read(&undo.path)? != undo.current {
+            return Err("clients.errors.changed".into());
+        }
+        match &undo.next {
+            Some(text) => self.files.write(&undo.path, text.as_bytes()),
+            None => self.files.remove(&undo.path),
+        }
     }
 
     fn plan(
@@ -391,8 +479,24 @@ impl<'a> CodexRemote<'a> {
         if !remote.models.contains(&request.model) {
             return Err("clients.errors.model".into());
         }
-        let previous = self.load_journal()?;
-        let current = self.files.read(&self.config_path())?;
+        if request
+            .profile
+            .as_deref()
+            .is_some_and(|name| !valid_profile(name))
+        {
+            return Err("remote.errors.codexProfile".into());
+        }
+        let file = request.file();
+        // Moving to the other file puts the previous one back first; the
+        // new file then starts from how it is now.
+        let (switched, previous) = match self.load_journal()? {
+            Some(journal) if journal.file != file => {
+                (Some(self.undo(&journal, replace_conflicts)?), None)
+            }
+            previous => (None, previous),
+        };
+        let path = self.path(&file);
+        let current = self.files.read(&path)?;
         let mut document = parse(current.as_deref())?;
         if document
             .get("model_providers")
@@ -422,7 +526,7 @@ impl<'a> CodexRemote<'a> {
             }
             None => (current.clone(), fields(&document)),
         };
-        let catalog_path = format!("{}/.codex/{CATALOG_FILE}", self.home);
+        let catalog_path = self.display(CATALOG_FILE);
         let provider_entry = serde_json::json!({
             "name": provider.name,
             "base_url": remote.endpoint,
@@ -457,6 +561,7 @@ impl<'a> CodexRemote<'a> {
             serde_json::to_vec_pretty(&remote.catalog).map_err(|_| "remote.errors.storage")?;
         let journal = Journal {
             request: request.clone(),
+            file,
             original,
             installed: next.clone(),
             before,
@@ -472,11 +577,13 @@ impl<'a> CodexRemote<'a> {
                 &env_current,
                 &env_next,
                 &catalog_bytes,
+                switched.as_ref().map(|undo| (&undo.current, &undo.next)),
                 replace_conflicts,
             ))
             .map_err(|_| "remote.errors.storage")?,
         );
         Ok(Plan {
+            path,
             current,
             next,
             env_current,
@@ -484,13 +591,14 @@ impl<'a> CodexRemote<'a> {
             catalog: catalog_bytes,
             journal,
             conflicts,
+            switched,
             revision: format!("{:x}", hasher.finalize()),
         })
     }
 
     pub fn status(&self, store: Option<&Store>) -> CodexRemoteStatus {
         let mut status = CodexRemoteStatus {
-            path: self.display(),
+            path: self.display(CONFIG_FILE),
             configured: false,
             request: None,
             conflict: false,
@@ -499,9 +607,13 @@ impl<'a> CodexRemote<'a> {
             error: None,
         };
         let result = (|| -> Result<(), String> {
-            let current = self.files.read(&self.config_path())?;
-            let document = parse(current.as_deref())?;
-            let Some(journal) = self.load_journal()? else {
+            let journal = self.load_journal()?;
+            let file = journal
+                .as_ref()
+                .map_or(CONFIG_FILE, |journal| journal.file.as_str());
+            status.path = self.display(file);
+            let document = parse(self.files.read(&self.path(file))?.as_deref())?;
+            let Some(journal) = journal else {
                 return Ok(());
             };
             status.configured = true;
@@ -544,15 +656,27 @@ impl<'a> CodexRemote<'a> {
         for path in MANAGED {
             set(&mut shown, path, field(&document, path).as_ref())?;
         }
+        let path = self.display(&plan.journal.file);
+        let mut content = format!(
+            "# {path}\n{}\n# {}\n{ENV_NAME}=\"[managed locally]\"\n",
+            shown.to_string().trim_end(),
+            self.display(".env"),
+        );
+        if let Some(undo) = &plan.switched {
+            content.push_str(&format!(
+                "# {}: {}\n",
+                undo.path.to_string_lossy(),
+                if undo.next.is_some() {
+                    "put back as it was"
+                } else {
+                    "removed"
+                }
+            ));
+        }
         Ok(CodexRemotePreview {
-            path: self.display(),
+            path,
             revision: plan.revision,
-            content: format!(
-                "# {}\n{}\n# {}/.codex/.env\n{ENV_NAME}=\"[managed locally]\"\n",
-                self.display(),
-                shown.to_string().trim_end(),
-                self.home
-            ),
+            content,
             conflict_fields: plan.conflicts,
         })
     }
@@ -572,6 +696,11 @@ impl<'a> CodexRemote<'a> {
             return Err("clients.errors.conflict".into());
         }
         let previous = self.load_journal()?;
+        // The previous file goes back first: if that fails, nothing of the
+        // new configuration is written and the old one is still journaled.
+        if let Some(undo) = &plan.switched {
+            self.write_undo(undo)?;
+        }
         self.save_journal(Some(&plan.journal))?;
         let written = (|| -> Result<(), String> {
             if self.files.read(&self.path(".env"))? != plan.env_current {
@@ -580,51 +709,28 @@ impl<'a> CodexRemote<'a> {
             self.files
                 .write(&self.path(".env"), plan.env_next.as_bytes())?;
             self.files.write(&self.path(CATALOG_FILE), &plan.catalog)?;
-            if self.files.read(&self.config_path())? != plan.current {
+            if self.files.read(&plan.path)? != plan.current {
                 return Err("clients.errors.changed".into());
             }
-            self.files.write(&self.config_path(), plan.next.as_bytes())
+            self.files.write(&plan.path, plan.next.as_bytes())
         })();
         if let Err(error) = written {
-            self.save_journal(previous.as_ref())?;
+            // A switch already put the old file back, so its journal no
+            // longer applies: take the key and catalog away too.
+            if plan.switched.is_some() {
+                let _ = self.clear_key_and_catalog();
+                self.save_journal(None)?;
+            } else {
+                self.save_journal(previous.as_ref())?;
+            }
             return Err(error);
         }
         Ok(CodexRemoteApplied {
-            path: self.display(),
+            path: self.display(&plan.journal.file),
         })
     }
 
-    /// Puts the managed fields back, removes the key and the catalog, and
-    /// forgets the configuration. Fields changed on the host since refuse
-    /// the restore unless `replace_conflicts`.
-    pub fn restore(&self, replace_conflicts: bool) -> Result<CodexRemoteApplied, String> {
-        let journal = self.load_journal()?.ok_or("clients.errors.notConfigured")?;
-        let current = self.files.read(&self.config_path())?;
-        let mut document = parse(current.as_deref())?;
-        let next = if current.as_deref() == Some(journal.installed.as_str()) {
-            journal.original.clone()
-        } else {
-            if !Self::conflicts(&document, &journal).is_empty() && !replace_conflicts {
-                return Err("clients.errors.conflict".into());
-            }
-            for path in MANAGED {
-                set(
-                    &mut document,
-                    path,
-                    journal
-                        .before
-                        .get(&dotted(path))
-                        .cloned()
-                        .flatten()
-                        .as_ref(),
-                )?;
-            }
-            Some(document.to_string())
-        };
-        match next {
-            Some(text) => self.files.write(&self.config_path(), text.as_bytes())?,
-            None => self.files.remove(&self.config_path())?,
-        }
+    fn clear_key_and_catalog(&self) -> Result<(), String> {
         if let Some(env) = self.files.read(&self.path(".env"))? {
             let stripped = strip_env(&env)?;
             if stripped.trim().is_empty() {
@@ -633,10 +739,20 @@ impl<'a> CodexRemote<'a> {
                 self.files.write(&self.path(".env"), stripped.as_bytes())?;
             }
         }
-        self.files.remove(&self.path(CATALOG_FILE))?;
+        self.files.remove(&self.path(CATALOG_FILE))
+    }
+
+    /// Puts the managed fields back, removes the key and the catalog, and
+    /// forgets the configuration. Fields changed on the host since refuse
+    /// the restore unless `replace_conflicts`.
+    pub fn restore(&self, replace_conflicts: bool) -> Result<CodexRemoteApplied, String> {
+        let journal = self.load_journal()?.ok_or("clients.errors.notConfigured")?;
+        let undo = self.undo(&journal, replace_conflicts)?;
+        self.write_undo(&undo)?;
+        self.clear_key_and_catalog()?;
         self.save_journal(None)?;
         Ok(CodexRemoteApplied {
-            path: self.display(),
+            path: self.display(&journal.file),
         })
     }
 
@@ -701,6 +817,7 @@ mod tests {
                 enabled: true,
                 models: vec![
                     model("gpt-5.5", ModelProtocol::Responses),
+                    model("gpt-5.5-mini", ModelProtocol::Responses),
                     model("chat-only", ModelProtocol::ChatCompletions),
                 ],
                 ..Default::default()
@@ -728,6 +845,7 @@ mod tests {
             provider_id: "p1".into(),
             model: "gpt-5.5".into(),
             web_search: false,
+            profile: None,
         }
     }
 
@@ -856,6 +974,101 @@ mod tests {
             .is_some());
         codex.restore(false).unwrap();
         assert!(files.0.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(journal);
+    }
+
+    #[test]
+    fn a_profile_is_a_file_of_its_own_and_switching_modes_restores_exactly() {
+        let (files, journal, data) = setup();
+        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new());
+        let store = store();
+        let read = |name: &str| {
+            files
+                .read(Path::new(&format!("/home/u/.codex/{name}")))
+                .unwrap()
+        };
+        let profiled = CodexRemoteRequest {
+            profile: Some("relay".into()),
+            web_search: true,
+            ..request()
+        };
+        let preview = codex.preview(&store, &profiled, false).unwrap();
+        assert_eq!(preview.path, "/home/u/.codex/relay.config.toml");
+        codex
+            .apply(&store, &profiled, &preview.revision, false)
+            .unwrap();
+        assert_eq!(
+            read("config.toml").as_deref(),
+            Some(ORIGINAL),
+            "Codex's own config is untouched"
+        );
+        let profile = parse(read("relay.config.toml").as_deref()).unwrap();
+        assert_eq!(
+            field(&profile, &["model_provider"]),
+            Some(PROVIDER_KEY.into())
+        );
+        assert_eq!(field(&profile, &["model"]), Some("gpt-5.5".into()));
+        assert_eq!(field(&profile, &["web_search"]), None, "search left on");
+        let status = codex.status(Some(&store));
+        assert_eq!(status.path, "/home/u/.codex/relay.config.toml");
+        assert!(status.configured && !status.conflict);
+        // Codex's /model keeps the profile's choice in its file: not a conflict.
+        let text = read("relay.config.toml").unwrap();
+        files
+            .write(
+                Path::new("/home/u/.codex/relay.config.toml"),
+                text.replace("model = \"gpt-5.5\"", "model = \"gpt-5.5-mini\"")
+                    .as_bytes(),
+            )
+            .unwrap();
+        assert!(!codex.status(Some(&store)).conflict);
+
+        // Switching to the default puts the profile file away first.
+        let preview = codex.preview(&store, &request(), false).unwrap();
+        assert!(preview.content.contains("relay.config.toml: removed"));
+        codex
+            .apply(&store, &request(), &preview.revision, false)
+            .unwrap();
+        assert!(read("relay.config.toml").is_none());
+        let config = parse(read("config.toml").as_deref()).unwrap();
+        assert_eq!(
+            field(&config, &["model_provider"]),
+            Some(PROVIDER_KEY.into())
+        );
+        assert!(!codex.status(Some(&store)).conflict);
+
+        // And back to a profile puts config.toml back byte for byte.
+        let preview = codex.preview(&store, &profiled, false).unwrap();
+        codex
+            .apply(&store, &profiled, &preview.revision, false)
+            .unwrap();
+        assert_eq!(read("config.toml").as_deref(), Some(ORIGINAL));
+        codex.restore(false).unwrap();
+        assert!(read("relay.config.toml").is_none());
+        assert_eq!(read("config.toml").as_deref(), Some(ORIGINAL));
+        assert_eq!(
+            read(".env").as_deref(),
+            Some(
+                "OTHER=1
+"
+            )
+        );
+        assert!(read(CATALOG_FILE).is_none());
+        let _ = std::fs::remove_dir_all(journal);
+    }
+
+    #[test]
+    fn a_profile_name_must_be_one_codex_can_take() {
+        let (files, journal, data) = setup();
+        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new());
+        let bad = CodexRemoteRequest {
+            profile: Some("my relay".into()),
+            ..request()
+        };
+        assert_eq!(
+            codex.preview(&store(), &bad, false).err().as_deref(),
+            Some("remote.errors.codexProfile")
+        );
         let _ = std::fs::remove_dir_all(journal);
     }
 

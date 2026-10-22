@@ -222,6 +222,7 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
           <ClientRow glyph="codex" name="Codex" path={data.codex.path} configured={data.codex.configured}
             provider={providers.find(entry => entry.id === data.codex.request?.providerId)?.name ?? data.codex.request?.providerId}
             model={data.codex.request?.model} conflictFields={data.codex.conflictFields} stale={data.codex.stale} error={data.codex.error}
+            hint={data.codex.configured ? data.codex.request?.profile ? t("remote.clients.profileUse", { name: data.codex.request.profile }) : t("remote.clients.defaultUse") : undefined}
             busy={busy} onConfigure={() => setDialog("codex")}
             onRestore={() => act(t("remote.clients.restoreTitle", { name: "Codex" }),
               t(data.codex.conflict ? "remote.clients.restoreConflict" : "remote.clients.restoreDescription", { name: "Codex" }), t("remote.clients.restore"),
@@ -287,13 +288,15 @@ function HostKeyCard({ tone, icon, title, description, fingerprint, algorithm, l
   );
 }
 
-function ClientRow({ glyph, name, path, configured, provider, model, conflictFields, stale, error, busy, onConfigure, onRestore, onRelease }: {
+function ClientRow({ glyph, name, path, configured, provider, model, hint, conflictFields, stale, error, busy, onConfigure, onRestore, onRelease }: {
   glyph: "codex" | "claudeCode";
   name: string;
   path: string;
   configured: boolean;
   provider?: string;
   model?: string;
+  /** How to run the client as configured. */
+  hint?: string;
   conflictFields: string[];
   stale: boolean;
   error: string | null;
@@ -318,6 +321,7 @@ function ClientRow({ glyph, name, path, configured, provider, model, conflictFie
           </span>
         </p>
         <p className="truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</p>
+        {hint && <p className="text-xs text-foreground/80" data-remote-client-hint>{hint}</p>}
         {!!conflictFields.length && <p role="status" className="text-xs text-amber-700 dark:text-amber-300">{t("remote.clients.conflict", { fields: conflictFields.join(", ") })}</p>}
         {stale && <p role="status" className="text-xs text-amber-700 dark:text-amber-300">{t("remote.clients.stale")}</p>}
         {error && <p role="alert" className="text-xs text-destructive">{t(error)}</p>}

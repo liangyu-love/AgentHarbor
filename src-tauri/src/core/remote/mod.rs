@@ -672,6 +672,7 @@ mod real_remote {
             provider_id: "responses".into(),
             model: "gpt-test".into(),
             web_search: false,
+            profile: None,
         };
         let preview = codex.preview(&relays, &request, false).unwrap();
         assert!(!preview.content.contains(KEY));

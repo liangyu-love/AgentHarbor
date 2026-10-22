@@ -3340,6 +3340,8 @@
       "appliedHint": "Restart {{name}} on the server to use it.",
       "conflict": "Changed on the server: {{fields}}",
       "stale": "The relay's address or key changed; the server still has the old values. Configure it again to update them.",
+      "profileUse": "Run codex -p {{name}} for the relay; plain codex keeps its own settings",
+      "defaultUse": "Plain codex uses this relay",
       "restoreTitle": "Restore {{name}}'s original configuration?",
       "restoreDescription": "The fields AgentHarbor wrote go back to their earlier values and the key it wrote is removed.",
       "restoreConflict": "Some fields were changed on the server. Restoring puts the earlier values back over them and removes the key AgentHarbor wrote.",
@@ -3354,6 +3356,12 @@
       "noProviders": "No relay can serve Codex directly: it must be enabled, have a key and offer Responses models.",
       "webSearch": "Web search",
       "webSearchHint": "Codex's built-in web_search tool. A direct connection has no local router to drop it, and a relay that does not support it refuses the whole request, so it is off by default; turn it on only if the relay supports it.",
+      "mode": "Write as",
+      "asProfile": "A profile",
+      "asDefault": "The default",
+      "profileName": "Profile name",
+      "profileHint": "Plain codex keeps its own settings (such as the official sign-in); codex -p {{name}} uses this relay.",
+      "defaultHint": "Plain codex uses this relay. Restore it here to go back to the official sign-in.",
       "previewTitle": "What will be written",
       "conflict": "Changed on the server; applying replaces them: {{fields}}"
     },
@@ -3388,6 +3396,7 @@
       "closed": "The connection is closed",
       "directOnly": "Remote hosts can only be configured direct",
       "codexConfig": "The remote Codex config.toml cannot be parsed",
+      "codexProfile": "A profile name uses letters, digits, - and _ only, up to 32 characters",
       "codexEnv": "AgentHarbor's key block in the remote ~/.codex/.env was edited, so it cannot be changed safely"
     }
   },

@@ -53,6 +53,8 @@ export interface RemoteCodexRequest {
   model: string;
   /** Codex's web_search tool; off writes `web_search = "disabled"`, since a relay may refuse the tool. */
   webSearch: boolean;
+  /** Written as `[profiles.<name>]` (run `codex -p <name>`), leaving Codex's own default; null makes the relay the default. */
+  profile?: string | null;
 }
 
 export interface RemoteCodexStatus {

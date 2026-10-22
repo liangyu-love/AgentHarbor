@@ -6,6 +6,7 @@ import { clientModels, exclusionOf } from "@/lib/client-config";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -32,6 +33,10 @@ export function RemoteCodexDialog({ host, status, providers, onClose, onApplied 
   const [model, setModel] = useState(() =>
     status.request && models.includes(status.request.model) ? status.request.model : models[0] ?? "");
   const [webSearch, setWebSearch] = useState(status.request?.webSearch ?? false);
+  // A profile by default, so `codex` keeps the official sign-in beside it.
+  const [asProfile, setAsProfile] = useState(!status.request || !!status.request.profile);
+  const [profile, setProfile] = useState(status.request?.profile ?? "relay");
+  const profileValid = /^[A-Za-z0-9_-]{1,32}$/.test(profile);
   const [preview, setPreview] = useState<RemoteCodexPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +56,7 @@ export function RemoteCodexDialog({ host, status, providers, onClose, onApplied 
     if (busy || !provider || !model) return;
     setBusy(true);
     setError(null);
-    const request = { providerId, model, webSearch };
+    const request = { providerId, model, webSearch, profile: asProfile ? profile : null };
     try {
       if (preview) {
         await api.remote.applyCodex(host.id, request, preview.revision, true);
@@ -102,6 +107,24 @@ export function RemoteCodexDialog({ host, status, providers, onClose, onApplied 
               </div>
               <Switch id="remote-codex-web-search" checked={webSearch} onCheckedChange={value => { setWebSearch(value); setPreview(null); }} />
             </div>
+            <div className="space-y-2 rounded-xl bg-muted/50 px-3 py-2.5 sm:col-span-2" data-remote-codex-mode>
+              <div className="flex w-fit gap-1 rounded-lg border bg-background/60 p-1" role="group" aria-label={t("remote.codexDialog.mode")}>
+                {([true, false] as const).map(profiled => (
+                  <Button key={String(profiled)} type="button" size="sm" className="h-7" variant={asProfile === profiled ? "secondary" : "ghost"}
+                    aria-pressed={asProfile === profiled} onClick={() => { setAsProfile(profiled); setPreview(null); }}>
+                    {t(profiled ? "remote.codexDialog.asProfile" : "remote.codexDialog.asDefault")}
+                  </Button>
+                ))}
+              </div>
+              {asProfile ? <div className="flex flex-wrap items-center gap-2">
+                <Label htmlFor="remote-codex-profile" className="text-xs">{t("remote.codexDialog.profileName")}</Label>
+                <Input id="remote-codex-profile" value={profile} maxLength={32} spellCheck={false} aria-invalid={!profileValid}
+                  className="h-8 w-32 font-mono text-xs" onChange={event => { setProfile(event.target.value.trim()); setPreview(null); }} />
+                <p className="w-full text-[11px] leading-relaxed text-muted-foreground">
+                  {t(profileValid ? "remote.codexDialog.profileHint" : "remote.errors.codexProfile", { name: profile })}
+                </p>
+              </div> : <p className="text-[11px] leading-relaxed text-muted-foreground">{t("remote.codexDialog.defaultHint")}</p>}
+            </div>
           </fieldset>}
         {preview && <div className="min-w-0 space-y-2" data-remote-codex-preview>
           <p className="text-sm font-semibold">{t("remote.codexDialog.previewTitle")}</p>
@@ -114,7 +137,7 @@ export function RemoteCodexDialog({ host, status, providers, onClose, onApplied 
         {error && <p role="alert" className="text-sm text-destructive">{t(error)}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
-          <Button disabled={busy || !provider || !model} onClick={() => void run()}>
+          <Button disabled={busy || !provider || !model || (asProfile && !profileValid)} onClick={() => void run()}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
             {t(preview ? replacing ? "clients.applyConflict" : "clients.apply" : "clients.preview")}
           </Button>

@@ -3340,6 +3340,8 @@
       "appliedHint": "在服务器上重新启动 {{name}} 后生效。",
       "conflict": "这些字段在服务器上被改过：{{fields}}",
       "stale": "中转的地址或密钥变了，服务器上还是旧值，重新配置一次即可更新。",
+      "profileUse": "运行 codex -p {{name}} 使用中转；直接运行 codex 仍是原来的设置",
+      "defaultUse": "直接运行 codex 就是这个中转",
       "restoreTitle": "恢复 {{name}} 的原配置？",
       "restoreDescription": "把 AgentHarbor 写入的字段改回原来的值，并删除写入的密钥。",
       "restoreConflict": "有字段在服务器上被改过，恢复会用原来的值覆盖它们，并删除 AgentHarbor 写入的密钥。",
@@ -3354,6 +3356,12 @@
       "noProviders": "没有能直连 Codex 的中转：需要已启用、填了密钥，并且有 Responses 协议的模型。",
       "webSearch": "联网搜索",
       "webSearchHint": "Codex 自带的 web_search 工具。直连时没有本地路由帮忙去掉它，中转不支持就会拒绝整个请求，所以默认关闭；确认中转支持再打开。",
+      "mode": "写入方式",
+      "asProfile": "写成 profile",
+      "asDefault": "设为默认",
+      "profileName": "profile 名称",
+      "profileHint": "直接运行 codex 仍用原来的设置（比如官方账号），运行 codex -p {{name}} 用这个中转。",
+      "defaultHint": "直接运行 codex 就用这个中转。想再用官方账号时，在这里点「恢复」。",
       "previewTitle": "将写入的内容",
       "conflict": "这些字段在服务器上被改过，应用会覆盖它们：{{fields}}"
     },
@@ -3388,6 +3396,7 @@
       "closed": "连接已关闭",
       "directOnly": "远程主机只支持直连中转",
       "codexConfig": "远端 Codex 的 config.toml 无法解析",
+      "codexProfile": "profile 名称只能用英文字母、数字、- 和 _，最多 32 个字符",
       "codexEnv": "远端 ~/.codex/.env 里 AgentHarbor 的密钥块被改过，无法安全修改"
     }
   },
