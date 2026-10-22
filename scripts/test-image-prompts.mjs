@@ -51,8 +51,9 @@ export async function testImagePrompts({ page, reset, captureDir }) {
   // The prompt box saves itself as a template; an empty title comes from the prompt.
   await mainPrompt.fill("海边日落剪影\n逆光，长焦压缩");
   await page.getByRole("button", { name: "存为模版" }).click();
-  assert.equal(await dialog.getByLabel("提示词").inputValue(), "海边日落剪影\n逆光，长焦压缩");
-  assert.equal((await dialog.getByRole("combobox", { name: "分组" }).textContent()).trim(), "人像");
+  // The dialog fills in from the prompt box a moment after it opens.
+  await eventually(async () => assert.equal(await dialog.getByLabel("提示词").inputValue(), "海边日落剪影\n逆光，长焦压缩"));
+  await eventually(async () => assert.equal((await dialog.getByRole("combobox", { name: "分组" }).textContent()).trim(), "人像"));
   await dialog.getByRole("button", { name: "保存模版" }).click();
   await dialog.waitFor({ state: "detached" });
   await card("海边日落剪影").waitFor();
