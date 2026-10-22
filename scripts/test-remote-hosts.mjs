@@ -65,6 +65,12 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
   await codex.locator("[data-remote-client-hint]").getByText(await tr("remote.clients.profileUse", { name: "relay" })).waitFor();
   assert.equal(await panel.getByRole("button", { name: await tr("remote.delete") }).isDisabled(), true,
     "a host with configured clients cannot be deleted");
+  // The server's CLIs by version, and one small request through Codex.
+  await codex.locator("[data-remote-client-version]").getByText("codex-cli 0.163.0").waitFor();
+  await claude.locator("[data-remote-client-version]").getByText(await tr("remote.clients.notInstalled")).waitFor();
+  await codex.getByRole("button", { name: await tr("remote.clients.probe") }).click();
+  await codex.locator('[data-remote-probe="ok"]').getByText(await tr("remote.clients.probeOk", { seconds: "3.8" })).waitFor();
+  assert.deepEqual((await calls("probe")).at(-1), ["probe", "host-1", "codex"]);
   console.log("PASS Codex on a remote host is configured direct with one relay's Responses models");
 
   // Through the router: the router's menu, and the host's tunnel shown.

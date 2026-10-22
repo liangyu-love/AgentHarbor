@@ -3271,6 +3271,14 @@
     "aggregatePrefixHint": "Aggregates are named prefix/model in the gateway, apart from a relay's short-name/model. One aggregate can set its own prefix under Model aggregation; requests that still send the bare model name keep working."
   },
   "remote": {
+    "state": {
+      "connected": "Tunnel connected",
+      "direct": "Configured direct",
+      "connecting": "Tunnel connecting",
+      "retrying": "Tunnel lost, reconnecting",
+      "stopped": "Tunnel not running",
+      "idle": "Nothing configured yet"
+    },
     "tunnel": {
       "connected": "Tunnel connected",
       "connecting": "Tunnel connecting…",
@@ -3344,6 +3352,11 @@
       "fingerprint": "Fingerprint"
     },
     "clients": {
+      "notInstalled": "not found on the server",
+      "probe": "Test",
+      "probeHint": "Send one tiny request on the server with the current configuration (billed as usual)",
+      "probeOk": "Answered pong · {{seconds}} s",
+      "probeFailed": "No pong after {{seconds}} s; its output is below",
       "routed": "Through the router · {{model}}",
       "notConfigured": "Not configured",
       "configured": "Direct to {{provider}} / {{model}}",

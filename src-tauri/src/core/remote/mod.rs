@@ -7,6 +7,7 @@
 
 pub mod codex;
 mod connection;
+pub mod probe;
 pub mod ssh_config;
 pub mod tunnel;
 
@@ -543,6 +544,12 @@ impl RemoteSession {
         self.connection
             .as_ref()
             .ok_or_else(|| "remote.errors.closed".into())
+    }
+
+    /// Runs `command` on the host through the user's shell, given `limit`
+    /// to finish: its exit status and output.
+    pub fn run(&self, command: &str, limit: std::time::Duration) -> Result<(u32, String), String> {
+        block_on(self.connection()?.run(command, limit))
     }
 }
 

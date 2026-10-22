@@ -34,7 +34,7 @@ import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview, ClientLaunch, HarnessReasoning } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
-import type { RemoteClients, RemoteCodexPreview, RemoteCodexRequest, RemoteConnectionTest, RemoteHost, RemoteHostInput, RouterModel } from "@/types/remote";
+import type { RemoteClients, RemoteCodexPreview, RemoteCodexRequest, RemoteConnectionTest, RemoteHost, RemoteHostInput, RemoteProbe, RouterModel } from "@/types/remote";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel, RouterPortBlock } from "@/types/newapi";
@@ -397,6 +397,8 @@ const remoteApi = {
   clients: (id: string) => invoke<RemoteClients>("remote_client_status", { id }),
   /** The router's Codex menu for a routed remote Codex. */
   routerModels: () => invoke<RouterModel[]>("remote_codex_router_models"),
+  /** One small request through `client` on the host, as it is configured. */
+  probe: (id: string, client: "codex" | "claudeCode") => invoke<RemoteProbe>("probe_remote_client", { id, client }),
   previewCodex: (id: string, request: RemoteCodexRequest, replaceConflicts = false) =>
     invoke<RemoteCodexPreview>("preview_remote_codex", { id, request, replaceConflicts }),
   applyCodex: (id: string, request: RemoteCodexRequest, revision: string, replaceConflicts = false) =>

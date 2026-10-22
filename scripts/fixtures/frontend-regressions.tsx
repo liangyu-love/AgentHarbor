@@ -296,6 +296,7 @@ const installRemote = () => {
   };
   const clientsOf = (id: string): RemoteClients => review.remoteClients[id] ??= {
     home: "/home/ubuntu",
+    installed: { codex: "codex-cli 0.163.0", claudeCode: null },
     codex: { path: "/home/ubuntu/.codex/config.toml", configured: false, request: null, conflict: false, conflictFields: [], stale: false, error: null },
     claudeCode: { targetId: "claudeCode", name: "Claude Code", path: "/home/ubuntu/.claude/settings.json", protocols: ["anthropicMessages"],
       configured: false, conflict: false, error: null, providerId: null, model: null, request: null, conflictFields: [] },
@@ -345,6 +346,10 @@ const installRemote = () => {
       : { status: "unknownHost", fingerprint: REMOTE_FINGERPRINT, algorithm: "ssh-ed25519" };
   };
   api.remote.clients = async id => { record("clients", id); trusted(id); return structuredClone(clientsOf(id)); };
+  api.remote.probe = async (id, client) => {
+    record("probe", id, client);
+    return { ok: true, output: "pong", elapsedMs: 3_800 };
+  };
   api.remote.routerModels = async () => [
     { id: "pool", label: "Harbor Pool" },
     { id: "mixed::responses-model", label: "Provider mixed / responses-model" },

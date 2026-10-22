@@ -1,0 +1,114 @@
+//! What runs on a host: which Codex and Claude Code are installed, and one
+//! small request through either as it is configured, so the user sees the
+//! configuration work end to end.
+
+use super::RemoteSession;
+use crate::core::targets::TargetId;
+use serde::Serialize;
+use std::time::{Duration, Instant};
+
+/// A shell function printing where command `$1` is: on the non-interactive
+/// PATH, the login shell's, or `~/.local/bin` (where both CLIs install).
+const FIND: &str = r#"find() { p=$(command -v "$1" 2>/dev/null) || p=$(bash -lc "command -v $1" 2>/dev/null) || p=; if [ -z "$p" ] && [ -x "$HOME/.local/bin/$1" ]; then p="$HOME/.local/bin/$1"; fi; printf %s "$p"; }"#;
+const PROMPT: &str = "Reply with exactly the word: pong";
+const PROBE_LIMIT: Duration = Duration::from_secs(150);
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Installed {
+    pub codex: Option<String>,
+    pub claude_code: Option<String>,
+}
+
+/// The versions of the CLIs on the host; a missing one is `None`.
+pub fn installed(session: &RemoteSession) -> Installed {
+    let script = format!(
+        "{FIND}; for c in codex claude; do b=$(find $c); if [ -n \"$b\" ]; then printf '%s\\t' $c; \"$b\" --version 2>/dev/null | head -n 1; fi; done"
+    );
+    let Ok((_, output)) = session.run(&script, Duration::from_secs(20)) else {
+        return Installed::default();
+    };
+    let mut installed = Installed::default();
+    for line in output.lines() {
+        let Some((name, version)) = line.split_once('\t') else {
+            continue;
+        };
+        let version = Some(version.trim().to_owned()).filter(|version| !version.is_empty());
+        match name {
+            "codex" => installed.codex = version,
+            "claude" => installed.claude_code = version,
+            _ => {}
+        }
+    }
+    installed
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Probe {
+    /// The client answered `pong`.
+    pub ok: bool,
+    /// The end of what the client printed.
+    pub output: String,
+    pub elapsed_ms: u64,
+}
+
+/// Asks `client` on the host for a one-word reply as it is configured;
+/// `codex_profile` runs Codex with that profile.
+pub fn probe(
+    session: &RemoteSession,
+    client: TargetId,
+    codex_profile: Option<&str>,
+) -> Result<Probe, String> {
+    let run = match client {
+        TargetId::Codex => {
+            let profile = match codex_profile {
+                // Profile names are letters, digits, - and _ only.
+                Some(name)
+                    if name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+                {
+                    format!("-p {name} ")
+                }
+                Some(_) => return Err("remote.errors.codexProfile".into()),
+                None => String::new(),
+            };
+            format!("b=$(find codex); [ -n \"$b\" ] || {{ echo 'codex: not found'; exit 127; }}; \"$b\" {profile}exec --skip-git-repo-check '{PROMPT}'")
+        }
+        TargetId::ClaudeCode => {
+            format!("b=$(find claude); [ -n \"$b\" ] || {{ echo 'claude: not found'; exit 127; }}; \"$b\" -p '{PROMPT}'")
+        }
+        _ => return Err("clients.errors.unsupported".into()),
+    };
+    let script = format!("{FIND}; cd /tmp && {{ {run}; }} </dev/null 2>&1 | tail -n 24");
+    let started = Instant::now();
+    let (_, output) = session.run(&script, PROBE_LIMIT)?;
+    Ok(Probe {
+        ok: answered(&output),
+        output: output.trim().to_owned(),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+fn answered(output: &str) -> bool {
+    output.lines().any(|line| {
+        line.trim()
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case("pong")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::answered;
+
+    #[test]
+    fn a_reply_counts_only_on_its_own_line() {
+        assert!(answered("codex\npong\ntokens used\n57\npong\n"));
+        assert!(answered("Pong.\n"));
+        assert!(!answered(
+            "Reply with exactly the word: pong\nERROR: unauthorized\n"
+        ));
+    }
+}

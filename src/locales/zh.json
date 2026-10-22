@@ -3271,6 +3271,14 @@
     "aggregatePrefixHint": "模型聚合在网关里叫「前缀/模型名」，和中转的「短名/模型名」区分开。单个聚合可以在模型聚合里另设前缀；以前直接写模型名的请求仍然能用。"
   },
   "remote": {
+    "state": {
+      "connected": "隧道已连接",
+      "direct": "已直连配置",
+      "connecting": "隧道连接中",
+      "retrying": "隧道断开，正在重连",
+      "stopped": "隧道未运行",
+      "idle": "还没有配置"
+    },
     "tunnel": {
       "connected": "隧道已连接",
       "connecting": "隧道连接中…",
@@ -3344,6 +3352,11 @@
       "fingerprint": "指纹"
     },
     "clients": {
+      "notInstalled": "服务器上没找到",
+      "probe": "测试",
+      "probeHint": "在服务器上用当前配置发一条很小的请求（会产生少量费用）",
+      "probeOk": "已回复 pong · {{seconds}} 秒",
+      "probeFailed": "没有收到 pong · {{seconds}} 秒，下面是输出",
       "routed": "经本机路由 · {{model}}",
       "notConfigured": "未配置",
       "configured": "直连 {{provider}} / {{model}}",

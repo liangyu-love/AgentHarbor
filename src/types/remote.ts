@@ -96,8 +96,24 @@ export interface RemoteCodexPreview {
   conflictFields: string[];
 }
 
+/** The CLIs installed on a host, by version; null when missing. */
+export interface RemoteInstalled {
+  codex: string | null;
+  claudeCode: string | null;
+}
+
+/** One small request through a client on a host, as it is configured. */
+export interface RemoteProbe {
+  /** The client answered `pong`. */
+  ok: boolean;
+  /** The end of what the client printed. */
+  output: string;
+  elapsedMs: number;
+}
+
 export interface RemoteClients {
   home: string;
+  installed: RemoteInstalled;
   codex: RemoteCodexStatus;
   claudeCode: ClientStatus;
 }

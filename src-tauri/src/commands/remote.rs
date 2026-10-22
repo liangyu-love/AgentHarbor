@@ -14,6 +14,7 @@ use crate::core::{
             self, CodexRemote, CodexRemoteApplied, CodexRemotePreview, CodexRemoteRequest,
             CodexRemoteStatus, RouterModel,
         },
+        probe::{self, Installed, Probe},
         ConnectionTest, RemoteHostInput, RemoteHostView, RemoteSession, RemoteStore,
     },
     repository::Repository,
@@ -141,6 +142,8 @@ pub async fn test_remote_host(
 #[serde(rename_all = "camelCase")]
 pub struct RemoteClients {
     pub home: String,
+    /// The CLIs installed on the host, by version.
+    pub installed: Installed,
     pub codex: CodexRemoteStatus,
     pub claude_code: ClientStatus,
 }
@@ -161,9 +164,34 @@ pub async fn remote_client_status(
             .status(TargetId::ClaudeCode, relays.as_ref());
         Ok(RemoteClients {
             home: session.home().to_owned(),
+            installed: probe::installed(&session),
             codex,
             claude_code,
         })
+    })
+    .await
+}
+
+/// Sends one small request through `client` on the host as it is
+/// configured, and reports whether it answered.
+#[tauri::command]
+pub async fn probe_remote_client(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    client: TargetId,
+) -> Result<Probe, String> {
+    let paths = paths(&repo)?;
+    blocking(move || {
+        let store = RemoteStore::new(&paths.app_data_dir);
+        let session = connect(&store, &id)?;
+        let profile = match client {
+            TargetId::Codex => codex(&paths, &store, &id, session.as_ref(), session.home())?
+                .status(None)
+                .request
+                .and_then(|request| request.profile),
+            _ => None,
+        };
+        probe::probe(&session, client, profile.as_deref())
     })
     .await
 }

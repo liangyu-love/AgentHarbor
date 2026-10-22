@@ -499,6 +499,13 @@ impl Connection {
 
     /// Runs `command` through the user's shell and returns its exit status.
     async fn exec(&self, command: &str) -> Result<u32, String> {
+        self.output(command).await.map(|(status, _)| status)
+    }
+
+    /// Runs `command` through the user's shell and returns its exit status
+    /// and its output (stdout and stderr together, at most 64 KiB kept).
+    async fn output(&self, command: &str) -> Result<(u32, String), String> {
+        const MAX_OUTPUT: usize = 64 * 1024;
         let mut channel = self
             .handle
             .channel_open_session()
@@ -509,12 +516,26 @@ impl Connection {
             .await
             .map_err(|_| "remote.errors.exec".to_owned())?;
         let mut status = None;
+        let mut output = Vec::new();
         while let Some(message) = channel.wait().await {
-            if let ChannelMsg::ExitStatus { exit_status } = message {
-                status = Some(exit_status);
+            match message {
+                ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                    let room = MAX_OUTPUT.saturating_sub(output.len());
+                    output.extend_from_slice(&data[..data.len().min(room)]);
+                }
+                _ => {}
             }
         }
-        status.ok_or_else(|| "remote.errors.exec".into())
+        let status = status.ok_or_else(|| "remote.errors.exec".to_owned())?;
+        Ok((status, String::from_utf8_lossy(&output).into_owned()))
+    }
+
+    /// [`Self::output`] given `limit` to finish.
+    pub async fn run(&self, command: &str, limit: Duration) -> Result<(u32, String), String> {
+        tokio::time::timeout(limit, self.output(command))
+            .await
+            .unwrap_or_else(|_| Err("remote.errors.timeout".into()))
     }
 
     pub async fn close(self) {

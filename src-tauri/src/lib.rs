@@ -229,6 +229,7 @@ pub fn run() {
             commands::remote::test_remote_host,
             commands::remote::remote_client_status,
             commands::remote::remote_codex_router_models,
+            commands::remote::probe_remote_client,
             commands::remote::preview_remote_codex,
             commands::remote::apply_remote_codex,
             commands::remote::restore_remote_codex,
