@@ -19,6 +19,7 @@ import { ConsoleHeader } from "./client-console";
 import { ClientGlyph } from "./configuration-shortcuts";
 import { RemoteCodexDialog } from "./remote-codex-dialog";
 import { RemoteHostDialog, remoteErrorKey } from "./remote-host-dialog";
+import { RemoteWebSearch } from "./remote-web-search";
 
 const SELECTED_KEY = "agentharbor.remote-host.v1";
 
@@ -279,6 +280,8 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
               () => api.remote.restoreClaude(host.id, data.claudeCode.conflict), t("remote.clients.restored"))}
             onRelease={() => act(t("remote.clients.releaseTitle", { name: claudeName }), t("remote.clients.releaseDescription"), t("remote.clients.release"),
               () => api.remote.releaseClaude(host.id), t("remote.clients.released"))} />
+          <p className="poster-kicker pt-2 text-[10px] text-muted-foreground">Tools</p>
+          <RemoteWebSearch key={`${data.webSearch.request?.providerId}:${data.webSearch.request?.model}`} hostId={host.id} status={data.webSearch} onChanged={refresh} />
         </div>
       )}
 

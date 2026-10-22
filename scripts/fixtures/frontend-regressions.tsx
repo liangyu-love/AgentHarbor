@@ -297,6 +297,8 @@ const installRemote = () => {
   const clientsOf = (id: string): RemoteClients => review.remoteClients[id] ??= {
     home: "/home/ubuntu",
     installed: { codex: "codex-cli 0.163.0", claudeCode: null },
+    webSearch: { deployed: false, path: "/home/ubuntu/.agentharbor/web-search/server.py", request: null, backend: null,
+      codex: false, claudeCode: false, stale: false, error: null },
     codex: { path: "/home/ubuntu/.codex/config.toml", configured: false, request: null, conflict: false, conflictFields: [], stale: false, error: null },
     claudeCode: { targetId: "claudeCode", name: "Claude Code", path: "/home/ubuntu/.claude/settings.json", protocols: ["anthropicMessages"],
       configured: false, conflict: false, error: null, providerId: null, model: null, request: null, conflictFields: [] },
@@ -346,6 +348,27 @@ const installRemote = () => {
       : { status: "unknownHost", fingerprint: REMOTE_FINGERPRINT, algorithm: "ssh-ed25519" };
   };
   api.remote.clients = async id => { record("clients", id); trusted(id); return structuredClone(clientsOf(id)); };
+  api.remote.searchProviders = async () => [
+    { id: "deepseek", name: "DeepSeek 官方", backend: "deepSeek", models: [] },
+    { id: "mimo", name: "MiMo API", backend: "mimo", models: ["mimo-v2.6-flash", "mimo-v2.6-pro"] },
+  ];
+  api.remote.deploySearch = async (id, request) => {
+    record("deploySearch", id, request);
+    const clients = clientsOf(id);
+    clients.webSearch = { ...clients.webSearch, deployed: true, request: { ...request },
+      backend: request.providerId === "mimo" ? "mimo" : "deepSeek", codex: true, claudeCode: true };
+    hostOf(id).inUse = true;
+  };
+  api.remote.removeSearch = async id => {
+    record("removeSearch", id);
+    const clients = clientsOf(id);
+    clients.webSearch = { ...clients.webSearch, deployed: false, request: null, backend: null, codex: false, claudeCode: false };
+    settle(id);
+  };
+  api.remote.testSearch = async (id, query) => {
+    record("testSearch", id, query);
+    return { ok: true, output: "1. The Linux Kernel Archives\n   https://kernel.org/" };
+  };
   api.remote.probe = async (id, client) => {
     record("probe", id, client);
     return { ok: true, output: "pong", elapsedMs: 3_800 };

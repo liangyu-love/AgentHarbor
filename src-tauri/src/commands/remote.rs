@@ -15,6 +15,9 @@ use crate::core::{
             CodexRemoteStatus, RouterModel,
         },
         probe::{self, Installed, Probe},
+        web_search::{
+            self, SearchProvider, SearchTest, WebSearch, WebSearchRequest, WebSearchStatus,
+        },
         ConnectionTest, RemoteHostInput, RemoteHostView, RemoteSession, RemoteStore,
     },
     repository::Repository,
@@ -146,6 +149,7 @@ pub struct RemoteClients {
     pub installed: Installed,
     pub codex: CodexRemoteStatus,
     pub claude_code: ClientStatus,
+    pub web_search: WebSearchStatus,
 }
 
 #[tauri::command]
@@ -162,11 +166,13 @@ pub async fn remote_client_status(
             codex(&paths, &store, &id, session.as_ref(), session.home())?.status(relays.as_ref());
         let claude_code = claude(&paths, &store, &id, session.clone())?
             .status(TargetId::ClaudeCode, relays.as_ref());
+        let web_search = WebSearch::new(&session, &store.journal_dir(&id)?).status(relays.as_ref());
         Ok(RemoteClients {
             home: session.home().to_owned(),
             installed: probe::installed(&session),
             codex,
             claude_code,
+            web_search,
         })
     })
     .await
@@ -192,6 +198,63 @@ pub async fn probe_remote_client(
             _ => None,
         };
         probe::probe(&session, client, profile.as_deref())
+    })
+    .await
+}
+
+/// The relay cards whose own search service can back a host's web search.
+#[tauri::command]
+pub async fn remote_search_providers(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<Vec<SearchProvider>, String> {
+    let paths = paths(&repo)?;
+    blocking(move || Ok(web_search::providers(&router::load_store(&paths)?))).await
+}
+
+/// Deploys (or updates) the web search MCP server on the host and
+/// registers it with its Codex and Claude Code.
+#[tauri::command]
+pub async fn deploy_remote_search(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    request: WebSearchRequest,
+) -> Result<(), String> {
+    let paths = paths(&repo)?;
+    blocking(move || {
+        let store = RemoteStore::new(&paths.app_data_dir);
+        let session = connect(&store, &id)?;
+        WebSearch::new(&session, &store.journal_dir(&id)?)
+            .deploy(&router::load_store(&paths)?, &request)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_remote_search(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+) -> Result<(), String> {
+    let paths = paths(&repo)?;
+    blocking(move || {
+        let store = RemoteStore::new(&paths.app_data_dir);
+        let session = connect(&store, &id)?;
+        WebSearch::new(&session, &store.journal_dir(&id)?).remove()
+    })
+    .await
+}
+
+/// Searches for `query` through the host's server, as an agent would.
+#[tauri::command]
+pub async fn test_remote_search(
+    repo: State<'_, Mutex<Repository>>,
+    id: String,
+    query: String,
+) -> Result<SearchTest, String> {
+    let paths = paths(&repo)?;
+    blocking(move || {
+        let store = RemoteStore::new(&paths.app_data_dir);
+        let session = connect(&store, &id)?;
+        WebSearch::new(&session, &store.journal_dir(&id)?).test(query.trim())
     })
     .await
 }

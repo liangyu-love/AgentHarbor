@@ -548,7 +548,7 @@ impl Connection {
 }
 
 /// A POSIX shell word for `value`.
-fn quote(value: &str) -> String {
+pub(super) fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 

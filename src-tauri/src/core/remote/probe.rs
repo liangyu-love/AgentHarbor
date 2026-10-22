@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 /// A shell function printing where command `$1` is: on the non-interactive
 /// PATH, the login shell's, or `~/.local/bin` (where both CLIs install).
-const FIND: &str = r#"find() { p=$(command -v "$1" 2>/dev/null) || p=$(bash -lc "command -v $1" 2>/dev/null) || p=; if [ -z "$p" ] && [ -x "$HOME/.local/bin/$1" ]; then p="$HOME/.local/bin/$1"; fi; printf %s "$p"; }"#;
+pub(super) const FIND: &str = r#"find() { p=$(command -v "$1" 2>/dev/null) || p=$(bash -lc "command -v $1" 2>/dev/null) || p=; if [ -z "$p" ] && [ -x "$HOME/.local/bin/$1" ]; then p="$HOME/.local/bin/$1"; fi; printf %s "$p"; }"#;
 const PROMPT: &str = "Reply with exactly the word: pong";
 const PROBE_LIMIT: Duration = Duration::from_secs(150);
 

@@ -10,6 +10,7 @@ mod connection;
 pub mod probe;
 pub mod ssh_config;
 pub mod tunnel;
+pub mod web_search;
 
 use super::{
     client_config::ClientFiles, router::DEFAULT_PORT, secret_file, storage, targets::TargetId,
@@ -187,7 +188,7 @@ impl RemoteStore {
 
     fn in_use(&self, id: &str) -> bool {
         self.journal_dir(id).is_ok_and(|dir| {
-            ["claude-code.dat", codex::JOURNAL_FILE]
+            ["claude-code.dat", codex::JOURNAL_FILE, web_search::JOURNAL_FILE]
                 .iter()
                 .any(|name| dir.join(name).exists())
         })

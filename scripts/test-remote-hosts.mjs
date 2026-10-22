@@ -118,6 +118,22 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
   await codex.getByText(await tr("remote.clients.notConfigured")).waitFor();
   assert.deepEqual((await calls("restoreCodex")).at(-1), ["restoreCodex", "host-1", false]);
 
+  // Web search as an MCP server on the host, backed by a relay's search.
+  const search = panel.locator("[data-remote-search]");
+  await search.getByText(await tr("remote.search.absent")).waitFor();
+  await search.getByRole("combobox", { name: await tr("remote.search.provider") }).click();
+  await page.getByRole("option", { name: "MiMo API · " + await tr("remote.search.backend.mimo") }).click();
+  await search.getByRole("combobox", { name: await tr("remote.search.model") }).waitFor();
+  await search.getByRole("button", { name: await tr("remote.search.deploy") }).click();
+  await panel.locator('[data-remote-search="deployed"]').waitFor();
+  assert.deepEqual((await calls("deploySearch")).at(-1), ["deploySearch", "host-1", { providerId: "mimo", model: "mimo-v2.6-flash" }]);
+  await search.getByRole("button", { name: await tr("remote.search.test") }).click();
+  await search.locator('[data-remote-search-test="ok"]').waitFor();
+  await search.getByRole("button", { name: await tr("remote.search.remove") }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: await tr("remote.search.remove") }).click();
+  await panel.locator('[data-remote-search="absent"]').waitFor();
+  console.log("PASS web search is deployed to a host as an MCP server backed by a relay's search, tested and removed");
+
   await panel.getByRole("button", { name: await tr("remote.edit") }).click();
   await dialog.waitFor();
   assert.equal(await password.getAttribute("placeholder"), await tr("remote.fields.storedSecret"));

@@ -3271,6 +3271,32 @@
     "aggregatePrefixHint": "Aggregates are named prefix/model in the gateway, apart from a relay's short-name/model. One aggregate can set its own prefix under Model aggregation; requests that still send the bare model name keep working."
   },
   "remote": {
+    "search": {
+      "title": "Web search MCP",
+      "absent": "Not deployed. Once it is, Codex and Claude Code on the server search the web through the relay's own search service, without this computer.",
+      "deployedVia": "Deployed · {{card}} ({{backend}})",
+      "hint": "A small MCP server (Python, standard library only) in ~/.agentharbor/web-search on the server, its key kept apart and readable by its owner only, registered with Codex and Claude Code. Codex approves this read-only tool by itself.",
+      "provider": "Search service",
+      "model": "Model that searches",
+      "deploy": "Deploy",
+      "update": "Update",
+      "remove": "Remove",
+      "test": "Test search",
+      "testHint": "Search once on the server through this MCP server (billed by the search service)",
+      "testOk": "Search worked: {{query}}",
+      "testFailed": "Search failed: {{query}}",
+      "deployed": "Web search deployed",
+      "deployedHint": "Reopen Codex or Claude Code to use the web_search tool.",
+      "removed": "Web search removed",
+      "removeTitle": "Remove web search?",
+      "removeDescription": "Unregisters it from Codex and Claude Code and deletes the script and key on the server.",
+      "stale": "The search service's address or key changed. Update to write the new values.",
+      "noProviders": "No relay can search: add DeepSeek's or MiMo's official card.",
+      "backend": {
+        "deepSeek": "DeepSeek search API",
+        "mimo": "MiMo's own search"
+      }
+    },
     "state": {
       "connected": "Tunnel connected",
       "direct": "Configured direct",
@@ -3398,6 +3424,11 @@
       "conflict": "Changed on the server; applying replaces them: {{fields}}"
     },
     "errors": {
+      "searchProvider": "This card cannot provide search",
+      "pythonMissing": "python3 is missing on the server; the web search MCP needs it",
+      "searchRegister": "Could not register with Codex or Claude Code",
+      "searchNoClient": "Neither Codex nor Claude Code was found on the server",
+      "searchTest": "The MCP server did not answer the test",
       "tunnelPort": "The tunnel port is taken on the server. Pick another in the host settings",
       "tunnelLost": "The tunnel was lost",
       "tunnelPortInUse": "Configurations on this host go through the router. Restore them before changing the port",

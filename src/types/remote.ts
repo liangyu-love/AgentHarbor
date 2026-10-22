@@ -111,9 +111,46 @@ export interface RemoteProbe {
   elapsedMs: number;
 }
 
+export type SearchBackend = "deepSeek" | "mimo";
+
+/** A relay card whose own search service can back a host's web search. */
+export interface SearchProvider {
+  id: string;
+  name: string;
+  backend: SearchBackend;
+  /** For MiMo, the models that can run the search. */
+  models: string[];
+}
+
+export interface WebSearchRequest {
+  providerId: string;
+  /** The MiMo model that searches; unused for DeepSeek. */
+  model?: string | null;
+}
+
+/** The web search MCP server on a host. */
+export interface WebSearchStatus {
+  deployed: boolean;
+  path: string;
+  request: WebSearchRequest | null;
+  backend: SearchBackend | null;
+  /** Registered with each client, as their configuration says now. */
+  codex: boolean;
+  claudeCode: boolean;
+  /** The card changed (or is gone) since the key was written. */
+  stale: boolean;
+  error: string | null;
+}
+
+export interface SearchTest {
+  ok: boolean;
+  output: string;
+}
+
 export interface RemoteClients {
   home: string;
   installed: RemoteInstalled;
+  webSearch: WebSearchStatus;
   codex: RemoteCodexStatus;
   claudeCode: ClientStatus;
 }

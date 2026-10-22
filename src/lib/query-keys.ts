@@ -18,6 +18,7 @@ export const queryKeys = {
   remoteClients: (id: string) => ["remote-hosts", id, "clients"],
   sshAliases: ["ssh-aliases"],
   remoteRouterModels: ["remote-router-models"],
+  remoteSearchProviders: ["remote-search-providers"],
   claudeDesktopStatus: ["claude-desktop", "status"],
   cursorStatus: ["cursor", "status"],
   claudeDesktopCandidates: ["claude-desktop", "candidates"],
