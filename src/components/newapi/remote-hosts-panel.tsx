@@ -257,6 +257,10 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
       {data && (
         <div className="space-y-3" data-remote-clients>
           <p className="poster-kicker text-[10px] text-muted-foreground">Clients</p>
+          {!!data.envMoved.length && <p role="status" data-remote-env-moved
+            className="flex items-start gap-2 rounded-xl bg-amber-500/[0.07] px-3 py-2 text-xs text-amber-800 shadow-[inset_0_0_0_1px_rgb(245_158_11/0.3)] dark:text-amber-200">
+            <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />{t("remote.envMoved", { names: data.envMoved.join(", ") })}
+          </p>}
           <ClientRow glyph="codex" name="Codex" version={data.installed.codex} path={data.codex.path} configured={data.codex.configured}
             routed={!!data.codex.request?.router}
             provider={providers.find(entry => entry.id === data.codex.request?.providerId)?.name ?? data.codex.request?.providerId}

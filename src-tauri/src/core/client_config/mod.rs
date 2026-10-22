@@ -90,6 +90,35 @@ impl ClientPaths {
         }
     }
 
+    /// The clients of a POSIX host whose home is `home`, moved as `env`
+    /// (the host's value of a variable, an absolute path) moves them, as
+    /// [`discover`](Self::discover) does here.
+    pub fn posix(home: &str, env: impl Fn(&str) -> Option<String>) -> Self {
+        let home = home.trim_end_matches('/');
+        let at = |rest: &str| PathBuf::from(format!("{home}/{rest}"));
+        let var = |name: &str| env(name).map(|value| value.trim_end_matches('/').to_owned()).filter(|value| value.starts_with('/'));
+        let claude_root = var("CLAUDE_CONFIG_DIR").filter(|root| *root != format!("{home}/.claude"));
+        let config = var("XDG_CONFIG_HOME").unwrap_or_else(|| format!("{home}/.config"));
+        Self {
+            claude: match &claude_root {
+                Some(root) => PathBuf::from(format!("{root}/settings.json")),
+                None => at(".claude/settings.json"),
+            },
+            claude_user: match &claude_root {
+                Some(root) => PathBuf::from(format!("{root}/.claude.json")),
+                None => at(".claude.json"),
+            },
+            opencode: PathBuf::from(var("OPENCODE_CONFIG").unwrap_or_else(|| format!("{config}/opencode/opencode.json"))),
+            pi: PathBuf::from(format!(
+                "{}/models.json",
+                var("PI_CODING_AGENT_DIR").unwrap_or_else(|| format!("{home}/.pi/agent"))
+            )),
+            cursor: PathBuf::from(format!("{config}/Cursor/User")),
+            cursor_cli: at(".cursor"),
+            harness: at(".dsh"),
+        }
+    }
+
     pub fn from_home(home: &Path) -> Self {
         Self {
             claude: home.join(".claude/settings.json"),
@@ -380,21 +409,16 @@ impl ConfigManager {
     /// The manager of a remote host's clients: files under the remote
     /// `home`, reached through `files`, and journals in `journal_dir`.
     pub fn remote(app_data_dir: &Path, journal_dir: &Path, home: &str, files: Arc<dyn ClientFiles>) -> Self {
-        let home = home.trim_end_matches('/');
-        let at = |rest: &str| PathBuf::from(format!("{home}/{rest}"));
+        Self::remote_at(app_data_dir, journal_dir, ClientPaths::posix(home, |_| None), files)
+    }
+
+    /// A remote host's clients at `paths` ([`ClientPaths::posix`]).
+    pub fn remote_at(app_data_dir: &Path, journal_dir: &Path, paths: ClientPaths, files: Arc<dyn ClientFiles>) -> Self {
         Self {
             data_dir: journal_dir.to_path_buf(),
             app_data_dir: app_data_dir.to_path_buf(),
             official_home: None,
-            paths: ClientPaths {
-                claude: at(".claude/settings.json"),
-                claude_user: at(".claude.json"),
-                opencode: at(".config/opencode/opencode.json"),
-                pi: at(".pi/agent/models.json"),
-                cursor: at(".config/Cursor/User"),
-                cursor_cli: at(".cursor"),
-                harness: at(".dsh"),
-            },
+            paths,
             network: Network::default(),
             files,
             remote: true,

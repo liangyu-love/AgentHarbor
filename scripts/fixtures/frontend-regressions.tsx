@@ -302,6 +302,7 @@ const installRemote = () => {
     codex: { path: "/home/ubuntu/.codex/config.toml", configured: false, request: null, conflict: false, conflictFields: [], stale: false, error: null },
     claudeCode: { targetId: "claudeCode", name: "Claude Code", path: "/home/ubuntu/.claude/settings.json", protocols: ["anthropicMessages"],
       configured: false, conflict: false, error: null, providerId: null, model: null, request: null, conflictFields: [] },
+    env: {}, envMoved: [],
   };
   const settle = (id: string) => {
     const clients = clientsOf(id);
@@ -330,6 +331,8 @@ const installRemote = () => {
         user: input.user ?? (input.host === "dev" ? "ubuntu" : null), identityFiles: ["C:/Users/fixture/.ssh/id_ed25519"] },
       inUse: existing?.inUse ?? false,
       tunnelPort: input.tunnelPort ?? 43127, routed: existing?.routed ?? false, tunnel: existing?.tunnel ?? null,
+      env: Object.fromEntries(Object.entries(input.env ?? {}).filter(([, value]) => value.trim())),
+      detectedEnv: existing?.detectedEnv ?? {},
     };
     review.remoteHosts = existing ? review.remoteHosts.map((entry: RemoteHost) => entry.id === host.id ? host : entry) : [...review.remoteHosts, host];
     return structuredClone(host);

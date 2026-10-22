@@ -13,6 +13,14 @@ import { Label } from "@/components/ui/label";
 import { SecretInput } from "@/components/ui/secret-input";
 import type { RemoteAuth, RemoteHost } from "@/types/remote";
 
+/** The client directories a host may move, with where each client looks without them. */
+const CLIENT_DIRS = [
+  ["CODEX_HOME", "~/.codex"],
+  ["CLAUDE_CONFIG_DIR", "~/.claude"],
+  ["XDG_CONFIG_HOME", "~/.config"],
+  ["PI_CODING_AGENT_DIR", "~/.pi/agent"],
+] as const;
+
 export const remoteErrorKey = (cause: unknown) =>
   errorKey(cause, ["remote", "clients", "newapi", "accountSources"], "remote.errors.storage");
 
@@ -34,6 +42,7 @@ export function RemoteHostDialog({ host, onClose, onSaved }: {
   const [clearPassphrase, setClearPassphrase] = useState(false);
   const [password, setPassword] = useState("");
   const [tunnelPort, setTunnelPort] = useState(host && host.tunnelPort !== 43127 ? String(host.tunnelPort) : "");
+  const [env, setEnv] = useState<Record<string, string>>(host?.env ?? {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const portNumber = port.trim() === "" ? null : Number(port);
@@ -51,7 +60,7 @@ export function RemoteHostDialog({ host, onClose, onSaved }: {
         id: host?.id ?? null, name: name.trim() || address.trim(), host: address.trim(), port: portNumber,
         user: user.trim() || null, auth, identityFile: auth === "key" ? identityFile.trim() || null : null,
         password: auth === "password" ? password : null, passphrase: auth === "key" ? passphrase : null,
-        clearPassphrase: auth === "key" && clearPassphrase, tunnelPort: tunnelNumber,
+        clearPassphrase: auth === "key" && clearPassphrase, tunnelPort: tunnelNumber, env,
       }));
     } catch (cause) {
       setError(remoteErrorKey(cause));
@@ -134,6 +143,21 @@ export function RemoteHostDialog({ host, onClose, onSaved }: {
                   disabled={busy || !!host?.routed} onChange={event => setTunnelPort(event.target.value.replace(/[^0-9]/g, ""))} />
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
                   {t(host?.routed ? "remote.errors.tunnelPortInUse" : "remote.fields.tunnelPortHint")}
+                </p>
+              </div>
+              <div className="mt-4 space-y-2" data-remote-host-dirs>
+                <p className="text-sm font-medium">{t("remote.fields.clientDirs")}</p>
+                <div className="grid gap-x-3 gap-y-2 sm:grid-cols-[auto_1fr] sm:items-center">
+                  {CLIENT_DIRS.map(([name, fallback]) => <div key={name} className="contents">
+                    <Label htmlFor={`remote-host-env-${name}`} className="font-mono text-[11px] text-muted-foreground">{name}</Label>
+                    <Input id={`remote-host-env-${name}`} value={env[name] ?? ""} spellCheck={false} autoComplete="off"
+                      className="h-8 font-mono text-xs" disabled={busy || !!host?.inUse}
+                      placeholder={host?.detectedEnv[name] ?? fallback}
+                      onChange={event => setEnv(current => ({ ...current, [name]: event.target.value }))} />
+                  </div>)}
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {t(host?.inUse ? "remote.errors.clientDirInUse" : "remote.fields.clientDirsHint")}
                 </p>
               </div>
             </details>

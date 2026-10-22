@@ -3271,6 +3271,7 @@
     "aggregatePrefixHint": "Aggregates are named prefix/model in the gateway, apart from a relay's short-name/model. One aggregate can set its own prefix under Model aggregation; requests that still send the bare model name keep working."
   },
   "remote": {
+    "envMoved": "{{names}} changed on the host. Configured clients stay managed where they were written; restore and configure them again to use the new directories.",
     "search": {
       "title": "Web search MCP",
       "absent": "Not deployed. Once it is, Codex and Claude Code on the server search the web through the relay's own search service, without this computer.",
@@ -3345,9 +3346,11 @@
     "hostDialogHint": "A host alias from ~/.ssh/config works as is: its address, port, user and key are read from there, with Include and Match as the ssh command reads them.",
     "save": "Save",
     "configureTitle": "Configure {{name}} on {{host}}",
-    "directHint": "Remote hosts are configured direct only: the server calls the chosen relay itself, not through this computer.",
+    "directHint": "Direct: the server calls the chosen relay itself, not through this computer.",
     "backupHint": "The remote file is backed up on this computer (encrypted) before it is written, and put back on restore.",
     "fields": {
+      "clientDirs": "Client config directories",
+      "clientDirsHint": "Empty follows the host: these variables are read from its shells (.bashrc included) on connecting, and the places shown apply when they are unset. A value here overrides the host's; ~/ works.",
       "advanced": "Advanced",
       "tunnelPort": "Tunnel port (on the server)",
       "tunnelPortHint": "Through the router, this server port is forwarded to the local router. 43127 by default; pick another if it is taken.",
@@ -3424,6 +3427,8 @@
       "conflict": "Changed on the server; applying replaces them: {{fields}}"
     },
     "errors": {
+      "clientDir": "A config directory is an absolute path or starts with ~/",
+      "clientDirInUse": "Clients on this host are configured: restore them before changing their directories",
       "searchProvider": "This card cannot provide search",
       "pythonMissing": "python3 is missing on the server; the web search MCP needs it",
       "searchRegister": "Could not register with Codex or Claude Code",

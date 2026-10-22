@@ -3271,6 +3271,7 @@
     "aggregatePrefixHint": "模型聚合在网关里叫「前缀/模型名」，和中转的「短名/模型名」区分开。单个聚合可以在模型聚合里另设前缀；以前直接写模型名的请求仍然能用。"
   },
   "remote": {
+    "envMoved": "服务器上的 {{names}} 变了。已写好的配置仍在原来的目录管理；恢复后重新配置，就会用新目录。",
     "search": {
       "title": "联网搜索 MCP",
       "absent": "还没部署。部署后，服务器上的 Codex 和 Claude Code 都能用中转自己的搜索服务联网，不需要经过本机。",
@@ -3345,9 +3346,11 @@
     "hostDialogHint": "可以直接用 ~/.ssh/config 里的主机别名，地址、端口、用户和私钥会从那里读取（和 ssh 命令一样处理 Include、Match）。",
     "save": "保存",
     "configureTitle": "在 {{host}} 上配置 {{name}}",
-    "directHint": "远程主机只支持直连：服务器直接访问所选中转，不经过这台电脑。",
+    "directHint": "直连：服务器直接访问所选中转，不经过这台电脑。",
     "backupHint": "写入前会把远端原文件备份到本机（加密保存），恢复时还原。",
     "fields": {
+      "clientDirs": "客户端配置目录",
+      "clientDirsHint": "留空时跟随服务器：连接时会读取服务器 shell（包括 .bashrc）里设置的这些变量，没有设置就用灰字显示的位置。这里填写的值会覆盖服务器的设置，可以用 ~/ 开头。",
       "advanced": "高级",
       "tunnelPort": "隧道端口（服务器上）",
       "tunnelPortHint": "经本机路由时，服务器上的这个端口会转发到本地路由。默认 43127，被占用时换一个。",
@@ -3424,6 +3427,8 @@
       "conflict": "这些字段在服务器上被改过，应用会覆盖它们：{{fields}}"
     },
     "errors": {
+      "clientDir": "配置目录要写绝对路径，或以 ~/ 开头",
+      "clientDirInUse": "这台主机上还有被管理的配置，先恢复它们才能改配置目录",
       "searchProvider": "这张卡片不能提供搜索",
       "pythonMissing": "服务器上没有 python3，联网搜索 MCP 需要它",
       "searchRegister": "注册到 Codex 或 Claude Code 失败",

@@ -38,6 +38,10 @@ export interface RemoteHost {
   routed: boolean;
   /** The tunnel, while one runs. */
   tunnel: TunnelState | null;
+  /** Client directories set here, by variable (`CODEX_HOME`, ...), over the host's. */
+  env: Record<string, string>;
+  /** Client directories the host's shells set, as last read. */
+  detectedEnv: Record<string, string>;
 }
 
 /** A host as edited; empty secrets keep what is stored. */
@@ -53,6 +57,8 @@ export interface RemoteHostInput {
   passphrase?: string | null;
   clearPassphrase?: boolean;
   tunnelPort?: number | null;
+  /** Client directories by variable; an empty value follows the host. */
+  env?: Record<string, string>;
 }
 
 export type RemoteConnectionTest =
@@ -153,4 +159,8 @@ export interface RemoteClients {
   webSearch: WebSearchStatus;
   codex: RemoteCodexStatus;
   claudeCode: ClientStatus;
+  /** The client directories in effect on the host, by variable. */
+  env: Record<string, string>;
+  /** Variables the host's shells moved since a client was configured; it stays where it was written. */
+  envMoved: string[];
 }

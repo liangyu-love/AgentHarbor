@@ -27,6 +27,7 @@ use crate::core::{
 };
 use crate::platform::paths::CodexPaths;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
@@ -58,11 +59,11 @@ fn codex<'a>(
     store: &RemoteStore,
     id: &str,
     files: &'a dyn ClientFiles,
-    home: &str,
+    codex_home: &str,
 ) -> Result<CodexRemote<'a>, String> {
     Ok(CodexRemote::new(
         files,
-        home,
+        codex_home,
         &store.journal_dir(id)?,
         &paths.app_data_dir,
         model_catalog::official(&paths.codex_home, &paths.app_data_dir).models,
@@ -76,11 +77,14 @@ fn claude(
     id: &str,
     session: Arc<RemoteSession>,
 ) -> Result<ConfigManager, String> {
-    let home = session.home().to_owned();
-    Ok(
-        ConfigManager::remote(&paths.app_data_dir, &store.journal_dir(id)?, &home, session)
-            .with_official_home(&paths.codex_home),
+    let client_paths = session.client_paths();
+    Ok(ConfigManager::remote_at(
+        &paths.app_data_dir,
+        &store.journal_dir(id)?,
+        client_paths,
+        session,
     )
+    .with_official_home(&paths.codex_home))
 }
 
 /// The router and the tunnels follow what is now configured.
@@ -150,6 +154,11 @@ pub struct RemoteClients {
     pub codex: CodexRemoteStatus,
     pub claude_code: ClientStatus,
     pub web_search: WebSearchStatus,
+    /// The client variables in effect on the host.
+    pub env: BTreeMap<String, String>,
+    /// Client variables the host's shells have moved since a client was
+    /// configured there, which keeps its directories until restored.
+    pub env_moved: Vec<String>,
 }
 
 #[tauri::command]
@@ -160,10 +169,12 @@ pub async fn remote_client_status(
     let paths = paths(&repo)?;
     blocking(move || {
         let store = RemoteStore::new(&paths.app_data_dir);
-        let session = connect(&store, &id)?;
+        let mut session = store.connect(&id, None).map_err(|error| error.key())?;
+        let env_moved = store.detect_env(&id, &mut session);
+        let session = Arc::new(session);
         let relays = relays(&paths, &store, &id).ok();
         let codex =
-            codex(&paths, &store, &id, session.as_ref(), session.home())?.status(relays.as_ref());
+            codex(&paths, &store, &id, session.as_ref(), &session.codex_home())?.status(relays.as_ref());
         let claude_code = claude(&paths, &store, &id, session.clone())?
             .status(TargetId::ClaudeCode, relays.as_ref());
         let web_search = WebSearch::new(&session, &store.journal_dir(&id)?).status(relays.as_ref());
@@ -173,6 +184,8 @@ pub async fn remote_client_status(
             codex,
             claude_code,
             web_search,
+            env: session.env().clone(),
+            env_moved,
         })
     })
     .await
@@ -191,7 +204,7 @@ pub async fn probe_remote_client(
         let store = RemoteStore::new(&paths.app_data_dir);
         let session = connect(&store, &id)?;
         let profile = match client {
-            TargetId::Codex => codex(&paths, &store, &id, session.as_ref(), session.home())?
+            TargetId::Codex => codex(&paths, &store, &id, session.as_ref(), &session.codex_home())?
                 .status(None)
                 .request
                 .and_then(|request| request.profile),
@@ -287,7 +300,7 @@ pub async fn preview_remote_codex(
     blocking(move || {
         let store = RemoteStore::new(&paths.app_data_dir);
         let session = connect(&store, &id)?;
-        codex(&paths, &store, &id, session.as_ref(), session.home())?.preview(
+        codex(&paths, &store, &id, session.as_ref(), &session.codex_home())?.preview(
             &relays(&paths, &store, &id)?,
             &request,
             replace_conflicts.unwrap_or(false),
@@ -314,7 +327,7 @@ pub async fn apply_remote_codex(
         move || {
             let store = RemoteStore::new(&paths.app_data_dir);
             let session = connect(&store, &id)?;
-            codex(&paths, &store, &id, session.as_ref(), session.home())?.apply(
+            codex(&paths, &store, &id, session.as_ref(), &session.codex_home())?.apply(
                 &relays(&paths, &store, &id)?,
                 &request,
                 &revision,
@@ -340,7 +353,7 @@ pub async fn restore_remote_codex(
         move || {
             let store = RemoteStore::new(&paths.app_data_dir);
             let session = connect(&store, &id)?;
-            codex(&paths, &store, &id, session.as_ref(), session.home())?
+            codex(&paths, &store, &id, session.as_ref(), &session.codex_home())?
                 .restore(replace_conflicts.unwrap_or(false))
         }
     })

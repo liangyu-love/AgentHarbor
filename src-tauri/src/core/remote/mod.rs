@@ -4,6 +4,8 @@
 //! current user and never shown again. A remote client is configured
 //! direct, reaching its relay itself, or through this machine's router over
 //! a reverse tunnel ([`tunnel`]) that this app keeps up while it runs.
+//! Where each client keeps its files follows the host's environment
+//! (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, ...), read from its shells or set here.
 
 pub mod codex;
 mod connection;
@@ -13,11 +15,15 @@ pub mod tunnel;
 pub mod web_search;
 
 use super::{
-    client_config::ClientFiles, router::DEFAULT_PORT, secret_file, storage, targets::TargetId,
+    client_config::{ClientFiles, ClientPaths},
+    router::DEFAULT_PORT,
+    secret_file, storage,
+    targets::TargetId,
 };
 pub use connection::ConnectError;
 use connection::{block_on, Connection, KnownHosts, Method, Target};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +31,16 @@ const HOSTS_FILE: &str = "remote-hosts.dat";
 const KNOWN_HOSTS_FILE: &str = "remote-known-hosts";
 const JOURNAL_DIR: &str = "remote";
 const DEFAULT_KEYS: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
+
+/// The variables that move a client's files on a host: Codex's home, and
+/// what [`ClientPaths::posix`] follows for the others.
+pub const CLIENT_ENV: [&str; 5] = [
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "OPENCODE_CONFIG",
+    "PI_CODING_AGENT_DIR",
+];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +75,21 @@ struct StoredHost {
     /// written against it. `None` is the router's default port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tunnel_port: Option<u16>,
+    /// Client variables set here, over what the host's shells set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<String, String>,
+    /// Client variables the host's shells set, as last read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    detected_env: BTreeMap<String, String>,
+}
+
+impl StoredHost {
+    /// The client variables in effect.
+    fn client_env(&self) -> BTreeMap<String, String> {
+        let mut env = self.detected_env.clone();
+        env.extend(self.env.clone());
+        env
+    }
 }
 
 /// What `~/.ssh/config` and the defaults make of a host.
@@ -92,6 +123,10 @@ pub struct RemoteHostView {
     pub routed: bool,
     /// The tunnel, while one runs.
     pub tunnel: Option<tunnel::TunnelState>,
+    /// Client variables set here.
+    pub env: BTreeMap<String, String>,
+    /// Client variables the host's shells set, as last read.
+    pub detected_env: BTreeMap<String, String>,
 }
 
 /// A host as edited. Secrets left empty keep what is stored.
@@ -118,6 +153,9 @@ pub struct RemoteHostInput {
     pub clear_passphrase: bool,
     #[serde(default)]
     pub tunnel_port: Option<u16>,
+    /// Client variables to set; an empty value follows the host.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// The outcome of a connection test, with what the user must confirm when
@@ -229,6 +267,8 @@ impl RemoteStore {
             tunnel_port: host.tunnel_port.unwrap_or(DEFAULT_PORT),
             routed: self.routed(&host.id),
             tunnel: tunnel::state(&host.id),
+            env: host.env.clone(),
+            detected_env: host.detected_env.clone(),
         }
     }
 
@@ -260,6 +300,21 @@ impl RemoteStore {
         {
             return Err("remote.errors.identityFile".into());
         }
+        let mut env = BTreeMap::new();
+        for (name, value) in input.env {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            if !CLIENT_ENV.contains(&name.as_str())
+                || !(value.starts_with('/') || value == "~" || value.starts_with("~/"))
+                || value.len() > 1024
+                || value.chars().any(char::is_control)
+            {
+                return Err("remote.errors.clientDir".into());
+            }
+            env.insert(name, value.to_owned());
+        }
         let mut hosts = self.load()?;
         let previous = match &input.id {
             Some(id) => Some(
@@ -278,6 +333,12 @@ impl RemoteStore {
                     != input.tunnel_port.unwrap_or(DEFAULT_PORT)
             {
                 return Err("remote.errors.tunnelPortInUse".into());
+            }
+            // Configured clients stay where their files were written.
+            let mut moved = existing.detected_env.clone();
+            moved.extend(env.clone());
+            if self.in_use(&existing.id) && moved != existing.client_env() {
+                return Err("remote.errors.clientDirInUse".into());
             }
         }
         let password = match input.auth {
@@ -309,6 +370,11 @@ impl RemoteStore {
             password,
             passphrase,
             tunnel_port: input.tunnel_port.filter(|port| *port != DEFAULT_PORT),
+            env,
+            detected_env: existing
+                .as_ref()
+                .map(|host| host.detected_env.clone())
+                .unwrap_or_default(),
         };
         match previous {
             Some(index) => hosts[index] = stored.clone(),
@@ -410,12 +476,54 @@ impl RemoteStore {
     /// Opens a session to host `id`. `trust` is a host key fingerprint the
     /// user confirmed; a new host is refused without it.
     pub fn connect(&self, id: &str, trust: Option<String>) -> Result<RemoteSession, ConnectError> {
-        let target = self.target(&self.stored(id)?)?;
+        let host = self.stored(id)?;
+        let target = self.target(&host)?;
         let known = self.known_hosts();
         let connection = block_on(Connection::open(&target, known, trust))?;
-        Ok(RemoteSession {
+        let mut session = RemoteSession {
             connection: Some(connection),
-        })
+            env: BTreeMap::new(),
+        };
+        session.set_env(&host.client_env());
+        Ok(session)
+    }
+
+    /// Reads the client variables the host's shells set and keeps them for
+    /// host `id`, `session` following. While a client there is configured
+    /// they are left as they were, its files staying where they were
+    /// written: the variables that have moved since are returned.
+    pub fn detect_env(&self, id: &str, session: &mut RemoteSession) -> Vec<String> {
+        let Ok(found) = session.read_env() else {
+            return Vec::new();
+        };
+        let Ok(_guard) = lock() else {
+            return Vec::new();
+        };
+        let Ok(mut hosts) = self.load() else {
+            return Vec::new();
+        };
+        let Some(host) = hosts.iter_mut().find(|host| host.id == id) else {
+            return Vec::new();
+        };
+        if host.detected_env == found {
+            return Vec::new();
+        }
+        if self.in_use(id) {
+            return CLIENT_ENV
+                .iter()
+                .filter(|name| {
+                    !host.env.contains_key(**name)
+                        && found.get(**name) != host.detected_env.get(**name)
+                })
+                .map(|name| (*name).to_owned())
+                .collect();
+        }
+        host.detected_env = found;
+        let env = host.client_env();
+        if self.save(&hosts).is_ok() {
+            session.set_env(&env);
+        }
+        Vec::new()
     }
 
     fn stored(&self, id: &str) -> Result<StoredHost, ConnectError> {
@@ -464,9 +572,12 @@ impl RemoteStore {
 
     pub fn test(&self, id: &str, trust: Option<String>) -> ConnectionTest {
         match self.connect(id, trust) {
-            Ok(session) => ConnectionTest::Connected {
-                home: session.home().to_owned(),
-            },
+            Ok(mut session) => {
+                self.detect_env(id, &mut session);
+                ConnectionTest::Connected {
+                    home: session.home().to_owned(),
+                }
+            }
             Err(ConnectError::UnknownHost {
                 fingerprint,
                 algorithm,
@@ -541,6 +652,29 @@ pub fn ssh_aliases() -> Vec<String> {
 /// An open session. Closed when dropped.
 pub struct RemoteSession {
     connection: Option<Connection>,
+    /// The client variables in effect, as absolute paths: commands run
+    /// with them, and files are found by them.
+    env: BTreeMap<String, String>,
+}
+
+/// Prints `AHENV<tab>name<tab>value` for each client variable a shell has:
+/// a plain one, the login shell, then an interactive one (whose rc files
+/// often hold such exports), later lines winning.
+const READ_ENV: &str = r#"v='for n in CODEX_HOME CLAUDE_CONFIG_DIR XDG_CONFIG_HOME OPENCODE_CONFIG PI_CODING_AGENT_DIR; do eval "x=\${$n:-}"; [ -n "$x" ] && printf "AHENV\t%s\t%s\n" "$n" "$x"; done; :'; sh -c "$v"; s=${SHELL:-/bin/sh}; t=; command -v timeout >/dev/null 2>&1 && t="timeout 8"; $t "$s" -lc "$v" </dev/null 2>/dev/null; $t "$s" -ic "$v" </dev/null 2>/dev/null; exit 0"#;
+
+fn parse_env(output: &str) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    for line in output.lines() {
+        let mut parts = line.splitn(3, '\t');
+        if let (Some("AHENV"), Some(name), Some(value)) = (parts.next(), parts.next(), parts.next())
+        {
+            let value = value.trim_end_matches('/');
+            if CLIENT_ENV.contains(&name) && value.starts_with('/') {
+                env.insert(name.to_owned(), value.to_owned());
+            }
+        }
+    }
+    env
 }
 
 /// A remote POSIX path for `path`, which was built from one.
@@ -551,7 +685,55 @@ fn posix(path: &Path) -> String {
 impl RemoteSession {
     /// A session that reaches nothing, for work on the journals alone.
     pub fn offline() -> Self {
-        Self { connection: None }
+        Self {
+            connection: None,
+            env: BTreeMap::new(),
+        }
+    }
+
+    /// Takes `env` as the client variables, `~` read as the home folder.
+    fn set_env(&mut self, env: &BTreeMap<String, String>) {
+        let home = self.home().trim_end_matches('/').to_owned();
+        self.env = env
+            .iter()
+            .filter_map(|(name, value)| {
+                let value = match value.strip_prefix('~') {
+                    Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                        format!("{home}{rest}")
+                    }
+                    _ => value.clone(),
+                };
+                let value = value.trim_end_matches('/').to_owned();
+                value.starts_with('/').then(|| (name.clone(), value))
+            })
+            .collect();
+    }
+
+    /// The client variables in effect.
+    pub fn env(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+
+    /// Where Codex keeps its files on the host.
+    pub fn codex_home(&self) -> String {
+        self.env
+            .get("CODEX_HOME")
+            .cloned()
+            .unwrap_or_else(|| format!("{}/.codex", self.home().trim_end_matches('/')))
+    }
+
+    /// Where the other clients keep theirs.
+    pub fn client_paths(&self) -> ClientPaths {
+        ClientPaths::posix(self.home(), |name| self.env.get(name).cloned())
+    }
+
+    /// The client variables the host's shells set.
+    fn read_env(&self) -> Result<BTreeMap<String, String>, String> {
+        let (_, output) = block_on(
+            self.connection()?
+                .run(READ_ENV, std::time::Duration::from_secs(30)),
+        )?;
+        Ok(parse_env(&output))
     }
 
     pub fn home(&self) -> &str {
@@ -566,8 +748,14 @@ impl RemoteSession {
 
     /// Runs `command` on the host through the user's shell, given `limit`
     /// to finish: its exit status and output.
+    /// The client variables are exported to it.
     pub fn run(&self, command: &str, limit: std::time::Duration) -> Result<(u32, String), String> {
-        block_on(self.connection()?.run(command, limit))
+        let exports: String = self
+            .env
+            .iter()
+            .map(|(name, value)| format!("export {name}={}; ", connection::quote(value)))
+            .collect();
+        block_on(self.connection()?.run(&format!("{exports}{command}"), limit))
     }
 }
 
@@ -620,6 +808,7 @@ mod tests {
             passphrase: None,
             clear_passphrase: false,
             tunnel_port: None,
+            env: BTreeMap::new(),
         }
     }
 
@@ -650,6 +839,50 @@ mod tests {
     }
 
     #[test]
+    fn client_dirs_follow_the_host_and_stay_while_in_use() {
+        let dir = std::env::temp_dir().join(format!("agentharbor-remote-{}", uuid::Uuid::new_v4()));
+        let store = RemoteStore::new(&dir);
+        let mut host = input("Dev");
+        host.env.insert("CODEX_HOME".into(), "relative/path".into());
+        assert_eq!(
+            store.save_host(host).err().as_deref(),
+            Some("remote.errors.clientDir")
+        );
+        let mut host = input("Dev");
+        host.env.insert("CODEX_HOME".into(), "~/work/codex".into());
+        host.env.insert("CLAUDE_CONFIG_DIR".into(), " ".into());
+        let saved = store.save_host(host).unwrap();
+        assert_eq!(saved.env.len(), 1);
+
+        let mut session = RemoteSession::offline();
+        session.set_env(&store.stored(&saved.id).ok().unwrap().client_env());
+        // Offline, the home is empty: `~` reads as the root.
+        assert_eq!(session.codex_home(), "/work/codex");
+        assert!(session.client_paths().claude.ends_with(".claude/settings.json"));
+
+        // A configured client keeps its directories.
+        let journals = store.journal_dir(&saved.id).unwrap();
+        std::fs::create_dir_all(&journals).unwrap();
+        std::fs::write(journals.join(codex::JOURNAL_FILE), b"x").unwrap();
+        let mut edit = input("Dev");
+        edit.id = Some(saved.id.clone());
+        assert_eq!(
+            store.save_host(edit).err().as_deref(),
+            Some("remote.errors.clientDirInUse")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shells_report_client_dirs() {
+        let env = parse_env(
+            "motd\nAHENV\tCODEX_HOME\t/srv/codex/\nAHENV\tPATH\t/bin\nAHENV\tCLAUDE_CONFIG_DIR\trelative\nAHENV\tCODEX_HOME\t/data/codex\n",
+        );
+        assert_eq!(env.len(), 1);
+        assert_eq!(env["CODEX_HOME"], "/data/codex");
+    }
+
+    #[test]
     fn a_password_host_needs_a_password() {
         let dir = std::env::temp_dir().join(format!("agentharbor-remote-{}", uuid::Uuid::new_v4()));
         let mut host = input("Dev");
@@ -677,6 +910,8 @@ mod tests {
             password: None,
             passphrase: None,
             tunnel_port: None,
+            env: BTreeMap::new(),
+            detected_env: BTreeMap::new(),
         };
         let resolved = resolve(&stored, config.resolve("dev"));
         assert_eq!(resolved.host_name, "10.1.2.3");
@@ -753,6 +988,7 @@ mod real_remote {
                 passphrase: std::env::var("AGENTHARBOR_TEST_REMOTE_PASSPHRASE").ok(),
                 clear_passphrase: false,
                 tunnel_port: None,
+                env: BTreeMap::new(),
             })
             .unwrap();
         let trust = std::env::var("AGENTHARBOR_TEST_REMOTE_TRUST").ok();
@@ -773,10 +1009,11 @@ mod real_remote {
         assert_eq!(session.home(), home);
         let journals = store.journal_dir(&saved.id).unwrap();
         let relays = synthetic_relays();
-        let at = |rest: &str| PathBuf::from(format!("{home}/{rest}"));
 
         // Codex: config, key and catalog are written, then all taken back.
-        let codex_config = at(".codex/config.toml");
+        let codex_home = session.codex_home();
+        let at = |rest: &str| PathBuf::from(format!("{codex_home}/{rest}"));
+        let codex_config = at("config.toml");
         let before = session.read(&codex_config).unwrap();
         // This test's journals are its own: a host configured for real would
         // lose the key block it shares, so such a host is refused.
@@ -787,9 +1024,14 @@ mod real_remote {
                 .contains("agentharbor_remote"),
             "Codex on this host is configured by AgentHarbor; use an unconfigured host"
         );
-        let env_before = session.read(&at(".codex/.env")).unwrap();
-        let codex =
-            codex::CodexRemote::new(session.as_ref(), &home, &journals, data.path(), Vec::new());
+        let env_before = session.read(&at(".env")).unwrap();
+        let codex = codex::CodexRemote::new(
+            session.as_ref(),
+            &session.codex_home(),
+            &journals,
+            data.path(),
+            Vec::new(),
+        );
         assert!(
             !codex.status(Some(&relays)).configured,
             "Codex must start unconfigured"
@@ -817,10 +1059,10 @@ mod real_remote {
             document["model_providers"]["agentharbor_remote"]["base_url"].as_str(),
             Some("https://relay.agentharbor-test.invalid/v1")
         );
-        let env = session.read(&at(".codex/.env")).unwrap().unwrap();
+        let env = session.read(&at(".env")).unwrap().unwrap();
         assert!(env.contains(KEY));
         assert!(session
-            .read(&at(".codex/agentharbor-models.json"))
+            .read(&at("agentharbor-models.json"))
             .unwrap()
             .is_some());
         let status = codex.status(Some(&relays));
@@ -831,14 +1073,14 @@ mod real_remote {
         );
         codex.restore(false).unwrap();
         assert_eq!(session.read(&codex_config).unwrap(), before);
-        assert_eq!(session.read(&at(".codex/.env")).unwrap(), env_before);
+        assert_eq!(session.read(&at(".env")).unwrap(), env_before);
         assert!(session
-            .read(&at(".codex/agentharbor-models.json"))
+            .read(&at("agentharbor-models.json"))
             .unwrap()
             .is_none());
 
         // Claude Code through the shared configuration engine, direct.
-        let claude_settings = at(".claude/settings.json");
+        let claude_settings = session.client_paths().claude;
         let before = session.read(&claude_settings).unwrap();
         assert!(
             !before
@@ -847,7 +1089,12 @@ mod real_remote {
                 .contains("ANTHROPIC_BASE_URL"),
             "Claude Code on this host already has a relay; use an unconfigured host"
         );
-        let manager = ConfigManager::remote(data.path(), &journals, &home, session.clone());
+        let manager = ConfigManager::remote_at(
+            data.path(),
+            &journals,
+            session.client_paths(),
+            session.clone(),
+        );
         assert!(
             !manager
                 .status(TargetId::ClaudeCode, Some(&relays))

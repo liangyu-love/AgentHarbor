@@ -241,7 +241,7 @@ impl<'a> WebSearch<'a> {
     /// server's own entry, which `codex mcp remove` takes away whole.
     fn approve_in_codex(&self) -> Result<(), String> {
         let files = self.session as &dyn crate::core::client_config::ClientFiles;
-        let path = format!("{}/.codex/config.toml", self.home);
+        let path = format!("{}/config.toml", self.session.codex_home());
         let text = files.read(Path::new(&path))?.unwrap_or_default();
         let mut document: toml_edit::DocumentMut =
             text.parse().map_err(|_| "remote.errors.codexConfig")?;
@@ -332,7 +332,7 @@ impl<'a> WebSearch<'a> {
             let files = self.session as &dyn crate::core::client_config::ClientFiles;
             // What each client's own configuration says now.
             status.codex = files
-                .read(Path::new(&format!("{}/.codex/config.toml", self.home)))?
+                .read(Path::new(&format!("{}/config.toml", self.session.codex_home())))?
                 .and_then(|text| text.parse::<toml::Table>().ok())
                 .is_some_and(|config| {
                     config
@@ -341,7 +341,7 @@ impl<'a> WebSearch<'a> {
                         .is_some()
                 });
             status.claude_code = files
-                .read(Path::new(&format!("{}/.claude.json", self.home)))?
+                .read(&self.session.client_paths().claude_user)?
                 .and_then(|text| serde_json::from_str::<Value>(&text).ok())
                 .is_some_and(|config| config["mcpServers"].get(CLAUDE_NAME).is_some());
             if let Some(store) = store {

@@ -138,7 +138,8 @@ pub struct CodexRemoteApplied {
 /// Codex's files on one remote host, and where its journal is kept here.
 pub struct CodexRemote<'a> {
     files: &'a dyn ClientFiles,
-    home: String,
+    /// Codex's home on the host (`$CODEX_HOME`, else `~/.codex`).
+    dir: String,
     journal: PathBuf,
     app_data_dir: PathBuf,
     official: Vec<Value>,
@@ -416,14 +417,14 @@ fn fingerprint(endpoint: &str, key: &str, catalog: &[u8]) -> String {
 impl<'a> CodexRemote<'a> {
     pub fn new(
         files: &'a dyn ClientFiles,
-        home: &str,
+        dir: &str,
         journal_dir: &Path,
         app_data_dir: &Path,
         official: Vec<Value>,
     ) -> Self {
         Self {
             files,
-            home: home.trim_end_matches('/').to_owned(),
+            dir: dir.trim_end_matches('/').to_owned(),
             journal: journal_dir.join(JOURNAL_FILE),
             app_data_dir: app_data_dir.to_path_buf(),
             official,
@@ -490,7 +491,7 @@ impl<'a> CodexRemote<'a> {
     }
 
     fn display(&self, name: &str) -> String {
-        format!("{}/.codex/{name}", self.home)
+        format!("{}/{name}", self.dir)
     }
 
     fn load_journal(&self) -> Result<Option<Journal>, String> {
@@ -959,7 +960,7 @@ mod tests {
     #[test]
     fn apply_and_restore_round_trip() {
         let (files, journal, data) = setup();
-        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new());
+        let codex = CodexRemote::new(&files, "/home/u/.codex", &journal, &data, Vec::new());
         let store = store();
         let preview = codex.preview(&store, &request(), false).unwrap();
         assert!(!preview.content.contains("sk-test"));
@@ -1026,7 +1027,7 @@ mod tests {
     #[test]
     fn user_edits_are_kept_and_conflicts_refuse() {
         let (files, journal, data) = setup();
-        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new());
+        let codex = CodexRemote::new(&files, "/home/u/.codex", &journal, &data, Vec::new());
         let store = store();
         let preview = codex.preview(&store, &request(), false).unwrap();
         codex
@@ -1069,7 +1070,7 @@ mod tests {
         let files = Memory::default();
         let journal =
             std::env::temp_dir().join(format!("agentharbor-remote-codex-{}", uuid::Uuid::new_v4()));
-        let codex = CodexRemote::new(&files, "/root", &journal, &journal, Vec::new());
+        let codex = CodexRemote::new(&files, "/root/.codex", &journal, &journal, Vec::new());
         let store = store();
         let preview = codex.preview(&store, &request(), false).unwrap();
         codex
@@ -1087,7 +1088,7 @@ mod tests {
     #[test]
     fn a_profile_is_a_file_of_its_own_and_switching_modes_restores_exactly() {
         let (files, journal, data) = setup();
-        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new());
+        let codex = CodexRemote::new(&files, "/home/u/.codex", &journal, &data, Vec::new());
         let store = store();
         let read = |name: &str| {
             files
@@ -1167,7 +1168,7 @@ mod tests {
     #[test]
     fn a_routed_codex_reaches_the_router_through_the_tunnel_with_its_menu() {
         let (files, journal, data) = setup();
-        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new())
+        let codex = CodexRemote::new(&files, "/home/u/.codex", &journal, &data, Vec::new())
             .with_router(&data, 43200);
         let mut store = store();
         store.router.bearer_token = "local-router-token".into();
@@ -1224,7 +1225,7 @@ mod tests {
     #[test]
     fn a_profile_name_must_be_one_codex_can_take() {
         let (files, journal, data) = setup();
-        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new());
+        let codex = CodexRemote::new(&files, "/home/u/.codex", &journal, &data, Vec::new());
         let bad = CodexRemoteRequest {
             profile: Some("my relay".into()),
             ..request()
