@@ -542,10 +542,34 @@ async fn authenticate(
                 .await
                 .map_err(|_| failed("remote.errors.handshake"))?;
             if result.success() {
-                Ok(())
-            } else {
-                Err(failed("remote.errors.authPassword"))
+                return Ok(());
             }
+            // A server that checks passwords through PAM offers them as
+            // keyboard-interactive instead: each hidden prompt gets it.
+            let mut reply = handle
+                .authenticate_keyboard_interactive_start(target.user.clone(), None)
+                .await
+                .map_err(|_| failed("remote.errors.handshake"))?;
+            // A few rounds at most: an empty round, then the password one.
+            for _ in 0..4 {
+                match reply {
+                    client::KeyboardInteractiveAuthResponse::Success => return Ok(()),
+                    client::KeyboardInteractiveAuthResponse::Failure { .. } => break,
+                    client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                        // An echoed prompt asks for something else (a user
+                        // name, a code), never for the password.
+                        if prompts.iter().any(|prompt| prompt.echo) {
+                            return Err(failed("remote.errors.authPrompt"));
+                        }
+                        let responses = prompts.iter().map(|_| password.clone()).collect();
+                        reply = handle
+                            .authenticate_keyboard_interactive_respond(responses)
+                            .await
+                            .map_err(|_| failed("remote.errors.handshake"))?;
+                    }
+                }
+            }
+            Err(failed("remote.errors.authPassword"))
         }
         Method::Keys { files, passphrase } => {
             let mut error = "remote.errors.noKey";
@@ -602,11 +626,130 @@ async fn authenticate(
 
 #[cfg(test)]
 mod tests {
-    use super::quote;
+    use super::*;
+    use russh::server::{self, Auth};
+    use russh::{MethodKind, MethodSet};
+    use std::borrow::Cow;
 
     #[test]
     fn quotes_shell_words() {
         assert_eq!(quote("/home/a b/.codex"), "'/home/a b/.codex'");
         assert_eq!(quote("it's"), r"'it'\''s'");
+    }
+
+    const PASSWORD: &str = "s3cret pass";
+
+    /// A server taking the password as `password`, or only through
+    /// keyboard-interactive prompts as PAM setups do.
+    struct PasswordServer {
+        keyboard_only: bool,
+    }
+
+    impl server::Handler for PasswordServer {
+        type Error = russh::Error;
+
+        async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+            Ok(
+                if !self.keyboard_only && user == "lab" && password == PASSWORD {
+                    Auth::Accept
+                } else {
+                    Auth::reject()
+                },
+            )
+        }
+
+        async fn auth_keyboard_interactive<'a>(
+            &'a mut self,
+            user: &str,
+            _submethods: &str,
+            response: Option<server::Response<'a>>,
+        ) -> Result<Auth, Self::Error> {
+            Ok(match response {
+                None if user == "lab" => Auth::Partial {
+                    name: Cow::Borrowed(""),
+                    instructions: Cow::Borrowed(""),
+                    prompts: Cow::Owned(vec![(Cow::Borrowed("Password: "), false)]),
+                },
+                Some(mut answers) => {
+                    if answers.next().as_deref() == Some(PASSWORD.as_bytes()) {
+                        Auth::Accept
+                    } else {
+                        Auth::reject()
+                    }
+                }
+                None => Auth::reject(),
+            })
+        }
+    }
+
+    /// Signs in to an in-process server on a loopback port.
+    fn sign_in(keyboard_only: bool, password: &str) -> Result<(), ConnectError> {
+        let host_key =
+            keys::PrivateKey::from(keys::ssh_key::private::Ed25519Keypair::from_seed(&[7; 32]));
+        let fingerprint = host_key
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
+        let methods: &[MethodKind] = if keyboard_only {
+            &[MethodKind::KeyboardInteractive]
+        } else {
+            &[MethodKind::Password, MethodKind::KeyboardInteractive]
+        };
+        let config = Arc::new(server::Config {
+            keys: vec![host_key],
+            methods: MethodSet::from(methods),
+            ..Default::default()
+        });
+        let known = tempfile::tempdir().unwrap();
+        block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                if let Ok(session) =
+                    server::run_stream(config, stream, PasswordServer { keyboard_only }).await
+                {
+                    let _ = session.await;
+                }
+            });
+            let target = Target {
+                host_name: "127.0.0.1".into(),
+                alias: String::new(),
+                port,
+                user: "lab".into(),
+                method: Method::Password(password.into()),
+            };
+            let known = Arc::new(KnownHosts {
+                user: None,
+                app: known.path().join("known_hosts"),
+            });
+            session(&target, known, Some(fingerprint), None)
+                .await
+                .map(|_| ())
+        })
+    }
+
+    #[test]
+    fn a_password_signs_in_by_password_or_by_keyboard_interactive() {
+        assert_eq!(sign_in(false, PASSWORD), Ok(()));
+        assert_eq!(
+            sign_in(true, PASSWORD),
+            Ok(()),
+            "PAM servers ask through keyboard-interactive"
+        );
+        assert_eq!(
+            sign_in(true, "wrong")
+                .err()
+                .map(|error| error.key())
+                .as_deref(),
+            Some("remote.errors.authPassword")
+        );
+        assert_eq!(
+            sign_in(false, "wrong")
+                .err()
+                .map(|error| error.key())
+                .as_deref(),
+            Some("remote.errors.authPassword")
+        );
     }
 }

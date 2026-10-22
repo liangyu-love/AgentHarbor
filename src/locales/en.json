@@ -3305,6 +3305,7 @@
     "actionFailed": "Action failed",
     "authKey": "Key",
     "authPassword": "Password",
+      "authPrompt": "The server asks for more than the password (such as a one-time code), which is not supported yet. Sign in with a key instead",
     "addTitle": "Add remote host",
     "editTitle": "Edit remote host",
     "hostDialogHint": "A host alias from ~/.ssh/config works as is: its address, port, user and key are read from there.",
