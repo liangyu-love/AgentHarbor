@@ -64,6 +64,11 @@ pub struct CodexRemoteRequest {
     /// relay the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Through this machine's router over the host's tunnel: every relay,
+    /// account source and aggregate Codex is offered here, by the router's
+    /// model ids. `provider_id` is then unused.
+    #[serde(default)]
+    pub router: bool,
 }
 
 impl CodexRemoteRequest {
@@ -137,6 +142,64 @@ pub struct CodexRemote<'a> {
     journal: PathBuf,
     app_data_dir: PathBuf,
     official: Vec<Value>,
+    /// This machine's Codex home, for the router's catalog.
+    codex_home: Option<PathBuf>,
+    /// The server port the host's tunnel listens on.
+    tunnel_port: u16,
+}
+
+/// Where a configuration sends Codex and what it offers there.
+struct Upstream {
+    name: String,
+    endpoint: String,
+    key: String,
+    catalog: Value,
+    models: Vec<String>,
+    context: Option<u64>,
+    threshold: Option<u64>,
+}
+
+/// One model of the router's Codex menu, as a remote Codex is offered it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterModel {
+    pub id: String,
+    pub label: String,
+}
+
+/// The router's Codex catalog for a remote host: every relay, account
+/// source and aggregate Codex is offered, without official models, which
+/// need a ChatGPT sign-in the host does not have.
+fn router_catalog(app_data_dir: &Path, codex_home: &Path, store: &Store) -> Value {
+    let mut accountless = store.clone();
+    accountless.router.accountless = true;
+    router::catalog_value(app_data_dir, codex_home, &accountless)
+}
+
+pub fn router_menu(app_data_dir: &Path, codex_home: &Path, store: &Store) -> Vec<RouterModel> {
+    router_catalog(app_data_dir, codex_home, store)["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry["slug"].as_str()?.to_owned();
+            let label = entry["display_name"]
+                .as_str()
+                .filter(|label| !label.is_empty())
+                .unwrap_or(&id)
+                .to_owned();
+            Some(RouterModel { id, label })
+        })
+        .collect()
+}
+
+/// Whether the Codex journaled in `journal_dir` goes through the router.
+pub fn routed(journal_dir: &Path) -> bool {
+    secret_file::read(&journal_dir.join(JOURNAL_FILE))
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice::<Journal>(&bytes).ok())
+        .is_some_and(|journal| journal.request.router)
 }
 
 /// A file put back the way a journal says, as read and as it will be.
@@ -364,7 +427,62 @@ impl<'a> CodexRemote<'a> {
             journal: journal_dir.join(JOURNAL_FILE),
             app_data_dir: app_data_dir.to_path_buf(),
             official,
+            codex_home: None,
+            tunnel_port: router::DEFAULT_PORT,
         }
+    }
+
+    /// Lets a configuration go through this machine's router, reached on the
+    /// host at `127.0.0.1:tunnel_port`.
+    pub fn with_router(mut self, codex_home: &Path, tunnel_port: u16) -> Self {
+        self.codex_home = Some(codex_home.to_path_buf());
+        self.tunnel_port = tunnel_port;
+        self
+    }
+
+    fn upstream(&self, store: &Store, request: &CodexRemoteRequest) -> Result<Upstream, String> {
+        if request.router {
+            let codex_home = self.codex_home.as_deref().ok_or("clients.errors.router")?;
+            if store.router.bearer_token.is_empty() {
+                return Err("clients.errors.router".into());
+            }
+            let catalog = router_catalog(&self.app_data_dir, codex_home, store);
+            let models = catalog["models"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry["slug"].as_str().map(str::to_owned))
+                .collect();
+            return Ok(Upstream {
+                name: "AgentHarbor".into(),
+                endpoint: format!("http://127.0.0.1:{}/codex/v1", self.tunnel_port),
+                key: store.router.bearer_token.clone(),
+                catalog,
+                models,
+                context: None,
+                threshold: None,
+            });
+        }
+        let provider = store
+            .providers
+            .iter()
+            .find(|provider| provider.id == request.provider_id && provider.has_route_credentials())
+            .ok_or("clients.errors.provider")?;
+        let remote = router::remote_plan(
+            store,
+            provider,
+            &models_dev::load(&self.app_data_dir),
+            &self.official,
+        )?;
+        Ok(Upstream {
+            name: provider.name.clone(),
+            endpoint: remote.endpoint,
+            key: remote.key,
+            catalog: remote.catalog,
+            models: remote.models,
+            context: remote.context,
+            threshold: remote.threshold,
+        })
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -469,13 +587,7 @@ impl<'a> CodexRemote<'a> {
         request: &CodexRemoteRequest,
         replace_conflicts: bool,
     ) -> Result<Plan, String> {
-        let provider = store
-            .providers
-            .iter()
-            .find(|provider| provider.id == request.provider_id && provider.has_route_credentials())
-            .ok_or("clients.errors.provider")?;
-        let catalog = models_dev::load(&self.app_data_dir);
-        let remote = router::remote_plan(store, provider, &catalog, &self.official)?;
+        let remote = self.upstream(store, request)?;
         if !remote.models.contains(&request.model) {
             return Err("clients.errors.model".into());
         }
@@ -528,7 +640,7 @@ impl<'a> CodexRemote<'a> {
         };
         let catalog_path = self.display(CATALOG_FILE);
         let provider_entry = serde_json::json!({
-            "name": provider.name,
+            "name": remote.name,
             "base_url": remote.endpoint,
             "wire_api": "responses",
             "env_key": ENV_NAME,
@@ -545,9 +657,11 @@ impl<'a> CodexRemote<'a> {
                 remote.threshold.map(Value::from),
             ),
             (&["model_providers", PROVIDER_KEY], Some(provider_entry)),
+            // The router adapts search for each upstream; only a direct
+            // relay may need the tool kept away.
             (
                 &["web_search"],
-                (!request.web_search).then(|| "disabled".into()),
+                (!request.router && !request.web_search).then(|| "disabled".into()),
             ),
         ];
         for (path, value) in &writes {
@@ -620,18 +734,10 @@ impl<'a> CodexRemote<'a> {
             status.conflict_fields = Self::conflicts(&document, &journal);
             status.conflict = !status.conflict_fields.is_empty();
             if let Some(store) = store {
-                let written = store
-                    .providers
-                    .iter()
-                    .find(|provider| provider.id == journal.request.provider_id)
-                    .and_then(|provider| {
-                        let remote = router::remote_plan(
-                            store,
-                            provider,
-                            &models_dev::load(&self.app_data_dir),
-                            &self.official,
-                        )
-                        .ok()?;
+                let written = self
+                    .upstream(store, &journal.request)
+                    .ok()
+                    .and_then(|remote| {
                         let catalog = serde_json::to_vec_pretty(&remote.catalog).ok()?;
                         Some(fingerprint(&remote.endpoint, &remote.key, &catalog))
                     });
@@ -846,6 +952,7 @@ mod tests {
             model: "gpt-5.5".into(),
             web_search: false,
             profile: None,
+            router: false,
         }
     }
 
@@ -1054,6 +1161,63 @@ mod tests {
             )
         );
         assert!(read(CATALOG_FILE).is_none());
+        let _ = std::fs::remove_dir_all(journal);
+    }
+
+    #[test]
+    fn a_routed_codex_reaches_the_router_through_the_tunnel_with_its_menu() {
+        let (files, journal, data) = setup();
+        let codex = CodexRemote::new(&files, "/home/u", &journal, &data, Vec::new())
+            .with_router(&data, 43200);
+        let mut store = store();
+        store.router.bearer_token = "local-router-token".into();
+        let menu = router_menu(&data, &data, &store);
+        assert!(
+            menu.iter().any(|model| model.id == "p1::gpt-5.5"),
+            "{:?}",
+            menu.iter().map(|m| &m.id).collect::<Vec<_>>()
+        );
+        let routed = CodexRemoteRequest {
+            router: true,
+            provider_id: String::new(),
+            model: "p1::gpt-5.5".into(),
+            ..request()
+        };
+        let preview = codex.preview(&store, &routed, false).unwrap();
+        assert!(!preview.content.contains("local-router-token"));
+        codex
+            .apply(&store, &routed, &preview.revision, false)
+            .unwrap();
+        let config = parse(
+            files
+                .read(Path::new("/home/u/.codex/config.toml"))
+                .unwrap()
+                .as_deref(),
+        )
+        .unwrap();
+        assert_eq!(
+            field(&config, &["model_providers", PROVIDER_KEY, "base_url"]),
+            Some("http://127.0.0.1:43200/codex/v1".into())
+        );
+        assert_eq!(
+            field(&config, &["web_search"]),
+            None,
+            "the router adapts search itself"
+        );
+        let env = files
+            .read(Path::new("/home/u/.codex/.env"))
+            .unwrap()
+            .unwrap();
+        assert!(env.contains("local-router-token"));
+        assert!(super::routed(&journal));
+        assert!(!codex.status(Some(&store)).stale);
+        store.router.bearer_token = "rotated".into();
+        assert!(
+            codex.status(Some(&store)).stale,
+            "a new router token must be written again"
+        );
+        codex.restore(false).unwrap();
+        assert!(!super::routed(&journal));
         let _ = std::fs::remove_dir_all(journal);
     }
 

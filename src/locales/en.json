@@ -3271,12 +3271,24 @@
     "aggregatePrefixHint": "Aggregates are named prefix/model in the gateway, apart from a relay's short-name/model. One aggregate can set its own prefix under Model aggregation; requests that still send the bare model name keep working."
   },
   "remote": {
+    "tunnel": {
+      "connected": "Tunnel connected",
+      "connecting": "Tunnel connecting…",
+      "retrying": "Tunnel lost, reconnecting",
+      "stopped": "Tunnel not running",
+      "route": "server 127.0.0.1:{{port}} → this computer's router",
+      "stoppedHint": "The tunnel starts once the local router is running."
+    },
+    "accessDirect": "Direct",
+    "accessRouter": "Through this computer's router",
+    "routedHint": "Through this computer's router: requests on the server come back over an SSH tunnel to the local router, so aggregates, account sources and cross-protocol search work. AgentHarbor must stay open.",
+    "routedNote": "Through the router, the server reaches this computer's router over an SSH tunnel (127.0.0.1:{{port}} on the server). While AgentHarbor is closed or this computer is offline, these clients cannot connect.",
     "groupTitle": "Remote hosts",
-    "groupDesc": "Edit Codex and Claude Code configuration on servers over SSH; the server then reaches the relay on its own.",
+    "groupDesc": "Edit Codex and Claude Code configuration on servers over SSH, direct to a relay or through this computer's router over an SSH tunnel.",
     "groupSummary": "{{count}} hosts",
     "groupNone": "None yet",
     "title": "Remote hosts",
-    "description": "Connect to Linux or macOS servers over SSH and write a direct relay connection into their Codex and Claude Code configuration. Every change is backed up first and can be restored; the server calls the relay itself, so AgentHarbor does not need to stay open.",
+    "description": "Connect to Linux or macOS servers over SSH and edit their Codex and Claude Code configuration: direct to a relay, the server works on its own; through the router, it uses this computer's router over an SSH tunnel. Every change is backed up first and can be restored.",
     "add": "Add host",
     "empty": "No remote hosts yet. Add one and sign in with an SSH key or a password.",
     "inUse": "Has configuration managed by AgentHarbor",
@@ -3301,6 +3313,9 @@
     "directHint": "Remote hosts are configured direct only: the server calls the chosen relay itself, not through this computer.",
     "backupHint": "The remote file is backed up on this computer (encrypted) before it is written, and put back on restore.",
     "fields": {
+      "advanced": "Advanced",
+      "tunnelPort": "Tunnel port (on the server)",
+      "tunnelPortHint": "Through the router, this server port is forwarded to the local router. 43127 by default; pick another if it is taken.",
       "name": "Name",
       "namePlaceholder": "e.g. Dev server",
       "host": "Host",
@@ -3328,6 +3343,7 @@
       "fingerprint": "Fingerprint"
     },
     "clients": {
+      "routed": "Through the router · {{model}}",
       "notConfigured": "Not configured",
       "configured": "Direct to {{provider}} / {{model}}",
       "configure": "Configure",
@@ -3349,6 +3365,8 @@
       "releaseDescription": "AgentHarbor forgets this configuration. The files on the server stay as they are now and can no longer be restored in one step."
     },
     "codexDialog": {
+      "routedDescription": "Codex uses this computer's router over an SSH tunnel: every relay, account source and aggregate is available, and the router adapts web search. Official account models are not included.",
+      "routedModels": "The local router offers {{count}} models.",
       "description": "Codex calls the chosen relay's Responses API directly. The key goes into the remote ~/.codex/.env (owner-only) and the model catalog into ~/.codex/agentharbor-models.json.",
       "provider": "Relay",
       "model": "Default model",
@@ -3366,6 +3384,9 @@
       "conflict": "Changed on the server; applying replaces them: {{fields}}"
     },
     "errors": {
+      "tunnelPort": "The tunnel port is taken on the server. Pick another in the host settings",
+      "tunnelLost": "The tunnel was lost",
+      "tunnelPortInUse": "Configurations on this host go through the router. Restore them before changing the port",
       "storage": "Could not read or write the remote host data",
       "name": "The name needs 1 to 64 characters",
       "host": "Enter a host (alias, host name or IP) without spaces",

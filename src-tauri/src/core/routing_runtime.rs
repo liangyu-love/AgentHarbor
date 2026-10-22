@@ -100,6 +100,8 @@ fn release_router_clients_at(paths: &CodexPaths, clients: client_config::ClientP
         log::warn!("{target:?} router config cleanup failed: {error}");
     }
     super::cursor_inject::release_on_exit(&paths.app_data_dir);
+    // A remote host loses this router with this process: its tunnel goes too.
+    super::remote::tunnel::stop_all();
     if let Err(error) = router::stop_smart_routing_on_exit(paths) {
         log::warn!("Codex router config cleanup failed: {error}");
     }
@@ -245,9 +247,10 @@ pub async fn reconcile_with(paths: &CodexPaths, cursor_leases: bool) -> Result<(
         .map_err(|error| error.message)?;
     router_proxy::set_desktop_pin(desktop_port)?;
     let cursor = super::cursor_inject::active(&paths.app_data_dir);
+    let remote = super::remote::RemoteStore::new(&paths.app_data_dir);
     let result = if needs_server(
         &store,
-        client_config::has_router_configs(&paths.app_data_dir)? || cursor,
+        client_config::has_router_configs(&paths.app_data_dir)? || cursor || remote.has_router_configs(),
         router_proxy::desktop_listener_required(),
     ) {
         ensure_available(paths).await
@@ -255,6 +258,9 @@ pub async fn reconcile_with(paths: &CodexPaths, cursor_leases: bool) -> Result<(
         router_proxy::stop();
         Ok(())
     };
+    // Remote hosts reach the router through tunnels that follow it: up
+    // while it serves, aimed at its current port.
+    remote.sync_tunnels(store.router.port, result.is_ok() && router_proxy::is_running());
     let cursor_result = super::cursor_inject::reconcile(paths, cursor_leases).await;
     if let Err(error) = &cursor_result {
         log::warn!("Cursor injection reconcile failed: {error}");

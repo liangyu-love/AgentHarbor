@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Fingerprint, KeyRound, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, RotateCcw, Server, Settings2, ShieldAlert, Trash2, Unlink } from "lucide-react";
+import { AlertTriangle, Cable, Fingerprint, KeyRound, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, RotateCcw, Server, Settings2, ShieldAlert, Trash2, Unlink } from "lucide-react";
 import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
@@ -9,7 +9,6 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
-import type { ClientStatus } from "@/types/clients";
 import type { NewApiProvider } from "@/types/newapi";
 import type { RemoteClients, RemoteHost } from "@/types/remote";
 import { ConfigDialog } from "./client-config-dialog";
@@ -25,11 +24,21 @@ const target = (host: RemoteHost) => {
 };
 
 // Remote hosts on the injection page: the hosts in a rail, the chosen one's
-// Codex and Claude Code beside it. Every remote client is configured direct.
+// Codex and Claude Code beside it, each direct or through this machine's
+// router over the host's tunnel.
 export function RemoteHostsPanel({ providers }: { providers: NewApiProvider[] }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const hosts = useQuery({ queryKey: queryKeys.remoteHosts, queryFn: api.remote.hosts });
+  // A routed host's tunnel is followed: quickly while it connects.
+  const hosts = useQuery({
+    queryKey: queryKeys.remoteHosts,
+    queryFn: api.remote.hosts,
+    refetchInterval: query => {
+      const routed = (query.state.data ?? []).filter(host => host.routed);
+      if (!routed.length) return false;
+      return routed.some(host => host.tunnel?.state !== "connected") ? 3_000 : 15_000;
+    },
+  });
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     try { return localStorage.getItem(SELECTED_KEY); } catch { return null; }
   });
@@ -75,7 +84,7 @@ export function RemoteHostsPanel({ providers }: { providers: NewApiProvider[] })
                     active ? "bg-primary/10 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.45)]" : "hover:bg-muted/60")}>
                   <span className="flex items-center gap-2">
                     <span className="min-w-0 flex-1 truncate text-sm font-semibold">{host.name}</span>
-                    {host.inUse && <span aria-label={t("remote.inUse")} title={t("remote.inUse")} className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />}
+                    {host.inUse && <HostDot host={host} />}
                   </span>
                   <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{target(host)}</span>
                 </button>
@@ -191,6 +200,8 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
         </div>
       </div>
 
+      {host.routed && <TunnelStrip host={host} />}
+
       {clients.isLoading && <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("remote.connecting")}</p>}
 
       {failure === "remote.errors.unknownHost" && (
@@ -220,8 +231,9 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
       {data && (
         <div className="space-y-2.5" data-remote-clients>
           <ClientRow glyph="codex" name="Codex" path={data.codex.path} configured={data.codex.configured}
+            routed={!!data.codex.request?.router}
             provider={providers.find(entry => entry.id === data.codex.request?.providerId)?.name ?? data.codex.request?.providerId}
-            model={data.codex.request?.model} conflictFields={data.codex.conflictFields} stale={data.codex.stale} error={data.codex.error}
+            model={data.codex.request ? data.codex.request.router ? routerLabel(data.codex.request.model, providers) : data.codex.request.model : undefined} conflictFields={data.codex.conflictFields} stale={data.codex.stale} error={data.codex.error}
             hint={data.codex.configured ? data.codex.request?.profile ? t("remote.clients.profileUse", { name: data.codex.request.profile }) : t("remote.clients.defaultUse") : undefined}
             busy={busy} onConfigure={() => setDialog("codex")}
             onRestore={() => act(t("remote.clients.restoreTitle", { name: "Codex" }),
@@ -230,6 +242,7 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
             onRelease={() => act(t("remote.clients.releaseTitle", { name: "Codex" }), t("remote.clients.releaseDescription"), t("remote.clients.release"),
               () => api.remote.releaseCodex(host.id), t("remote.clients.released"))} />
           <ClientRow glyph="claudeCode" name={claudeName} path={data.claudeCode.path} configured={data.claudeCode.configured}
+            routed={data.claudeCode.request?.accessMode === "router"}
             provider={providers.find(entry => entry.id === data.claudeCode.providerId)?.name ?? data.claudeCode.providerId ?? undefined}
             model={data.claudeCode.model ?? undefined} conflictFields={data.claudeCode.conflictFields ?? []} stale={!!data.claudeCode.stale}
             error={data.claudeCode.error} busy={busy} onConfigure={() => setDialog("claudeCode")}
@@ -243,7 +256,7 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
 
       {dialog === "codex" && data && <RemoteCodexDialog host={host} status={data.codex} providers={providers}
         onClose={() => setDialog(null)} onApplied={refresh} />}
-      {dialog === "claudeCode" && data && <ConfigDialog client={remoteClaudeStatus(data.claudeCode)} providers={providers}
+      {dialog === "claudeCode" && data && <ConfigDialog client={data.claudeCode} providers={providers}
         onClose={() => setDialog(null)} onApplied={refresh}
         remote={{
           hostName: host.name,
@@ -255,9 +268,45 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
   );
 }
 
-/** A remote Claude Code is configured direct: a saved router request is not offered again. */
-const remoteClaudeStatus = (status: ClientStatus): ClientStatus =>
-  status.request?.accessMode === "router" ? { ...status, request: null } : status;
+/** A router model id, `<provider id>::<model>`, with the provider's name. */
+const routerLabel = (model: string, providers: NewApiProvider[]) => {
+  const [id, rest] = model.split("::");
+  const provider = rest ? providers.find(entry => entry.id === id) : undefined;
+  return provider ? `${provider.name} / ${rest}` : model;
+};
+
+/** The rail's mark for a host with managed clients: its tunnel's state when routed. */
+function HostDot({ host }: { host: RemoteHost }) {
+  const { t } = useTranslation();
+  const state = host.routed ? host.tunnel?.state ?? "stopped" : "direct";
+  const label = host.routed ? t(`remote.tunnel.${state}`) : t("remote.inUse");
+  return <span aria-label={label} title={label} data-remote-host-dot={state}
+    className={cn("h-2 w-2 shrink-0 rounded-full",
+      state === "connected" || state === "direct" ? "bg-emerald-500"
+        : state === "connecting" ? "animate-pulse bg-amber-500" : "bg-destructive")} />;
+}
+
+/** How a routed host reaches this machine's router. */
+function TunnelStrip({ host }: { host: RemoteHost }) {
+  const { t } = useTranslation();
+  const tunnel = host.tunnel;
+  const state = tunnel?.state ?? "stopped";
+  return (
+    <div role="status" data-remote-tunnel={state}
+      className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl px-4 py-2.5 text-xs",
+        state === "connected" ? "bg-emerald-500/[0.07] shadow-[inset_0_0_0_1px_rgb(16_185_129/0.3)]"
+          : state === "connecting" ? "bg-amber-500/[0.07] shadow-[inset_0_0_0_1px_rgb(245_158_11/0.3)]"
+          : "bg-destructive/5 shadow-[inset_0_0_0_1px_hsl(var(--destructive)/0.3)]")}>
+      <span className="flex items-center gap-1.5 font-semibold">
+        {state === "connecting" ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Cable aria-hidden className="h-3.5 w-3.5" />}
+        {t(`remote.tunnel.${state}`)}
+      </span>
+      <span className="font-mono text-muted-foreground">{t("remote.tunnel.route", { port: host.tunnelPort })}</span>
+      {tunnel?.state === "retrying" && <span className="text-destructive">{t(tunnel.error)}</span>}
+      {state === "stopped" && <span className="text-muted-foreground">{t("remote.tunnel.stoppedHint")}</span>}
+    </div>
+  );
+}
 
 function HostKeyCard({ tone, icon, title, description, fingerprint, algorithm, loading, action }: {
   tone: "info" | "danger";
@@ -288,11 +337,13 @@ function HostKeyCard({ tone, icon, title, description, fingerprint, algorithm, l
   );
 }
 
-function ClientRow({ glyph, name, path, configured, provider, model, hint, conflictFields, stale, error, busy, onConfigure, onRestore, onRelease }: {
+function ClientRow({ glyph, name, path, configured, routed, provider, model, hint, conflictFields, stale, error, busy, onConfigure, onRestore, onRelease }: {
   glyph: "codex" | "claudeCode";
   name: string;
   path: string;
   configured: boolean;
+  /** Configured through this machine's router. */
+  routed: boolean;
   provider?: string;
   model?: string;
   /** How to run the client as configured. */
@@ -317,7 +368,9 @@ function ClientRow({ glyph, name, path, configured, provider, model, hint, confl
         <p className="flex items-center gap-2 text-sm font-semibold">
           {name}
           <span className={cn("text-[11px] font-normal", configured ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
-            {configured ? t("remote.clients.configured", { provider: provider ?? "?", model: model ?? "?" }) : t("remote.clients.notConfigured")}
+            {!configured ? t("remote.clients.notConfigured")
+              : routed ? t("remote.clients.routed", { model: model ?? "?" })
+              : t("remote.clients.configured", { provider: provider ?? "?", model: model ?? "?" })}
           </span>
         </p>
         <p className="truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</p>

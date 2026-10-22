@@ -2,6 +2,13 @@ import type { ClientStatus } from "./clients";
 
 export type RemoteAuth = "key" | "password";
 
+/** A reverse tunnel from a host back to this machine's router. */
+export type TunnelState =
+  | { state: "connecting" }
+  | { state: "connected"; since: number }
+  /** The last attempt failed (an i18n key); another follows. */
+  | { state: "retrying"; error: string };
+
 /** What `~/.ssh/config` and the defaults make of a host. */
 export interface ResolvedRemoteHost {
   hostName: string;
@@ -25,6 +32,12 @@ export interface RemoteHost {
   resolved: ResolvedRemoteHost;
   /** Clients on this host are configured by AgentHarbor. */
   inUse: boolean;
+  /** The server port the tunnel listens on. */
+  tunnelPort: number;
+  /** A client on this host goes through this machine's router. */
+  routed: boolean;
+  /** The tunnel, while one runs. */
+  tunnel: TunnelState | null;
 }
 
 /** A host as edited; empty secrets keep what is stored. */
@@ -39,6 +52,7 @@ export interface RemoteHostInput {
   password?: string | null;
   passphrase?: string | null;
   clearPassphrase?: boolean;
+  tunnelPort?: number | null;
 }
 
 export type RemoteConnectionTest =
@@ -53,8 +67,16 @@ export interface RemoteCodexRequest {
   model: string;
   /** Codex's web_search tool; off writes `web_search = "disabled"`, since a relay may refuse the tool. */
   webSearch: boolean;
-  /** Written as `[profiles.<name>]` (run `codex -p <name>`), leaving Codex's own default; null makes the relay the default. */
+  /** Written to `<name>.config.toml` (run `codex -p <name>`), leaving `config.toml` as it was; null makes the relay the default. */
   profile?: string | null;
+  /** Through this machine's router over the host's tunnel; `model` is then a router model id. */
+  router?: boolean;
+}
+
+/** One model of the router's Codex menu, as a routed remote Codex is offered it. */
+export interface RouterModel {
+  id: string;
+  label: string;
 }
 
 export interface RemoteCodexStatus {

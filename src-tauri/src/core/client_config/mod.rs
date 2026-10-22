@@ -358,8 +358,9 @@ pub struct ConfigManager {
     paths: ClientPaths,
     network: Network,
     files: Arc<dyn ClientFiles>,
-    /// Configuring a remote host: direct Claude Code only, and nothing of
-    /// this machine (its Claude Code version, its managed settings) applies.
+    /// Configuring a remote host: nothing of this machine (its Claude Code
+    /// version, its managed settings) applies, and a routed client reaches
+    /// the router through the host's tunnel at the store's router port.
     remote: bool,
 }
 
@@ -930,10 +931,6 @@ impl ConfigManager {
                 ))
         {
             return Err("clients.errors.limits".into());
-        }
-        if self.remote && (request.needs_router() || request.aggregate_target().is_some() || mixed_models::is_mixed(request)) {
-            // A remote client cannot reach this machine's router.
-            return Err("remote.errors.directOnly".into());
         }
         if request.needs_router() && store.router.bearer_token.is_empty() {
             return Err("clients.errors.router".into());

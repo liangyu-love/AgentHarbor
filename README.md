@@ -27,7 +27,7 @@ Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness and Cursor ea
 - **Gateway**: one local address and an API key give any agent with a custom base URL every model you have
 - **Cross-protocol web search**: each client's built-in web search keeps working on models of another protocol
 - **Cursor**: use your own models for Cursor's Agent, Tab completion and commit messages
-- **Remote hosts**: edit Codex and Claude Code configuration on servers over SSH so they call your relay directly, with preview and restore
+- **Remote hosts**: edit Codex and Claude Code configuration on servers over SSH, direct to a relay or through this computer's router over an SSH tunnel; Codex can be a profile beside its official sign-in, with preview and restore
 - **One-click launch**: start or restart a client right after changing its configuration
 
 ### Accounts

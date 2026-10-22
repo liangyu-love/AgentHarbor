@@ -1,19 +1,24 @@
 //! Remote hosts and the Codex and Claude Code configuration on them. Each
 //! command opens its own SSH session on the blocking pool and closes it.
+//! A change that may start or end a routed configuration reconciles the
+//! router afterwards, which also starts or stops the host's tunnel.
 
 use super::blocking;
 use crate::core::{
-    client_config::{ClientStatus, ConfigApplied, ConfigManager, ConfigPreview, ConfigRequest},
+    client_config::{
+        ClientFiles, ClientStatus, ConfigApplied, ConfigManager, ConfigPreview, ConfigRequest,
+    },
     model_catalog,
     remote::{
         codex::{
-            CodexRemote, CodexRemoteApplied, CodexRemotePreview, CodexRemoteRequest,
-            CodexRemoteStatus,
+            self, CodexRemote, CodexRemoteApplied, CodexRemotePreview, CodexRemoteRequest,
+            CodexRemoteStatus, RouterModel,
         },
         ConnectionTest, RemoteHostInput, RemoteHostView, RemoteSession, RemoteStore,
     },
     repository::Repository,
-    router,
+    router::{self, Store},
+    routing_runtime,
     targets::TargetId,
 };
 use crate::platform::paths::CodexPaths;
@@ -36,8 +41,29 @@ fn connect(store: &RemoteStore, id: &str) -> Result<Arc<RemoteSession>, String> 
         .map_err(|error| error.key())
 }
 
-fn official(paths: &CodexPaths) -> Vec<serde_json::Value> {
-    model_catalog::official(&paths.codex_home, &paths.app_data_dir).models
+/// The relays, with the router reached at host `id`'s tunnel port: that is
+/// the address a routed configuration on the host is written with.
+fn relays(paths: &CodexPaths, store: &RemoteStore, id: &str) -> Result<Store, String> {
+    let mut relays = router::load_store(paths)?;
+    relays.router.port = store.tunnel_port(id)?;
+    Ok(relays)
+}
+
+fn codex<'a>(
+    paths: &CodexPaths,
+    store: &RemoteStore,
+    id: &str,
+    files: &'a dyn ClientFiles,
+    home: &str,
+) -> Result<CodexRemote<'a>, String> {
+    Ok(CodexRemote::new(
+        files,
+        home,
+        &store.journal_dir(id)?,
+        &paths.app_data_dir,
+        model_catalog::official(&paths.codex_home, &paths.app_data_dir).models,
+    )
+    .with_router(&paths.codex_home, store.tunnel_port(id)?))
 }
 
 fn claude(
@@ -51,6 +77,13 @@ fn claude(
         ConfigManager::remote(&paths.app_data_dir, &store.journal_dir(id)?, &home, session)
             .with_official_home(&paths.codex_home),
     )
+}
+
+/// The router and the tunnels follow what is now configured.
+async fn settle(paths: &CodexPaths) {
+    if let Err(error) = routing_runtime::reconcile(paths).await {
+        log::warn!("router reconcile after a remote change failed: {error}");
+    }
 }
 
 #[tauri::command]
@@ -73,7 +106,14 @@ pub async fn save_remote_host(
     input: RemoteHostInput,
 ) -> Result<RemoteHostView, String> {
     let paths = paths(&repo)?;
-    blocking(move || RemoteStore::new(&paths.app_data_dir).save_host(input)).await
+    let saved = blocking({
+        let paths = paths.clone();
+        move || RemoteStore::new(&paths.app_data_dir).save_host(input)
+    })
+    .await?;
+    // A changed address or sign-in reaches a running tunnel on its next start.
+    settle(&paths).await;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -114,15 +154,9 @@ pub async fn remote_client_status(
     blocking(move || {
         let store = RemoteStore::new(&paths.app_data_dir);
         let session = connect(&store, &id)?;
-        let relays = router::load_store(&paths).ok();
-        let codex = CodexRemote::new(
-            session.as_ref(),
-            session.home(),
-            &store.journal_dir(&id)?,
-            &paths.app_data_dir,
-            official(&paths),
-        )
-        .status(relays.as_ref());
+        let relays = relays(&paths, &store, &id).ok();
+        let codex =
+            codex(&paths, &store, &id, session.as_ref(), session.home())?.status(relays.as_ref());
         let claude_code = claude(&paths, &store, &id, session.clone())?
             .status(TargetId::ClaudeCode, relays.as_ref());
         Ok(RemoteClients {
@@ -130,6 +164,23 @@ pub async fn remote_client_status(
             codex,
             claude_code,
         })
+    })
+    .await
+}
+
+/// The models a routed Codex on a remote host is offered: the router's own
+/// menu, without official models.
+#[tauri::command]
+pub async fn remote_codex_router_models(
+    repo: State<'_, Mutex<Repository>>,
+) -> Result<Vec<RouterModel>, String> {
+    let paths = paths(&repo)?;
+    blocking(move || {
+        Ok(codex::router_menu(
+            &paths.app_data_dir,
+            &paths.codex_home,
+            &router::load_store(&paths)?,
+        ))
     })
     .await
 }
@@ -145,15 +196,8 @@ pub async fn preview_remote_codex(
     blocking(move || {
         let store = RemoteStore::new(&paths.app_data_dir);
         let session = connect(&store, &id)?;
-        CodexRemote::new(
-            session.as_ref(),
-            session.home(),
-            &store.journal_dir(&id)?,
-            &paths.app_data_dir,
-            official(&paths),
-        )
-        .preview(
-            &router::load_store(&paths)?,
+        codex(&paths, &store, &id, session.as_ref(), session.home())?.preview(
+            &relays(&paths, &store, &id)?,
             &request,
             replace_conflicts.unwrap_or(false),
         )
@@ -170,24 +214,26 @@ pub async fn apply_remote_codex(
     replace_conflicts: Option<bool>,
 ) -> Result<CodexRemoteApplied, String> {
     let paths = paths(&repo)?;
-    blocking(move || {
-        let store = RemoteStore::new(&paths.app_data_dir);
-        let session = connect(&store, &id)?;
-        CodexRemote::new(
-            session.as_ref(),
-            session.home(),
-            &store.journal_dir(&id)?,
-            &paths.app_data_dir,
-            official(&paths),
-        )
-        .apply(
-            &router::load_store(&paths)?,
-            &request,
-            &revision,
-            replace_conflicts.unwrap_or(false),
-        )
+    let _guard = routing_runtime::mutation_guard().await;
+    if request.router {
+        routing_runtime::ensure_available(&paths).await?;
+    }
+    let applied = blocking({
+        let paths = paths.clone();
+        move || {
+            let store = RemoteStore::new(&paths.app_data_dir);
+            let session = connect(&store, &id)?;
+            codex(&paths, &store, &id, session.as_ref(), session.home())?.apply(
+                &relays(&paths, &store, &id)?,
+                &request,
+                &revision,
+                replace_conflicts.unwrap_or(false),
+            )
+        }
     })
-    .await
+    .await;
+    settle(&paths).await;
+    applied
 }
 
 #[tauri::command]
@@ -197,19 +243,19 @@ pub async fn restore_remote_codex(
     replace_conflicts: Option<bool>,
 ) -> Result<CodexRemoteApplied, String> {
     let paths = paths(&repo)?;
-    blocking(move || {
-        let store = RemoteStore::new(&paths.app_data_dir);
-        let session = connect(&store, &id)?;
-        CodexRemote::new(
-            session.as_ref(),
-            session.home(),
-            &store.journal_dir(&id)?,
-            &paths.app_data_dir,
-            Vec::new(),
-        )
-        .restore(replace_conflicts.unwrap_or(false))
+    let _guard = routing_runtime::mutation_guard().await;
+    let restored = blocking({
+        let paths = paths.clone();
+        move || {
+            let store = RemoteStore::new(&paths.app_data_dir);
+            let session = connect(&store, &id)?;
+            codex(&paths, &store, &id, session.as_ref(), session.home())?
+                .restore(replace_conflicts.unwrap_or(false))
+        }
     })
-    .await
+    .await;
+    settle(&paths).await;
+    restored
 }
 
 /// Stops managing Codex on the host without connecting to it.
@@ -219,19 +265,18 @@ pub async fn release_remote_codex(
     id: String,
 ) -> Result<(), String> {
     let paths = paths(&repo)?;
-    blocking(move || {
-        let store = RemoteStore::new(&paths.app_data_dir);
-        let offline = RemoteSession::offline();
-        CodexRemote::new(
-            &offline,
-            "",
-            &store.journal_dir(&id)?,
-            &paths.app_data_dir,
-            Vec::new(),
-        )
-        .release()
+    let _guard = routing_runtime::mutation_guard().await;
+    let released = blocking({
+        let paths = paths.clone();
+        move || {
+            let store = RemoteStore::new(&paths.app_data_dir);
+            let offline = RemoteSession::offline();
+            codex(&paths, &store, &id, &offline, "")?.release()
+        }
     })
-    .await
+    .await;
+    settle(&paths).await;
+    released
 }
 
 #[tauri::command]
@@ -246,7 +291,7 @@ pub async fn preview_remote_claude(
         let store = RemoteStore::new(&paths.app_data_dir);
         let session = connect(&store, &id)?;
         claude(&paths, &store, &id, session)?.preview_with_conflicts(
-            &router::load_store(&paths)?,
+            &relays(&paths, &store, &id)?,
             &claude_request(request)?,
             replace_conflicts.unwrap_or(false),
         )
@@ -263,17 +308,27 @@ pub async fn apply_remote_claude(
     replace_conflicts: Option<bool>,
 ) -> Result<ConfigApplied, String> {
     let paths = paths(&repo)?;
-    blocking(move || {
-        let store = RemoteStore::new(&paths.app_data_dir);
-        let session = connect(&store, &id)?;
-        claude(&paths, &store, &id, session)?.apply_with_conflicts(
-            &router::load_store(&paths)?,
-            &claude_request(request)?,
-            &revision,
-            replace_conflicts.unwrap_or(false),
-        )
+    let request = claude_request(request)?;
+    let _guard = routing_runtime::mutation_guard().await;
+    if request.needs_router() {
+        routing_runtime::ensure_available(&paths).await?;
+    }
+    let applied = blocking({
+        let paths = paths.clone();
+        move || {
+            let store = RemoteStore::new(&paths.app_data_dir);
+            let session = connect(&store, &id)?;
+            claude(&paths, &store, &id, session)?.apply_with_conflicts(
+                &relays(&paths, &store, &id)?,
+                &request,
+                &revision,
+                replace_conflicts.unwrap_or(false),
+            )
+        }
     })
-    .await
+    .await;
+    settle(&paths).await;
+    applied
 }
 
 #[tauri::command]
@@ -283,13 +338,19 @@ pub async fn restore_remote_claude(
     replace_conflicts: Option<bool>,
 ) -> Result<ConfigApplied, String> {
     let paths = paths(&repo)?;
-    blocking(move || {
-        let store = RemoteStore::new(&paths.app_data_dir);
-        let session = connect(&store, &id)?;
-        claude(&paths, &store, &id, session)?
-            .restore_confirmed(TargetId::ClaudeCode, replace_conflicts.unwrap_or(false))
+    let _guard = routing_runtime::mutation_guard().await;
+    let restored = blocking({
+        let paths = paths.clone();
+        move || {
+            let store = RemoteStore::new(&paths.app_data_dir);
+            let session = connect(&store, &id)?;
+            claude(&paths, &store, &id, session)?
+                .restore_confirmed(TargetId::ClaudeCode, replace_conflicts.unwrap_or(false))
+        }
     })
-    .await
+    .await;
+    settle(&paths).await;
+    restored
 }
 
 /// Stops managing Claude Code on the host without connecting to it.
@@ -299,15 +360,20 @@ pub async fn release_remote_claude(
     id: String,
 ) -> Result<(), String> {
     let paths = paths(&repo)?;
-    blocking(move || {
-        let store = RemoteStore::new(&paths.app_data_dir);
-        claude(&paths, &store, &id, Arc::new(RemoteSession::offline()))?
-            .release(TargetId::ClaudeCode)
+    let _guard = routing_runtime::mutation_guard().await;
+    let released = blocking({
+        let paths = paths.clone();
+        move || {
+            let store = RemoteStore::new(&paths.app_data_dir);
+            claude(&paths, &store, &id, Arc::new(RemoteSession::offline()))?
+                .release(TargetId::ClaudeCode)
+        }
     })
-    .await
+    .await;
+    settle(&paths).await;
+    released
 }
 
-/// Remote Claude Code is direct only, whatever the dialog sent.
 fn claude_request(request: ConfigRequest) -> Result<ConfigRequest, String> {
     if request.target_id != TargetId::ClaudeCode {
         return Err("clients.errors.unsupported".into());

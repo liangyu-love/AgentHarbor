@@ -930,13 +930,15 @@ impl ClientFiles for RemoteFiles {
 }
 
 #[test]
-fn a_remote_claude_code_is_configured_direct_through_its_own_files() {
+fn a_remote_claude_code_is_configured_through_its_own_files() {
     let (temp, _local, store, mut request) = fixture();
     let files = Arc::new(RemoteFiles::default());
     files.write(Path::new("/home/u/.claude/settings.json"), br#"{"theme":"dark"}"#).unwrap();
     let journals = temp.path().join("remote-journal");
     let manager = ConfigManager::remote(&temp.path().join("data"), &journals, "/home/u/", files.clone());
-    assert_eq!(manager.preview(&store, &request).err().as_deref(), Some("remote.errors.directOnly"));
+    // Routed, it reaches the router through the host's tunnel, at the store's port.
+    let routed = manager.preview(&store, &request).unwrap();
+    assert!(routed.content.contains("http://127.0.0.1:43127/clients/claude-code/p/test-relay"), "{}", routed.content);
     request.options.access_mode = ClientAccessMode::Native;
     apply(&manager, &store, &request);
     let written: Value = serde_json::from_str(&files.read(Path::new("/home/u/.claude/settings.json")).unwrap().unwrap()).unwrap();

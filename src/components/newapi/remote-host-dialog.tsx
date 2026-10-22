@@ -33,13 +33,15 @@ export function RemoteHostDialog({ host, onClose, onSaved }: {
   const [passphrase, setPassphrase] = useState("");
   const [clearPassphrase, setClearPassphrase] = useState(false);
   const [password, setPassword] = useState("");
+  const [tunnelPort, setTunnelPort] = useState(host && host.tunnelPort !== 43127 ? String(host.tunnelPort) : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const portNumber = port.trim() === "" ? null : Number(port);
+  const tunnelNumber = tunnelPort.trim() === "" ? null : Number(tunnelPort);
 
   const save = async () => {
     if (busy) return;
-    if (portNumber !== null && (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535)) {
+    if ([portNumber, tunnelNumber].some(value => value !== null && (!Number.isInteger(value) || value < 1 || value > 65535))) {
       setError("remote.errors.port"); return;
     }
     setBusy(true);
@@ -49,7 +51,7 @@ export function RemoteHostDialog({ host, onClose, onSaved }: {
         id: host?.id ?? null, name: name.trim() || address.trim(), host: address.trim(), port: portNumber,
         user: user.trim() || null, auth, identityFile: auth === "key" ? identityFile.trim() || null : null,
         password: auth === "password" ? password : null, passphrase: auth === "key" ? passphrase : null,
-        clearPassphrase: auth === "key" && clearPassphrase,
+        clearPassphrase: auth === "key" && clearPassphrase, tunnelPort: tunnelNumber,
       }));
     } catch (cause) {
       setError(remoteErrorKey(cause));
@@ -124,6 +126,17 @@ export function RemoteHostDialog({ host, onClose, onSaved }: {
               <SecretInput id="remote-host-password" value={password} onChange={setPassword}
                 placeholder={host?.hasPassword ? t("remote.fields.storedSecret") : ""} />
             </div>}
+            <details className="col-span-6 rounded-xl bg-muted/40 px-3 py-2" data-remote-host-advanced>
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">{t("remote.fields.advanced")}</summary>
+              <div className="mt-2.5 space-y-1.5">
+                <Label htmlFor="remote-host-tunnel-port">{t("remote.fields.tunnelPort")}</Label>
+                <Input id="remote-host-tunnel-port" value={tunnelPort} inputMode="numeric" placeholder="43127" className="w-32"
+                  disabled={busy || !!host?.routed} onChange={event => setTunnelPort(event.target.value.replace(/[^0-9]/g, ""))} />
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {t(host?.routed ? "remote.errors.tunnelPortInUse" : "remote.fields.tunnelPortHint")}
+                </p>
+              </div>
+            </details>
           </fieldset>
         </form>
         <p className="flex items-start gap-2 rounded-xl bg-muted/50 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">

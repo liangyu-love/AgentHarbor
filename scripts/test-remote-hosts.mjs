@@ -59,7 +59,7 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
   await codexDialog.getByRole("button", { name: await tr("clients.apply") }).click();
   await codexDialog.waitFor({ state: "hidden" });
   assert.deepEqual((await calls("applyCodex")).at(-1),
-    ["applyCodex", "host-1", { providerId: "mixed", model: "responses-model", webSearch: false, profile: "relay" }, "rev-codex", true],
+    ["applyCodex", "host-1", { providerId: "mixed", model: "responses-model", webSearch: false, profile: "relay", router: false }, "rev-codex", true],
     "a new Codex is written as a profile beside its own default");
   await codex.getByText(await tr("remote.clients.configured", { provider: "Provider mixed", model: "responses-model" })).waitFor();
   await codex.locator("[data-remote-client-hint]").getByText(await tr("remote.clients.profileUse", { name: "relay" })).waitFor();
@@ -67,11 +67,34 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
     "a host with configured clients cannot be deleted");
   console.log("PASS Codex on a remote host is configured direct with one relay's Responses models");
 
-  // Claude Code reuses the client dialog, direct only.
+  // Through the router: the router's menu, and the host's tunnel shown.
+  assert.equal(await panel.locator("[data-remote-tunnel]").count(), 0, "a direct host has no tunnel");
+  await codex.getByRole("button", { name: await tr("remote.clients.reconfigure") }).click();
+  await codexDialog.waitFor();
+  await codexDialog.getByRole("button", { name: await tr("remote.accessRouter") }).click();
+  await codexDialog.locator("#remote-codex-router-model").click();
+  assert.deepEqual(await page.getByRole("option").allInnerTexts(), ["Harbor Pool", "Provider mixed / responses-model"]);
+  await page.getByRole("option", { name: "Harbor Pool" }).click();
+  assert.equal(await codexDialog.locator("#remote-codex-web-search").count(), 0, "the router adapts search itself");
+  await codexDialog.getByRole("button", { name: await tr("clients.preview") }).click();
+  await codexDialog.locator("[data-remote-codex-preview]").waitFor();
+  await codexDialog.getByRole("button", { name: await tr("clients.apply") }).click();
+  await codexDialog.waitFor({ state: "hidden" });
+  const routed = (await calls("applyCodex")).at(-1)[2];
+  assert.equal(routed.router, true);
+  assert.equal(routed.model, "pool");
+  assert.equal(routed.providerId, "");
+  await codex.getByText(await tr("remote.clients.routed", { model: "pool" })).waitFor();
+  await panel.locator('[data-remote-tunnel="connected"]').getByText(await tr("remote.tunnel.connected")).waitFor();
+  console.log("PASS Codex on a remote host goes through the router's menu over the host's tunnel, whose state is shown");
+
+  // Claude Code reuses the client dialog, direct by default.
   await claude.getByRole("button", { name: await tr("remote.clients.configure") }).click();
   const claudeDialog = page.locator("[data-client-config-dialog]");
   await claudeDialog.getByRole("heading", { name: await tr("remote.configureTitle", { name: "Claude Code", host: "dev" }) }).waitFor();
-  assert.equal(await claudeDialog.locator(`[aria-label="${await tr("clients.accessMode")}"]`).count(), 0, "a remote Claude Code has no router mode");
+  const access = claudeDialog.locator(`[aria-label="${await tr("clients.accessMode")}"]`);
+  assert.equal(await access.getByRole("button", { name: await tr("clients.accessNative") }).getAttribute("aria-pressed"), "true",
+    "a new remote Claude Code starts direct");
   await claudeDialog.getByRole("button", { name: await tr("clients.preview") }).click();
   await claudeDialog.locator("[data-client-config-preview]").waitFor();
   const previewed = (await calls("previewClaude")).at(-1)[2];
@@ -82,7 +105,7 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
   await claudeDialog.waitFor({ state: "hidden" });
   await claude.getByText(await tr("remote.clients.configured", { provider: "Provider mixed", model: "anthropic-model" })).waitFor();
   if (captureDir) await panel.screenshot({ path: path.join(captureDir, "remote-hosts.png") });
-  console.log("PASS Claude Code on a remote host is configured through the client dialog without router mode");
+  console.log("PASS Claude Code on a remote host is configured through the client dialog, direct by default");
 
   await codex.getByRole("button", { name: await tr("remote.clients.restore") }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: await tr("remote.clients.restore") }).click();

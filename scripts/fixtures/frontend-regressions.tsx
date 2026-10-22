@@ -302,7 +302,11 @@ const installRemote = () => {
   };
   const settle = (id: string) => {
     const clients = clientsOf(id);
-    hostOf(id).inUse = clients.codex.configured || clients.claudeCode.configured;
+    const host = hostOf(id);
+    host.inUse = clients.codex.configured || clients.claudeCode.configured;
+    host.routed = !!clients.codex.request?.router || clients.claudeCode.request?.accessMode === "router";
+    // The fixture's tunnel connects at once.
+    host.tunnel = host.routed ? { state: "connected", since: 1_790_000_000 } : null;
   };
   const trusted = (id: string) => {
     hostOf(id);
@@ -322,6 +326,7 @@ const installRemote = () => {
       resolved: { hostName: input.host === "dev" ? "10.0.0.5" : input.host, port: input.port ?? 22,
         user: input.user ?? (input.host === "dev" ? "ubuntu" : null), identityFiles: ["C:/Users/fixture/.ssh/id_ed25519"] },
       inUse: existing?.inUse ?? false,
+      tunnelPort: input.tunnelPort ?? 43127, routed: existing?.routed ?? false, tunnel: existing?.tunnel ?? null,
     };
     review.remoteHosts = existing ? review.remoteHosts.map((entry: RemoteHost) => entry.id === host.id ? host : entry) : [...review.remoteHosts, host];
     return structuredClone(host);
@@ -340,6 +345,10 @@ const installRemote = () => {
       : { status: "unknownHost", fingerprint: REMOTE_FINGERPRINT, algorithm: "ssh-ed25519" };
   };
   api.remote.clients = async id => { record("clients", id); trusted(id); return structuredClone(clientsOf(id)); };
+  api.remote.routerModels = async () => [
+    { id: "pool", label: "Harbor Pool" },
+    { id: "mixed::responses-model", label: "Provider mixed / responses-model" },
+  ];
   api.remote.previewCodex = async (id, request, replace) => {
     record("previewCodex", id, request, replace);
     trusted(id);

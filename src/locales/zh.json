@@ -3271,12 +3271,24 @@
     "aggregatePrefixHint": "模型聚合在网关里叫「前缀/模型名」，和中转的「短名/模型名」区分开。单个聚合可以在模型聚合里另设前缀；以前直接写模型名的请求仍然能用。"
   },
   "remote": {
+    "tunnel": {
+      "connected": "隧道已连接",
+      "connecting": "隧道连接中…",
+      "retrying": "隧道断开，正在重连",
+      "stopped": "隧道未运行",
+      "route": "服务器 127.0.0.1:{{port}} → 本机路由",
+      "stoppedHint": "本地路由没有运行时，隧道不会建立。"
+    },
+    "accessDirect": "直连",
+    "accessRouter": "经本机路由",
+    "routedHint": "经本机路由：服务器上的请求通过 SSH 隧道回到这台电脑的本地路由，可以用聚合模型、账号来源和跨协议搜索。AgentHarbor 需要开着。",
+    "routedNote": "经本机路由时，服务器通过 SSH 隧道使用这台电脑的路由（服务器上的 127.0.0.1:{{port}}）。AgentHarbor 关闭或电脑离线时，这些客户端会暂时连不上。",
     "groupTitle": "远程主机",
-    "groupDesc": "通过 SSH 直接修改服务器上 Codex 和 Claude Code 的配置，配好后服务器自己连中转。",
+    "groupDesc": "通过 SSH 修改服务器上 Codex 和 Claude Code 的配置，直连中转或经 SSH 隧道使用本机路由。",
     "groupSummary": "{{count}} 台主机",
     "groupNone": "未添加",
     "title": "远程主机",
-    "description": "用 SSH 连接 Linux 或 macOS 服务器，把中转直连写进远端 Codex 和 Claude Code 的配置。改之前先备份，可以随时恢复；服务器直接访问中转，不需要 AgentHarbor 一直开着。",
+    "description": "用 SSH 连接 Linux 或 macOS 服务器，修改上面 Codex 和 Claude Code 的配置：直连中转时服务器独立工作；经本机路由时通过 SSH 隧道使用这台电脑的路由。改之前先备份，可以随时恢复。",
     "add": "添加主机",
     "empty": "还没有远程主机。添加一台，用 SSH 密钥或密码登录。",
     "inUse": "有 AgentHarbor 管理的配置",
@@ -3301,6 +3313,9 @@
     "directHint": "远程主机只支持直连：服务器直接访问所选中转，不经过这台电脑。",
     "backupHint": "写入前会把远端原文件备份到本机（加密保存），恢复时还原。",
     "fields": {
+      "advanced": "高级",
+      "tunnelPort": "隧道端口（服务器上）",
+      "tunnelPortHint": "经本机路由时，服务器上的这个端口会转发到本地路由。默认 43127，被占用时换一个。",
       "name": "名称",
       "namePlaceholder": "例如 开发服务器",
       "host": "主机",
@@ -3328,6 +3343,7 @@
       "fingerprint": "指纹"
     },
     "clients": {
+      "routed": "经本机路由 · {{model}}",
       "notConfigured": "未配置",
       "configured": "直连 {{provider}} / {{model}}",
       "configure": "配置",
@@ -3349,6 +3365,8 @@
       "releaseDescription": "不再管理这份配置，服务器上的文件保持现在的样子，之后也无法再一键恢复。"
     },
     "codexDialog": {
+      "routedDescription": "Codex 通过 SSH 隧道使用这台电脑的本地路由：全部中转、账号来源和聚合模型都能用，联网搜索也由路由适配。官方账号的模型不在其中。",
+      "routedModels": "本地路由提供 {{count}} 个模型。",
       "description": "Codex 直接调用所选中转的 Responses 接口；密钥写进远端 ~/.codex/.env（仅所有者可读），模型目录写进 ~/.codex/agentharbor-models.json。",
       "provider": "中转",
       "model": "默认模型",
@@ -3366,6 +3384,9 @@
       "conflict": "这些字段在服务器上被改过，应用会覆盖它们：{{fields}}"
     },
     "errors": {
+      "tunnelPort": "服务器上的隧道端口已被占用，请在主机设置里换一个",
+      "tunnelLost": "隧道断开了",
+      "tunnelPortInUse": "这台主机上还有经本机路由的配置，改端口前请先恢复它们",
       "storage": "远程主机数据读写失败",
       "name": "名称需要 1 到 64 个字符",
       "host": "请填写主机（别名、域名或 IP），不能有空格",

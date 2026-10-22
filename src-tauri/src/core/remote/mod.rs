@@ -1,14 +1,18 @@
 //! Remote hosts: machines reached over SSH whose Codex and Claude Code
 //! configuration this app edits in place. Hosts and their secrets (a
 //! password, a key passphrase) are kept like relay keys: encrypted for the
-//! current user and never shown again. Remote clients are configured direct
-//! only: they reach their relay themselves, so nothing waits on this app.
+//! current user and never shown again. A remote client is configured
+//! direct, reaching its relay itself, or through this machine's router over
+//! a reverse tunnel ([`tunnel`]) that this app keeps up while it runs.
 
 pub mod codex;
 mod connection;
 pub mod ssh_config;
+pub mod tunnel;
 
-use super::{client_config::ClientFiles, secret_file, storage};
+use super::{
+    client_config::ClientFiles, router::DEFAULT_PORT, secret_file, storage, targets::TargetId,
+};
 pub use connection::ConnectError;
 use connection::{block_on, Connection, KnownHosts, Method, Target};
 use serde::{Deserialize, Serialize};
@@ -49,6 +53,10 @@ struct StoredHost {
     password: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     passphrase: Option<String>,
+    /// The server port the tunnel listens on; routed configurations are
+    /// written against it. `None` is the router's default port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tunnel_port: Option<u16>,
 }
 
 /// What `~/.ssh/config` and the defaults make of a host.
@@ -76,6 +84,12 @@ pub struct RemoteHostView {
     pub resolved: ResolvedHost,
     /// Whether any client on this host is configured by this app.
     pub in_use: bool,
+    /// The server port the tunnel listens on.
+    pub tunnel_port: u16,
+    /// Whether a client on this host goes through this machine's router.
+    pub routed: bool,
+    /// The tunnel, while one runs.
+    pub tunnel: Option<tunnel::TunnelState>,
 }
 
 /// A host as edited. Secrets left empty keep what is stored.
@@ -100,6 +114,8 @@ pub struct RemoteHostInput {
     pub passphrase: Option<String>,
     #[serde(default)]
     pub clear_passphrase: bool,
+    #[serde(default)]
+    pub tunnel_port: Option<u16>,
 }
 
 /// The outcome of a connection test, with what the user must confirm when
@@ -208,6 +224,9 @@ impl RemoteStore {
                     .collect(),
             },
             in_use: self.in_use(&host.id),
+            tunnel_port: host.tunnel_port.unwrap_or(DEFAULT_PORT),
+            routed: self.routed(&host.id),
+            tunnel: tunnel::state(&host.id),
         }
     }
 
@@ -225,7 +244,7 @@ impl RemoteStore {
         if user.as_deref().is_some_and(|user| !valid_word(user, 64)) {
             return Err("remote.errors.user".into());
         }
-        if input.port == Some(0) {
+        if input.port == Some(0) || input.tunnel_port == Some(0) {
             return Err("remote.errors.port".into());
         }
         let identity_file = clean(input.identity_file);
@@ -246,6 +265,15 @@ impl RemoteStore {
             None => None,
         };
         let existing = previous.map(|index| hosts[index].clone());
+        // Routed configurations name the tunnel's port: it stays while any is in place.
+        if let Some(existing) = &existing {
+            if self.routed(&existing.id)
+                && existing.tunnel_port.unwrap_or(DEFAULT_PORT)
+                    != input.tunnel_port.unwrap_or(DEFAULT_PORT)
+            {
+                return Err("remote.errors.tunnelPortInUse".into());
+            }
+        }
         let password = match input.auth {
             RemoteAuth::Password => clean(input.password)
                 .or_else(|| existing.as_ref().and_then(|host| host.password.clone())),
@@ -274,6 +302,7 @@ impl RemoteStore {
             identity_file,
             password,
             passphrase,
+            tunnel_port: input.tunnel_port.filter(|port| *port != DEFAULT_PORT),
         };
         match previous {
             Some(index) => hosts[index] = stored.clone(),
@@ -297,10 +326,72 @@ impl RemoteStore {
             return Err("remote.errors.hostMissing".into());
         }
         self.save(&hosts)?;
+        tunnel::stop(id);
         if let Ok(dir) = self.journal_dir(id) {
             let _ = std::fs::remove_dir_all(dir);
         }
         Ok(())
+    }
+
+    /// Whether a client on host `id` is configured through this machine's
+    /// router, and so needs its tunnel.
+    pub fn routed(&self, id: &str) -> bool {
+        let Ok(dir) = self.journal_dir(id) else {
+            return false;
+        };
+        codex::routed(&dir)
+            || super::client_config::ConfigManager::remote(
+                &self.data_dir,
+                &dir,
+                "/",
+                Arc::new(RemoteSession::offline()),
+            )
+            .stored_request(TargetId::ClaudeCode)
+            .ok()
+            .flatten()
+            .is_some_and(|request| request.needs_router())
+    }
+
+    /// Whether any host has a client that needs this machine's router.
+    pub fn has_router_configs(&self) -> bool {
+        self.load()
+            .map(|hosts| hosts.iter().any(|host| self.routed(&host.id)))
+            .unwrap_or(false)
+    }
+
+    /// The server port host `id`'s tunnel listens on.
+    pub fn tunnel_port(&self, id: &str) -> Result<u16, String> {
+        let host = self.stored(id).map_err(|error| error.key())?;
+        Ok(host.tunnel_port.unwrap_or(DEFAULT_PORT))
+    }
+
+    /// Keeps a tunnel to `local_port` for every host with routed clients and
+    /// stops the others; with `router_up` false, stops them all.
+    pub fn sync_tunnels(&self, local_port: u16, router_up: bool) {
+        let mut keep = Vec::new();
+        if router_up {
+            for host in self.load().unwrap_or_default() {
+                if !self.routed(&host.id) {
+                    continue;
+                }
+                match self.target(&host) {
+                    Ok(target) => {
+                        tunnel::ensure(
+                            &host.id,
+                            target,
+                            self.known_hosts(),
+                            host.tunnel_port.unwrap_or(DEFAULT_PORT),
+                            local_port,
+                        );
+                        keep.push(host.id.clone());
+                    }
+                    Err(error) => {
+                        log::warn!("no tunnel for remote host {}: {}", host.name, error.key())
+                    }
+                }
+            }
+        }
+        tunnel::retain(&keep);
     }
 
     fn known_hosts(&self) -> Arc<KnownHosts> {
@@ -313,12 +404,24 @@ impl RemoteStore {
     /// Opens a session to host `id`. `trust` is a host key fingerprint the
     /// user confirmed; a new host is refused without it.
     pub fn connect(&self, id: &str, trust: Option<String>) -> Result<RemoteSession, ConnectError> {
-        let host = self
-            .load()
+        let target = self.target(&self.stored(id)?)?;
+        let known = self.known_hosts();
+        let connection = block_on(Connection::open(&target, known, trust))?;
+        Ok(RemoteSession {
+            connection: Some(connection),
+        })
+    }
+
+    fn stored(&self, id: &str) -> Result<StoredHost, ConnectError> {
+        self.load()
             .map_err(ConnectError::Failed)?
             .into_iter()
             .find(|host| host.id == id)
-            .ok_or_else(|| ConnectError::Failed("remote.errors.hostMissing".into()))?;
+            .ok_or_else(|| ConnectError::Failed("remote.errors.hostMissing".into()))
+    }
+
+    /// Where and how to sign in to `host`, through `~/.ssh/config`.
+    fn target(&self, host: &StoredHost) -> Result<Target, ConnectError> {
         let resolved = resolve(&host, &ssh_config::SshConfig::load());
         let user = resolved
             .user
@@ -344,17 +447,12 @@ impl RemoteStore {
                 }
             }
         };
-        let target = Target {
+        Ok(Target {
             host_name: resolved.host_name,
             alias: host.host.clone(),
             port: resolved.port,
             user,
             method,
-        };
-        let known = self.known_hosts();
-        let connection = block_on(Connection::open(&target, known, trust))?;
-        Ok(RemoteSession {
-            connection: Some(connection),
         })
     }
 
@@ -496,6 +594,7 @@ mod tests {
             password: Some("secret".into()),
             passphrase: None,
             clear_passphrase: false,
+            tunnel_port: None,
         }
     }
 
@@ -552,6 +651,7 @@ mod tests {
             identity_file: None,
             password: None,
             passphrase: None,
+            tunnel_port: None,
         };
         let resolved = resolve(&stored, &config);
         assert_eq!(resolved.host_name, "10.1.2.3");
@@ -627,6 +727,7 @@ mod real_remote {
                 password: None,
                 passphrase: std::env::var("AGENTHARBOR_TEST_REMOTE_PASSPHRASE").ok(),
                 clear_passphrase: false,
+                tunnel_port: None,
             })
             .unwrap();
         let trust = std::env::var("AGENTHARBOR_TEST_REMOTE_TRUST").ok();
@@ -673,6 +774,7 @@ mod real_remote {
             model: "gpt-test".into(),
             web_search: false,
             profile: None,
+            router: false,
         };
         let preview = codex.preview(&relays, &request, false).unwrap();
         assert!(!preview.content.contains(KEY));

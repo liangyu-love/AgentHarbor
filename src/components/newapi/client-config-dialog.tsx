@@ -77,7 +77,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied, remote }: 
   const [request, setRequest] = useState<ClientConfigRequest>(() => {
     const saved = client.request;
     if (saved?.modelSelection) return { ...saved, providerIds: saved.providerIds ?? [], claudeModels: saved.claudeModels ?? emptyRoles() };
-    const accessMode = remote ? "native" : saved?.accessMode ?? (client.configured ? "router" : "native");
+    const accessMode = remote ? saved?.accessMode ?? "native" : saved?.accessMode ?? (client.configured ? "router" : "native");
     const protocols = clientProtocols(client, accessMode);
     const available = providers.filter(provider => !exclusionOf(provider, protocols, accessMode));
     const initial = available.find(provider => provider.id === client.providerId) ?? available[0];
@@ -606,14 +606,14 @@ export function ConfigDialog({ client, providers, onClose, onApplied, remote }: 
             <DialogTitle className="font-display text-xl tracking-tight">{remote
               ? t("remote.configureTitle", { name: client.name, host: remote.hostName })
               : t("clients.configureTitle", { name: client.name })}</DialogTitle>
-            <DialogDescription>{t(remote ? "remote.directHint" : request.accessMode === "native" ? "clients.nativeHint" : "clients.localHint")}</DialogDescription>
+            <DialogDescription>{t(remote ? request.accessMode === "router" ? "remote.routedHint" : "remote.directHint" : request.accessMode === "native" ? "clients.nativeHint" : "clients.localHint")}</DialogDescription>
           </div>
           <fieldset disabled={busy} className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2.5">
-            {!remote && <div className="flex w-fit gap-1 rounded-lg border bg-muted/40 p-1" aria-label={t("clients.accessMode")}>
+            <div className="flex w-fit gap-1 rounded-lg border bg-muted/40 p-1" aria-label={t("clients.accessMode")}>
               {(["native", "router"] as const).map(mode => <Button key={mode} type="button" size="sm" className="h-7"
                 variant={request.accessMode === mode ? "secondary" : "ghost"} aria-pressed={request.accessMode === mode}
                 disabled={busy} onClick={() => changeMode(mode)}>{t("clients.access" + (mode === "native" ? "Native" : "Router"))}</Button>)}
-            </div>}
+            </div>
             {routerMode && <section className="flex min-w-0 flex-wrap items-center gap-2" aria-labelledby="client-sources-label" data-client-sources>
               <p id="client-sources-label" className="text-xs font-medium text-muted-foreground">{t("clients.sources")}</p>
               <ModelSourceSwitches value={sources} disabled={busy} label={t("clients.sources")} onChange={changeSources}

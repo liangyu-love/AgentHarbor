@@ -31,6 +31,11 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Runs `future` in the background on the SSH runtime.
+pub(super) fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) {
+    runtime().spawn(future);
+}
+
 pub(super) fn block_on<F: std::future::Future>(future: F) -> F::Output {
     runtime().block_on(future)
 }
@@ -105,13 +110,16 @@ enum HostKeyIssue {
     Certificate,
 }
 
-struct Checker {
+pub struct Checker {
     names: Vec<String>,
     port: u16,
     known: Arc<KnownHosts>,
     /// The fingerprint the user confirmed for this host, if any.
     trust: Option<String>,
     issue: Arc<Mutex<Option<HostKeyIssue>>>,
+    /// For a tunnel: the local port each connection the server forwards
+    /// is joined to. Other sessions refuse forwarded connections.
+    forward_to: Option<u16>,
 }
 
 impl Checker {
@@ -169,6 +177,132 @@ impl client::Handler for Checker {
             algorithm: key.algorithm().to_string(),
         })
     }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _connected_address: &str,
+        _connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let Some(port) = self.forward_to else {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        };
+        // Only this machine's loopback router is ever reached.
+        let local = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(local) => local,
+            Err(_) => {
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                return Ok(());
+            }
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            let mut local = local;
+            let mut remote = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut remote, &mut local).await;
+        });
+        Ok(())
+    }
+}
+
+/// A signed-in SSH session to `target`; `forward_to` makes it a tunnel's.
+async fn session(
+    target: &Target,
+    known: Arc<KnownHosts>,
+    trust: Option<String>,
+    forward_to: Option<u16>,
+) -> Result<client::Handle<Checker>, ConnectError> {
+    let issue = Arc::new(Mutex::new(None));
+    let mut names = vec![target.host_name.clone()];
+    if !target.alias.is_empty() && !target.alias.eq_ignore_ascii_case(&target.host_name) {
+        names.push(target.alias.clone());
+    }
+    let checker = Checker {
+        names,
+        port: target.port,
+        known,
+        trust,
+        issue: issue.clone(),
+        forward_to,
+    };
+    let config = Arc::new(match forward_to {
+        // A tunnel stays up while idle and notices a dead link by keepalives.
+        Some(_) => client::Config {
+            inactivity_timeout: None,
+            keepalive_interval: Some(Duration::from_secs(20)),
+            keepalive_max: 3,
+            ..Default::default()
+        },
+        None => client::Config {
+            inactivity_timeout: Some(Duration::from_secs(120)),
+            ..Default::default()
+        },
+    });
+    let stream = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio::net::TcpStream::connect((target.host_name.as_str(), target.port)),
+    )
+    .await
+    .map_err(|_| failed("remote.errors.timeout"))?
+    .map_err(|_| failed("remote.errors.unreachable"))?;
+    let handshake = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect_stream(config, stream, checker),
+    )
+    .await;
+    let mut handle = match handshake {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(_)) | Err(_) => {
+            let issue = issue.lock().ok().and_then(|slot| slot.clone());
+            return Err(match issue {
+                Some(HostKeyIssue::Unknown {
+                    fingerprint,
+                    algorithm,
+                }) => ConnectError::UnknownHost {
+                    fingerprint,
+                    algorithm,
+                },
+                Some(HostKeyIssue::Changed { fingerprint }) => {
+                    ConnectError::HostKeyChanged { fingerprint }
+                }
+                Some(HostKeyIssue::Certificate) => failed("remote.errors.hostCertificate"),
+                None if handshake.is_err() => failed("remote.errors.timeout"),
+                None => failed("remote.errors.handshake"),
+            });
+        }
+    };
+    tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, target))
+        .await
+        .unwrap_or_else(|_| Err(failed("remote.errors.timeout")))?;
+    Ok(handle)
+}
+
+/// A reverse tunnel: the server's `127.0.0.1:remote_port` reaches this
+/// machine's `127.0.0.1:local_port` for as long as the returned session lives.
+pub async fn tunnel(
+    target: &Target,
+    known: Arc<KnownHosts>,
+    remote_port: u16,
+    local_port: u16,
+) -> Result<client::Handle<Checker>, ConnectError> {
+    let handle = session(target, known, None, Some(local_port)).await?;
+    // Bound to the server's loopback only: nothing else there can reach it,
+    // and the router still asks every request for its token.
+    tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        handle.tcpip_forward("127.0.0.1", remote_port as u32),
+    )
+    .await
+    .map_err(|_| failed("remote.errors.timeout"))?
+    .map_err(|_| failed("remote.errors.tunnelPort"))?;
+    Ok(handle)
 }
 
 pub struct Connection {
@@ -195,58 +329,7 @@ impl Connection {
         known: Arc<KnownHosts>,
         trust: Option<String>,
     ) -> Result<Self, ConnectError> {
-        let issue = Arc::new(Mutex::new(None));
-        let mut names = vec![target.host_name.clone()];
-        if !target.alias.is_empty() && !target.alias.eq_ignore_ascii_case(&target.host_name) {
-            names.push(target.alias.clone());
-        }
-        let checker = Checker {
-            names,
-            port: target.port,
-            known,
-            trust,
-            issue: issue.clone(),
-        };
-        let config = Arc::new(client::Config {
-            inactivity_timeout: Some(Duration::from_secs(120)),
-            ..Default::default()
-        });
-        let stream = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            tokio::net::TcpStream::connect((target.host_name.as_str(), target.port)),
-        )
-        .await
-        .map_err(|_| failed("remote.errors.timeout"))?
-        .map_err(|_| failed("remote.errors.unreachable"))?;
-        let handshake = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            client::connect_stream(config, stream, checker),
-        )
-        .await;
-        let mut handle = match handshake {
-            Ok(Ok(handle)) => handle,
-            Ok(Err(_)) | Err(_) => {
-                let issue = issue.lock().ok().and_then(|slot| slot.clone());
-                return Err(match issue {
-                    Some(HostKeyIssue::Unknown {
-                        fingerprint,
-                        algorithm,
-                    }) => ConnectError::UnknownHost {
-                        fingerprint,
-                        algorithm,
-                    },
-                    Some(HostKeyIssue::Changed { fingerprint }) => {
-                        ConnectError::HostKeyChanged { fingerprint }
-                    }
-                    Some(HostKeyIssue::Certificate) => failed("remote.errors.hostCertificate"),
-                    None if handshake.is_err() => failed("remote.errors.timeout"),
-                    None => failed("remote.errors.handshake"),
-                });
-            }
-        };
-        tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, target))
-            .await
-            .unwrap_or_else(|_| Err(failed("remote.errors.timeout")))?;
+        let handle = session(target, known, trust, None).await?;
         let sftp = tokio::time::timeout(CONNECT_TIMEOUT, async {
             let channel = handle
                 .channel_open_session()

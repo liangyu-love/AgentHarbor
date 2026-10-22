@@ -34,7 +34,7 @@ import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview, ClientLaunch, HarnessReasoning } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
-import type { RemoteClients, RemoteCodexPreview, RemoteCodexRequest, RemoteConnectionTest, RemoteHost, RemoteHostInput } from "@/types/remote";
+import type { RemoteClients, RemoteCodexPreview, RemoteCodexRequest, RemoteConnectionTest, RemoteHost, RemoteHostInput, RouterModel } from "@/types/remote";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel, RouterPortBlock } from "@/types/newapi";
@@ -386,7 +386,7 @@ const targetsApi = {
     invoke<ClientConfigApplied>("reapply_client_config", { targetId, rebaseline }),
 };
 
-/** Remote hosts over SSH and the Codex and Claude Code configured on them, direct only. */
+/** Remote hosts over SSH and the Codex and Claude Code configured on them, direct or through the router. */
 const remoteApi = {
   hosts: () => invoke<RemoteHost[]>("list_remote_hosts"),
   sshAliases: () => invoke<string[]>("ssh_config_aliases"),
@@ -395,6 +395,8 @@ const remoteApi = {
   /** `trust` is the host key fingerprint the user confirmed. */
   test: (id: string, trust?: string | null) => invoke<RemoteConnectionTest>("test_remote_host", { id, trust: trust ?? null }),
   clients: (id: string) => invoke<RemoteClients>("remote_client_status", { id }),
+  /** The router's Codex menu for a routed remote Codex. */
+  routerModels: () => invoke<RouterModel[]>("remote_codex_router_models"),
   previewCodex: (id: string, request: RemoteCodexRequest, replaceConflicts = false) =>
     invoke<RemoteCodexPreview>("preview_remote_codex", { id, request, replaceConflicts }),
   applyCodex: (id: string, request: RemoteCodexRequest, revision: string, replaceConflicts = false) =>
