@@ -1,4 +1,5 @@
-//! Remote hosts and the Codex and Claude Code configuration on them. Each
+//! Remote hosts and the configuration of their Codex, Claude Code, OpenCode
+//! and Pi. Each
 //! command opens its own SSH session on the blocking pool and closes it.
 //! A change that may start or end a routed configuration reconciles the
 //! router afterwards, which also starts or stops the host's tunnel.
@@ -71,7 +72,7 @@ fn codex<'a>(
     .with_router(&paths.codex_home, store.tunnel_port(id)?))
 }
 
-fn claude(
+fn clients(
     paths: &CodexPaths,
     store: &RemoteStore,
     id: &str,
@@ -153,6 +154,8 @@ pub struct RemoteClients {
     pub installed: Installed,
     pub codex: CodexRemoteStatus,
     pub claude_code: ClientStatus,
+    pub opencode: ClientStatus,
+    pub pi: ClientStatus,
     pub web_search: WebSearchStatus,
     /// The client variables in effect on the host.
     pub env: BTreeMap<String, String>,
@@ -173,16 +176,19 @@ pub async fn remote_client_status(
         let env_moved = store.detect_env(&id, &mut session);
         let session = Arc::new(session);
         let relays = relays(&paths, &store, &id).ok();
-        let codex =
-            codex(&paths, &store, &id, session.as_ref(), &session.codex_home())?.status(relays.as_ref());
-        let claude_code = claude(&paths, &store, &id, session.clone())?
-            .status(TargetId::ClaudeCode, relays.as_ref());
+        let codex = codex(&paths, &store, &id, session.as_ref(), &session.codex_home())?
+            .status(relays.as_ref());
+        let manager = clients(&paths, &store, &id, session.clone())?;
+        let [claude_code, opencode, pi] =
+            MANAGED.map(|target| manager.status(target, relays.as_ref()));
         let web_search = WebSearch::new(&session, &store.journal_dir(&id)?).status(relays.as_ref());
         Ok(RemoteClients {
             home: session.home().to_owned(),
             installed: probe::installed(&session),
             codex,
             claude_code,
+            opencode,
+            pi,
             web_search,
             env: session.env().clone(),
             env_moved,
@@ -210,7 +216,16 @@ pub async fn probe_remote_client(
                 .and_then(|request| request.profile),
             _ => None,
         };
-        probe::probe(&session, client, profile.as_deref())
+        // Pi is asked for the model it was configured with by name.
+        let pi = match client {
+            TargetId::Pi => {
+                clients(&paths, &store, &id, session.clone())?
+                    .status(TargetId::Pi, None)
+                    .request
+            }
+            _ => None,
+        };
+        probe::probe(&session, client, profile.as_deref(), pi.as_ref())
     })
     .await
 }
@@ -383,20 +398,32 @@ pub async fn release_remote_codex(
     released
 }
 
+/// The clients configured through the shared configuration engine.
+const MANAGED: [TargetId; 3] = [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi];
+
+fn managed(target: TargetId) -> Result<TargetId, String> {
+    if MANAGED.contains(&target) {
+        Ok(target)
+    } else {
+        Err("clients.errors.unsupported".into())
+    }
+}
+
 #[tauri::command]
-pub async fn preview_remote_claude(
+pub async fn preview_remote_client(
     repo: State<'_, Mutex<Repository>>,
     id: String,
     request: ConfigRequest,
     replace_conflicts: Option<bool>,
 ) -> Result<ConfigPreview, String> {
     let paths = paths(&repo)?;
+    managed(request.target_id)?;
     blocking(move || {
         let store = RemoteStore::new(&paths.app_data_dir);
         let session = connect(&store, &id)?;
-        claude(&paths, &store, &id, session)?.preview_with_conflicts(
+        clients(&paths, &store, &id, session)?.preview_with_conflicts(
             &relays(&paths, &store, &id)?,
-            &claude_request(request)?,
+            &request,
             replace_conflicts.unwrap_or(false),
         )
     })
@@ -404,7 +431,7 @@ pub async fn preview_remote_claude(
 }
 
 #[tauri::command]
-pub async fn apply_remote_claude(
+pub async fn apply_remote_client(
     repo: State<'_, Mutex<Repository>>,
     id: String,
     request: ConfigRequest,
@@ -412,7 +439,7 @@ pub async fn apply_remote_claude(
     replace_conflicts: Option<bool>,
 ) -> Result<ConfigApplied, String> {
     let paths = paths(&repo)?;
-    let request = claude_request(request)?;
+    managed(request.target_id)?;
     let _guard = routing_runtime::mutation_guard().await;
     if request.needs_router() {
         routing_runtime::ensure_available(&paths).await?;
@@ -422,7 +449,7 @@ pub async fn apply_remote_claude(
         move || {
             let store = RemoteStore::new(&paths.app_data_dir);
             let session = connect(&store, &id)?;
-            claude(&paths, &store, &id, session)?.apply_with_conflicts(
+            clients(&paths, &store, &id, session)?.apply_with_conflicts(
                 &relays(&paths, &store, &id)?,
                 &request,
                 &revision,
@@ -436,20 +463,22 @@ pub async fn apply_remote_claude(
 }
 
 #[tauri::command]
-pub async fn restore_remote_claude(
+pub async fn restore_remote_client(
     repo: State<'_, Mutex<Repository>>,
     id: String,
+    target: TargetId,
     replace_conflicts: Option<bool>,
 ) -> Result<ConfigApplied, String> {
     let paths = paths(&repo)?;
+    let target = managed(target)?;
     let _guard = routing_runtime::mutation_guard().await;
     let restored = blocking({
         let paths = paths.clone();
         move || {
             let store = RemoteStore::new(&paths.app_data_dir);
             let session = connect(&store, &id)?;
-            claude(&paths, &store, &id, session)?
-                .restore_confirmed(TargetId::ClaudeCode, replace_conflicts.unwrap_or(false))
+            clients(&paths, &store, &id, session)?
+                .restore_confirmed(target, replace_conflicts.unwrap_or(false))
         }
     })
     .await;
@@ -457,30 +486,24 @@ pub async fn restore_remote_claude(
     restored
 }
 
-/// Stops managing Claude Code on the host without connecting to it.
+/// Stops managing a client on the host without connecting to it.
 #[tauri::command]
-pub async fn release_remote_claude(
+pub async fn release_remote_client(
     repo: State<'_, Mutex<Repository>>,
     id: String,
+    target: TargetId,
 ) -> Result<(), String> {
     let paths = paths(&repo)?;
+    let target = managed(target)?;
     let _guard = routing_runtime::mutation_guard().await;
     let released = blocking({
         let paths = paths.clone();
         move || {
             let store = RemoteStore::new(&paths.app_data_dir);
-            claude(&paths, &store, &id, Arc::new(RemoteSession::offline()))?
-                .release(TargetId::ClaudeCode)
+            clients(&paths, &store, &id, Arc::new(RemoteSession::offline()))?.release(target)
         }
     })
     .await;
     settle(&paths).await;
     released
-}
-
-fn claude_request(request: ConfigRequest) -> Result<ConfigRequest, String> {
-    if request.target_id != TargetId::ClaudeCode {
-        return Err("clients.errors.unsupported".into());
-    }
-    Ok(request)
 }

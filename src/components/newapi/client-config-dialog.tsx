@@ -55,7 +55,7 @@ const sourceKind = (provider: NewApiProvider): SourceKind => provider.accountSou
 /** One model of Claude Code's combined menu, by its gateway id. */
 interface MixedEntry { id: string; label: string; target: ModelTargetRef; small: boolean }
 
-/** A client on a remote host: configured direct only, through the host's own commands. */
+/** A client on a remote host: configured direct or through the router, over the host's SSH session. */
 export interface RemoteConfigTarget {
   hostName: string;
   preview: (request: ClientConfigRequest, replaceConflicts: boolean) => Promise<ClientConfigPreview>;

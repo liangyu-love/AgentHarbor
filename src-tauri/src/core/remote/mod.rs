@@ -21,7 +21,7 @@ use super::{
     targets::TargetId,
 };
 pub use connection::ConnectError;
-use connection::{block_on, Connection, KnownHosts, Method, Target};
+use connection::{block_on, AgentSocket, Connection, KnownHosts, Method, Target};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -100,6 +100,8 @@ pub struct ResolvedHost {
     pub port: u16,
     pub user: Option<String>,
     pub identity_files: Vec<String>,
+    /// SSH agents asked for keys before the files, as `ssh` does.
+    pub agents: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -226,9 +228,15 @@ impl RemoteStore {
 
     fn in_use(&self, id: &str) -> bool {
         self.journal_dir(id).is_ok_and(|dir| {
-            ["claude-code.dat", codex::JOURNAL_FILE, web_search::JOURNAL_FILE]
-                .iter()
-                .any(|name| dir.join(name).exists())
+            [
+                "claude-code.dat",
+                "opencode.dat",
+                "pi.dat",
+                codex::JOURNAL_FILE,
+                web_search::JOURNAL_FILE,
+            ]
+            .iter()
+            .any(|name| dir.join(name).exists())
         })
     }
 
@@ -261,6 +269,14 @@ impl RemoteStore {
                     .identity_files
                     .iter()
                     .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+                agents: resolved
+                    .agents
+                    .iter()
+                    .map(|agent| match agent {
+                        AgentSocket::Path(path) => path.clone(),
+                        AgentSocket::Pageant => "Pageant".into(),
+                    })
                     .collect(),
             },
             in_use: self.in_use(&host.id),
@@ -411,17 +427,24 @@ impl RemoteStore {
         let Ok(dir) = self.journal_dir(id) else {
             return false;
         };
-        codex::routed(&dir)
-            || super::client_config::ConfigManager::remote(
-                &self.data_dir,
-                &dir,
-                "/",
-                Arc::new(RemoteSession::offline()),
-            )
-            .stored_request(TargetId::ClaudeCode)
-            .ok()
-            .flatten()
-            .is_some_and(|request| request.needs_router())
+        if codex::routed(&dir) {
+            return true;
+        }
+        let manager = super::client_config::ConfigManager::remote(
+            &self.data_dir,
+            &dir,
+            "/",
+            Arc::new(RemoteSession::offline()),
+        );
+        [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
+            .into_iter()
+            .any(|target| {
+                manager
+                    .stored_request(target)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|request| request.needs_router())
+            })
     }
 
     /// Whether any host has a client that needs this machine's router.
@@ -552,12 +575,14 @@ impl RemoteStore {
                     .into_iter()
                     .filter(|path| path.is_file())
                     .collect();
-                if files.is_empty() {
+                if files.is_empty() && resolved.agents.is_empty() {
                     return Err(ConnectError::Failed("remote.errors.noKey".into()));
                 }
                 Method::Keys {
                     files,
                     passphrase: host.passphrase.clone(),
+                    agents: resolved.agents,
+                    identities_only: resolved.identities_only,
                 }
             }
         };
@@ -598,6 +623,42 @@ struct Resolved {
     port: u16,
     user: Option<String>,
     identity_files: Vec<PathBuf>,
+    agents: Vec<AgentSocket>,
+    identities_only: bool,
+}
+
+/// The agents `ssh` would ask: `IdentityAgent`, else `$SSH_AUTH_SOCK`, then
+/// this platform's own (Windows' OpenSSH agent, which 1Password and others
+/// also serve, and Pageant).
+fn agent_sockets(
+    identity_agent: Option<&str>,
+    home: &Path,
+    env: Option<String>,
+) -> Vec<AgentSocket> {
+    let named = match identity_agent {
+        Some(value) if value.eq_ignore_ascii_case("none") => return Vec::new(),
+        Some("SSH_AUTH_SOCK") | None => env.filter(|value| !value.is_empty()),
+        Some(path) => Some(
+            ssh_config::expand_identity(path, home, "", "")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    };
+    // A socket this platform cannot open (an MSYS one on Windows) is skipped.
+    let usable = |path: &String| !cfg!(windows) || path.starts_with(r"\\.\pipe\");
+    let mut sockets: Vec<AgentSocket> = named
+        .filter(usable)
+        .map(AgentSocket::Path)
+        .into_iter()
+        .collect();
+    if cfg!(windows) {
+        let openssh = AgentSocket::Path(r"\\.\pipe\openssh-ssh-agent".into());
+        if !sockets.contains(&openssh) {
+            sockets.push(openssh);
+        }
+        sockets.push(AgentSocket::Pageant);
+    }
+    sockets
 }
 
 /// What `~/.ssh/config` says of `host`: OpenSSH's own answer when its
@@ -637,6 +698,12 @@ fn resolve(host: &StoredHost, from_config: ssh_config::HostConfig) -> Resolved {
             .collect(),
     };
     Resolved {
+        agents: agent_sockets(
+            from_config.identity_agent.as_deref(),
+            &home,
+            std::env::var("SSH_AUTH_SOCK").ok(),
+        ),
+        identities_only: from_config.identities_only,
         host_name,
         port: host.port.or(from_config.port).unwrap_or(22),
         user,
@@ -722,9 +789,22 @@ impl RemoteSession {
             .unwrap_or_else(|| format!("{}/.codex", self.home().trim_end_matches('/')))
     }
 
-    /// Where the other clients keep theirs.
+    /// Where the other clients keep theirs. OpenCode's file is the one of
+    /// its names already there.
     pub fn client_paths(&self) -> ClientPaths {
-        ClientPaths::posix(self.home(), |name| self.env.get(name).cloned())
+        let mut paths = ClientPaths::posix(self.home(), |name| self.env.get(name).cloned());
+        if !self.env.contains_key("OPENCODE_CONFIG") && self.connection.is_some() {
+            let dir = posix(&paths.opencode);
+            let dir = dir.rsplit_once('/').map(|(dir, _)| dir).unwrap_or_default();
+            if let Some(found) = ["opencode.jsonc", "opencode.json", "config.json"]
+                .iter()
+                .map(|name| PathBuf::from(format!("{dir}/{name}")))
+                .find(|path| matches!(self.read(path), Ok(Some(_))))
+            {
+                paths.opencode = found;
+            }
+        }
+        paths
     }
 
     /// The client variables the host's shells set.
@@ -755,7 +835,10 @@ impl RemoteSession {
             .iter()
             .map(|(name, value)| format!("export {name}={}; ", connection::quote(value)))
             .collect();
-        block_on(self.connection()?.run(&format!("{exports}{command}"), limit))
+        block_on(
+            self.connection()?
+                .run(&format!("{exports}{command}"), limit),
+        )
     }
 }
 
@@ -858,7 +941,10 @@ mod tests {
         session.set_env(&store.stored(&saved.id).ok().unwrap().client_env());
         // Offline, the home is empty: `~` reads as the root.
         assert_eq!(session.codex_home(), "/work/codex");
-        assert!(session.client_paths().claude.ends_with(".claude/settings.json"));
+        assert!(session
+            .client_paths()
+            .claude
+            .ends_with(".claude/settings.json"));
 
         // A configured client keeps its directories.
         let journals = store.journal_dir(&saved.id).unwrap();
@@ -880,6 +966,30 @@ mod tests {
         );
         assert_eq!(env.len(), 1);
         assert_eq!(env["CODEX_HOME"], "/data/codex");
+    }
+
+    #[test]
+    fn agents_follow_identity_agent() {
+        let home = Path::new("/home/me");
+        assert!(agent_sockets(Some("none"), home, Some("/tmp/sock".into())).is_empty());
+        let platform = if cfg!(windows) { 2 } else { 0 };
+        assert_eq!(agent_sockets(None, home, None).len(), platform);
+        if cfg!(windows) {
+            assert_eq!(
+                agent_sockets(Some("SSH_AUTH_SOCK"), home, Some(r"\\.\pipe\custom".into()))[0],
+                AgentSocket::Path(r"\\.\pipe\custom".into())
+            );
+            // An MSYS socket path is not a pipe Windows can open.
+            assert_eq!(
+                agent_sockets(None, home, Some("/tmp/ssh-x/agent.1".into())).len(),
+                platform
+            );
+        } else {
+            assert_eq!(
+                agent_sockets(Some("~/.1password/agent.sock"), home, None),
+                vec![AgentSocket::Path("/home/me/.1password/agent.sock".into())]
+            );
+        }
     }
 
     #[test]

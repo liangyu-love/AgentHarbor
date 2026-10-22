@@ -103,7 +103,8 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
     "a new remote Claude Code starts direct");
   await claudeDialog.getByRole("button", { name: await tr("clients.preview") }).click();
   await claudeDialog.locator("[data-client-config-preview]").waitFor();
-  const previewed = (await calls("previewClaude")).at(-1)[2];
+  const previewed = (await calls("previewClient")).at(-1)[2];
+  assert.equal(previewed.targetId, "claudeCode");
   assert.equal(previewed.accessMode, "native");
   assert.equal(previewed.providerId, "mixed");
   assert.equal(previewed.model, "anthropic-model");
@@ -112,6 +113,27 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
   await claude.getByText(await tr("remote.clients.configured", { provider: "Provider mixed", model: "anthropic-model" })).waitFor();
   if (captureDir) await panel.screenshot({ path: path.join(captureDir, "remote-hosts.png") });
   console.log("PASS Claude Code on a remote host is configured through the client dialog, direct by default");
+
+  // OpenCode and Pi sit beside it, each with its installed version, through the same dialog.
+  const opencode = panel.locator('[data-remote-client="opencode"]');
+  const pi = panel.locator('[data-remote-client="pi"]');
+  await opencode.getByText(await tr("remote.clients.notInstalled")).waitFor();
+  await pi.getByText("0.74.0").waitFor();
+  await pi.getByRole("button", { name: await tr("remote.clients.configure") }).click();
+  await claudeDialog.getByRole("heading", { name: await tr("remote.configureTitle", { name: "Pi", host: "dev" }) }).waitFor();
+  await claudeDialog.getByRole("button", { name: await tr("clients.preview") }).click();
+  await claudeDialog.locator("[data-client-config-preview]").waitFor();
+  assert.equal((await calls("previewClient")).at(-1)[2].targetId, "pi");
+  await claudeDialog.getByRole("button", { name: await tr("clients.apply") }).click();
+  await claudeDialog.waitFor({ state: "hidden" });
+  await pi.getByRole("button", { name: await tr("remote.clients.probe") }).click();
+  await pi.locator('[data-remote-probe="ok"]').waitFor();
+  assert.deepEqual((await calls("probe")).at(-1), ["probe", "host-1", "pi"]);
+  await pi.getByRole("button", { name: await tr("remote.clients.restore") }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: await tr("remote.clients.restore") }).click();
+  await pi.getByText(await tr("remote.clients.notConfigured")).waitFor();
+  assert.deepEqual((await calls("restoreClient")).at(-1), ["restoreClient", "host-1", "pi", false]);
+  console.log("PASS OpenCode and Pi on a remote host show their versions, and Pi is configured, tested and restored");
 
   await codex.getByRole("button", { name: await tr("remote.clients.restore") }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: await tr("remote.clients.restore") }).click();
@@ -137,11 +159,16 @@ export async function testRemoteHosts({ page, reset, captureDir }) {
   await panel.getByRole("button", { name: await tr("remote.edit") }).click();
   await dialog.waitFor();
   assert.equal(await password.getAttribute("placeholder"), await tr("remote.fields.storedSecret"));
+  // Claude Code is still configured there: its directories stay as they are.
+  const codexHome = dialog.locator("#remote-host-env-CODEX_HOME");
+  assert.equal(await codexHome.isDisabled(), true);
+  assert.equal(await codexHome.getAttribute("placeholder"), "~/.codex");
   assert.equal(await password.inputValue(), "", "a stored password is never shown");
   await dialog.getByRole("button", { name: await tr("remote.save") }).click();
   await dialog.waitFor({ state: "hidden" });
   const edited = (await calls("save")).at(-1)[1];
   assert.equal(edited.id, "host-1");
   assert.equal(edited.password, "", "an untouched password field keeps the stored one");
+  assert.deepEqual(edited.env, {}, "client directories follow the host by default");
   console.log("PASS a restore asks first, and editing a host keeps its stored password without showing it");
 }

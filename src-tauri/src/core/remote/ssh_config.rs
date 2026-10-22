@@ -23,6 +23,10 @@ pub struct HostConfig {
     pub user: Option<String>,
     pub port: Option<u16>,
     pub identity_files: Vec<String>,
+    /// `IdentityAgent`: a socket, `SSH_AUTH_SOCK`, or `none`.
+    pub identity_agent: Option<String>,
+    /// `IdentitiesOnly`: only the agent keys of `identity_files`.
+    pub identities_only: bool,
 }
 
 struct Block {
@@ -136,6 +140,7 @@ impl SshConfig {
     /// What `alias` resolves to.
     pub fn resolve(&self, alias: &str) -> HostConfig {
         let mut config = HostConfig::default();
+        let mut seen_identities_only = false;
         for block in &self.blocks {
             let Some(patterns) = &block.patterns else {
                 continue;
@@ -150,10 +155,15 @@ impl SshConfig {
                     }
                     "user" if config.user.is_none() => config.user = Some(value.clone()),
                     "port" if config.port.is_none() => config.port = value.parse().ok(),
-                    "identityfile" => {
-                        if !config.identity_files.contains(value) {
-                            config.identity_files.push(value.clone());
-                        }
+                    "identityagent" if config.identity_agent.is_none() => {
+                        config.identity_agent = Some(value.clone())
+                    }
+                    "identitiesonly" if !seen_identities_only => {
+                        seen_identities_only = true;
+                        config.identities_only = value.eq_ignore_ascii_case("yes");
+                    }
+                    "identityfile" if !config.identity_files.contains(value) => {
+                        config.identity_files.push(value.clone());
                     }
                     _ => {}
                 }
@@ -219,7 +229,10 @@ fn include_paths(pattern: &str, home: &Path) -> Vec<PathBuf> {
         None if Path::new(pattern).is_absolute() => PathBuf::from(pattern),
         None => home.join(".ssh").join(pattern),
     };
-    let Some(name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+    let Some(name) = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    else {
         return Vec::new();
     };
     if !name.contains(['*', '?']) {
@@ -320,9 +333,7 @@ fn run_openssh(alias: &str, user: Option<&str>, port: Option<u16>) -> Option<Hos
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -349,10 +360,10 @@ fn parse_openssh(text: &str) -> Option<HostConfig> {
             "hostname" => config.host_name = Some(value.to_owned()),
             "user" => config.user = Some(value.to_owned()),
             "port" => config.port = value.parse().ok(),
-            "identityfile" => {
-                if !config.identity_files.iter().any(|file| file == value) {
-                    config.identity_files.push(value.to_owned());
-                }
+            "identityagent" => config.identity_agent = Some(value.to_owned()),
+            "identitiesonly" => config.identities_only = value == "yes",
+            "identityfile" if !config.identity_files.iter().any(|file| file == value) => {
+                config.identity_files.push(value.to_owned());
             }
             _ => {}
         }
@@ -470,6 +481,8 @@ Host *
                 user: Some("ubuntu".into()),
                 port: Some(2222),
                 identity_files: vec!["~/.ssh/global_key".into(), "~/.ssh/my key".into()],
+                identity_agent: None,
+                identities_only: false,
             }
         );
     }
@@ -504,7 +517,11 @@ Host *
         let home = tempfile::tempdir().unwrap();
         let ssh = home.path().join(".ssh");
         std::fs::create_dir_all(ssh.join("conf.d")).unwrap();
-        std::fs::write(ssh.join("conf.d").join("a.conf"), "Host lab\n HostName 10.9.9.9\n").unwrap();
+        std::fs::write(
+            ssh.join("conf.d").join("a.conf"),
+            "Host lab\n HostName 10.9.9.9\n",
+        )
+        .unwrap();
         std::fs::write(ssh.join("conf.d").join("b.conf"), "Host gpu\n User root\n").unwrap();
         std::fs::write(ssh.join("common"), "IdentityFile ~/.ssh/shared\n").unwrap();
         let mut config = SshConfig::empty();
@@ -534,7 +551,7 @@ Host *
     #[test]
     fn openssh_output() {
         let config = parse_openssh(
-            "host dev\nuser lab\nhostname 10.0.0.5\nport 2222\nidentityfile ~/.ssh/a\nidentityfile ~/.ssh/b\nidentityfile ~/.ssh/a\n",
+            "host dev\nuser lab\nhostname 10.0.0.5\nport 2222\nidentitiesonly yes\nidentityagent ~/.1password/agent.sock\nidentityfile ~/.ssh/a\nidentityfile ~/.ssh/b\nidentityfile ~/.ssh/a\n",
         )
         .unwrap();
         assert_eq!(
@@ -544,6 +561,8 @@ Host *
                 user: Some("lab".into()),
                 port: Some(2222),
                 identity_files: vec!["~/.ssh/a".into(), "~/.ssh/b".into()],
+                identity_agent: Some("~/.1password/agent.sock".into()),
+                identities_only: true,
             }
         );
         assert_eq!(parse_openssh("garbage"), None);

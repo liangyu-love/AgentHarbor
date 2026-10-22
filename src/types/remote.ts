@@ -2,6 +2,11 @@ import type { ClientStatus } from "./clients";
 
 export type RemoteAuth = "key" | "password";
 
+/** The clients configured through the shared configuration engine on a host. */
+export type RemoteManagedClient = "claudeCode" | "opencode" | "pi";
+/** Every client a host's configuration covers. */
+export type RemoteClientId = "codex" | RemoteManagedClient;
+
 /** A reverse tunnel from a host back to this machine's router. */
 export type TunnelState =
   | { state: "connecting" }
@@ -15,6 +20,8 @@ export interface ResolvedRemoteHost {
   port: number;
   user: string | null;
   identityFiles: string[];
+  /** SSH agents asked for keys before the files, as `ssh` does. */
+  agents: string[];
 }
 
 /** A remote host. Its password and key passphrase are never sent back. */
@@ -106,6 +113,8 @@ export interface RemoteCodexPreview {
 export interface RemoteInstalled {
   codex: string | null;
   claudeCode: string | null;
+  opencode: string | null;
+  pi: string | null;
 }
 
 /** One small request through a client on a host, as it is configured. */
@@ -159,6 +168,8 @@ export interface RemoteClients {
   webSearch: WebSearchStatus;
   codex: RemoteCodexStatus;
   claudeCode: ClientStatus;
+  opencode: ClientStatus;
+  pi: ClientStatus;
   /** The client directories in effect on the host, by variable. */
   env: Record<string, string>;
   /** Variables the host's shells moved since a client was configured; it stays where it was written. */

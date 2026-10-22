@@ -13,7 +13,7 @@ import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
 import type { NewApiProvider } from "@/types/newapi";
-import type { RemoteClients, RemoteHost, RemoteProbe } from "@/types/remote";
+import type { RemoteClients, RemoteHost, RemoteManagedClient, RemoteProbe } from "@/types/remote";
 import { ConfigDialog } from "./client-config-dialog";
 import { ConsoleHeader } from "./client-console";
 import { ClientGlyph } from "./configuration-shortcuts";
@@ -22,6 +22,8 @@ import { RemoteHostDialog, remoteErrorKey } from "./remote-host-dialog";
 import { RemoteWebSearch } from "./remote-web-search";
 
 const SELECTED_KEY = "agentharbor.remote-host.v1";
+/** The clients set up through the shared configuration dialog, in the console's order. */
+const MANAGED: RemoteManagedClient[] = ["claudeCode", "opencode", "pi"];
 
 const target = (host: RemoteHost) => {
   const user = host.user ?? host.resolved.user;
@@ -38,7 +40,7 @@ const stateTone: Record<string, string> = {
 };
 
 // Remote hosts on the injection page, laid out like the client console: the
-// hosts in a rail, the chosen one's Codex and Claude Code beside it, each
+// hosts in a rail, the chosen one's Codex, Claude Code, OpenCode and Pi beside it, each
 // direct or through this machine's router over the host's tunnel.
 export function RemoteHostsPanel({ providers }: { providers: NewApiProvider[] }) {
   const { t } = useTranslation();
@@ -148,7 +150,7 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
   const failure = clients.isError ? errorMessage(clients.error) : null;
   const [trusting, setTrusting] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
-  const [dialog, setDialog] = useState<"codex" | "claudeCode" | null>(null);
+  const [dialog, setDialog] = useState<"codex" | RemoteManagedClient | null>(null);
   const [busy, setBusy] = useState(false);
   // A new host's key is fetched so the user can check it before trusting it.
   const hostKey = useQuery({
@@ -203,7 +205,8 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
     () => api.remote.remove(host.id), t("remote.deleted"), true);
 
   const data: RemoteClients | undefined = clients.data;
-  const claudeName = data?.claudeCode.name ?? "Claude Code";
+  const managed = data ? MANAGED.map(id => ({ id, status: data[id], version: data.installed[id] })) : [];
+  const editing = managed.find(entry => entry.id === dialog);
   return (
     <div className="min-w-0 space-y-5" data-remote-host-detail>
       <ConsoleHeader titleId={`remote-host-title-${host.id}`} title={host.name}
@@ -273,17 +276,19 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
               () => api.remote.restoreCodex(host.id, data.codex.conflict), t("remote.clients.restored"))}
             onRelease={() => act(t("remote.clients.releaseTitle", { name: "Codex" }), t("remote.clients.releaseDescription"), t("remote.clients.release"),
               () => api.remote.releaseCodex(host.id), t("remote.clients.released"))} />
-          <ClientRow glyph="claudeCode" name={claudeName} version={data.installed.claudeCode} path={data.claudeCode.path}
-            configured={data.claudeCode.configured} routed={data.claudeCode.request?.accessMode === "router"}
-            provider={providers.find(entry => entry.id === data.claudeCode.providerId)?.name ?? data.claudeCode.providerId ?? undefined}
-            model={data.claudeCode.model ?? undefined} conflictFields={data.claudeCode.conflictFields ?? []} stale={!!data.claudeCode.stale}
-            error={data.claudeCode.error} busy={busy} onConfigure={() => setDialog("claudeCode")}
-            onProbe={() => api.remote.probe(host.id, "claudeCode")}
-            onRestore={() => act(t("remote.clients.restoreTitle", { name: claudeName }),
-              t(data.claudeCode.conflict ? "remote.clients.restoreConflict" : "remote.clients.restoreDescription", { name: claudeName }), t("remote.clients.restore"),
-              () => api.remote.restoreClaude(host.id, data.claudeCode.conflict), t("remote.clients.restored"))}
-            onRelease={() => act(t("remote.clients.releaseTitle", { name: claudeName }), t("remote.clients.releaseDescription"), t("remote.clients.release"),
-              () => api.remote.releaseClaude(host.id), t("remote.clients.released"))} />
+          {managed.map(({ id, status, version }) => (
+            <ClientRow key={id} glyph={id} name={status.name} version={version} path={status.path}
+              configured={status.configured} routed={status.request?.accessMode === "router"}
+              provider={providers.find(entry => entry.id === status.providerId)?.name ?? status.providerId ?? undefined}
+              model={status.model ?? undefined} conflictFields={status.conflictFields ?? []} stale={!!status.stale}
+              error={status.error} busy={busy} onConfigure={() => setDialog(id)}
+              onProbe={() => api.remote.probe(host.id, id)}
+              onRestore={() => act(t("remote.clients.restoreTitle", { name: status.name }),
+                t(status.conflict ? "remote.clients.restoreConflict" : "remote.clients.restoreDescription", { name: status.name }), t("remote.clients.restore"),
+                () => api.remote.restoreClient(host.id, id, status.conflict), t("remote.clients.restored"))}
+              onRelease={() => act(t("remote.clients.releaseTitle", { name: status.name }), t("remote.clients.releaseDescription"), t("remote.clients.release"),
+                () => api.remote.releaseClient(host.id, id), t("remote.clients.released"))} />
+          ))}
           <p className="poster-kicker pt-2 text-[10px] text-muted-foreground">Tools</p>
           <RemoteWebSearch key={`${data.webSearch.request?.providerId}:${data.webSearch.request?.model}`} hostId={host.id} status={data.webSearch} onChanged={refresh} />
         </div>
@@ -291,12 +296,12 @@ function RemoteHostDetail({ host, providers, onEdit }: { host: RemoteHost; provi
 
       {dialog === "codex" && data && <RemoteCodexDialog host={host} status={data.codex} providers={providers}
         onClose={() => setDialog(null)} onApplied={refresh} />}
-      {dialog === "claudeCode" && data && <ConfigDialog client={data.claudeCode} providers={providers}
+      {editing && <ConfigDialog client={editing.status} providers={providers}
         onClose={() => setDialog(null)} onApplied={refresh}
         remote={{
           hostName: host.name,
-          preview: (request, replace) => api.remote.previewClaude(host.id, request, replace),
-          apply: (request, revision, replace) => api.remote.applyClaude(host.id, request, revision, replace),
+          preview: (request, replace) => api.remote.previewClient(host.id, request, replace),
+          apply: (request, revision, replace) => api.remote.applyClient(host.id, request, revision, replace),
         }} />}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </div>
@@ -362,7 +367,7 @@ function HostKeyCard({ tone, icon, title, description, fingerprint, algorithm, l
 }
 
 function ClientRow({ glyph, name, version, path, configured, routed, provider, model, hint, conflictFields, stale, error, busy, onConfigure, onProbe, onRestore, onRelease }: {
-  glyph: "codex" | "claudeCode";
+  glyph: "codex" | RemoteManagedClient;
   name: string;
   /** The version installed on the host; null when it is not found. */
   version: string | null;

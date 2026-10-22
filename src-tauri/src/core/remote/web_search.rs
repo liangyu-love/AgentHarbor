@@ -332,7 +332,10 @@ impl<'a> WebSearch<'a> {
             let files = self.session as &dyn crate::core::client_config::ClientFiles;
             // What each client's own configuration says now.
             status.codex = files
-                .read(Path::new(&format!("{}/config.toml", self.session.codex_home())))?
+                .read(Path::new(&format!(
+                    "{}/config.toml",
+                    self.session.codex_home()
+                )))?
                 .and_then(|text| text.parse::<toml::Table>().ok())
                 .is_some_and(|config| {
                     config

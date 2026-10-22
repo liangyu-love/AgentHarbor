@@ -34,7 +34,7 @@ import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { errorMessage } from "@/lib/invoke-error";
 import type { TargetId, ClientStatus, ClientFiles, ClientConfigRequest, ClientConfigPreview, ClientConfigApplied, ClaudeOfficialPreview, ClientLaunch, HarnessReasoning } from "@/types/clients";
 import type { AccountSourceKind, AccountSourceListPayload } from "@/types/account-sources";
-import type { RemoteClients, RemoteCodexPreview, RemoteCodexRequest, RemoteConnectionTest, RemoteHost, RemoteHostInput, RemoteProbe, RouterModel, SearchProvider, SearchTest, WebSearchRequest } from "@/types/remote";
+import type { RemoteClients, RemoteCodexPreview, RemoteCodexRequest, RemoteConnectionTest, RemoteHost, RemoteHostInput, RemoteProbe, RouterModel, SearchProvider, SearchTest, WebSearchRequest, RemoteClientId, RemoteManagedClient } from "@/types/remote";
 import type { GatewayProfile, GatewayState, ModelSources } from "@/types/gateway";
 import type { CursorCommitLocale, CursorStatus } from "@/types/cursor";
 import type { CodexAccessMode, ModelProtocol, NewApiState, NewApiStateChange, NewApiImportResult, NewApiProvider, NewApiProviderInput, NewApiModel, RouterPortBlock } from "@/types/newapi";
@@ -386,7 +386,7 @@ const targetsApi = {
     invoke<ClientConfigApplied>("reapply_client_config", { targetId, rebaseline }),
 };
 
-/** Remote hosts over SSH and the Codex and Claude Code configured on them, direct or through the router. */
+/** Remote hosts over SSH and the Codex, Claude Code, OpenCode and Pi configured on them, direct or through the router. */
 const remoteApi = {
   hosts: () => invoke<RemoteHost[]>("list_remote_hosts"),
   sshAliases: () => invoke<string[]>("ssh_config_aliases"),
@@ -398,7 +398,7 @@ const remoteApi = {
   /** The router's Codex menu for a routed remote Codex. */
   routerModels: () => invoke<RouterModel[]>("remote_codex_router_models"),
   /** One small request through `client` on the host, as it is configured. */
-  probe: (id: string, client: "codex" | "claudeCode") => invoke<RemoteProbe>("probe_remote_client", { id, client }),
+  probe: (id: string, client: RemoteClientId) => invoke<RemoteProbe>("probe_remote_client", { id, client }),
   /** Web search on a host: an MCP server backed by a relay's own search service. */
   searchProviders: () => invoke<SearchProvider[]>("remote_search_providers"),
   deploySearch: (id: string, request: WebSearchRequest) => invoke<void>("deploy_remote_search", { id, request }),
@@ -410,12 +410,14 @@ const remoteApi = {
     invoke<{ path: string }>("apply_remote_codex", { id, request, revision, replaceConflicts }),
   restoreCodex: (id: string, replaceConflicts = false) => invoke<{ path: string }>("restore_remote_codex", { id, replaceConflicts }),
   releaseCodex: (id: string) => invoke<void>("release_remote_codex", { id }),
-  previewClaude: (id: string, request: ClientConfigRequest, replaceConflicts = false) =>
-    invoke<ClientConfigPreview>("preview_remote_claude", { id, request, replaceConflicts }),
-  applyClaude: (id: string, request: ClientConfigRequest, revision: string, replaceConflicts = false) =>
-    invoke<ClientConfigApplied>("apply_remote_claude", { id, request, revision, replaceConflicts }),
-  restoreClaude: (id: string, replaceConflicts = false) => invoke<ClientConfigApplied>("restore_remote_claude", { id, replaceConflicts }),
-  releaseClaude: (id: string) => invoke<void>("release_remote_claude", { id }),
+  /** Claude Code, OpenCode and Pi, through the shared configuration engine; the request names the client. */
+  previewClient: (id: string, request: ClientConfigRequest, replaceConflicts = false) =>
+    invoke<ClientConfigPreview>("preview_remote_client", { id, request, replaceConflicts }),
+  applyClient: (id: string, request: ClientConfigRequest, revision: string, replaceConflicts = false) =>
+    invoke<ClientConfigApplied>("apply_remote_client", { id, request, revision, replaceConflicts }),
+  restoreClient: (id: string, target: RemoteManagedClient, replaceConflicts = false) =>
+    invoke<ClientConfigApplied>("restore_remote_client", { id, target, replaceConflicts }),
+  releaseClient: (id: string, target: RemoteManagedClient) => invoke<void>("release_remote_client", { id, target }),
 };
 
 const conversationsApi = {

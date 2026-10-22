@@ -1,8 +1,10 @@
 //! One SSH session to a remote host: the host key is checked, the user signs
-//! in with a key or a password, and files are read and written over SFTP.
+//! in with a key (an SSH agent's, or a file's) or a password, and files are
+//! read and written over SFTP.
 //! Writes go to a temporary file first and are moved into place, so a
 //! client never reads half a configuration.
 
+use russh::keys::agent::{client::AgentClient, AgentIdentity};
 use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{client, ChannelMsg, Disconnect};
 use russh_sftp::client::{error::Error as SftpError, SftpSession};
@@ -56,10 +58,53 @@ pub struct Target {
 
 pub enum Method {
     Password(String),
+    /// An agent's keys first, then the files', as `ssh` tries them.
     Keys {
         files: Vec<PathBuf>,
         passphrase: Option<String>,
+        agents: Vec<AgentSocket>,
+        /// Only the agent keys that match `files` (`IdentitiesOnly`).
+        identities_only: bool,
     },
+}
+
+/// Where an SSH agent may listen.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentSocket {
+    /// A Unix socket, or a Windows named pipe (`\\.\pipe\...`).
+    Path(String),
+    /// PuTTY's Pageant (Windows).
+    Pageant,
+}
+
+/// An open agent, whatever it listens on.
+type Agent = AgentClient<Box<dyn keys::agent::client::AgentStream + Send + Unpin>>;
+
+/// The agent at `socket`, when it answers soon: an agent never blocks
+/// signing in.
+async fn open_agent(socket: &AgentSocket) -> Option<Agent> {
+    let attempt = async {
+        match socket {
+            #[cfg(windows)]
+            AgentSocket::Path(path) => AgentClient::connect_named_pipe(path)
+                .await
+                .map(AgentClient::dynamic),
+            #[cfg(unix)]
+            AgentSocket::Path(path) => AgentClient::connect_uds(path)
+                .await
+                .map(AgentClient::dynamic),
+            #[cfg(windows)]
+            AgentSocket::Pageant => AgentClient::connect_pageant()
+                .await
+                .map(AgentClient::dynamic),
+            #[allow(unreachable_patterns)]
+            _ => Err(keys::Error::AgentFailure),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(3), attempt)
+        .await
+        .ok()
+        .and_then(Result::ok)
 }
 
 /// Files that hold host keys: the user's own known_hosts (read only) and
@@ -592,8 +637,24 @@ async fn authenticate(
             }
             Err(failed("remote.errors.authPassword"))
         }
-        Method::Keys { files, passphrase } => {
+        Method::Keys {
+            files,
+            passphrase,
+            agents,
+            identities_only,
+        } => {
             let mut error = "remote.errors.noKey";
+            for socket in agents {
+                let Some(mut agent) = open_agent(socket).await else {
+                    continue;
+                };
+                match agent_sign_in(handle, &target.user, &mut agent, files, *identities_only).await
+                {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => error = "remote.errors.authKey",
+                    Err(()) => {}
+                }
+            }
             for file in files {
                 let Ok(text) = std::fs::read_to_string(file) else {
                     continue;
@@ -643,6 +704,70 @@ async fn authenticate(
             Err(failed(error))
         }
     }
+}
+
+/// Signs in with the keys `agent` holds, those matching `files` alone when
+/// `identities_only`: `Ok(false)` when the server took none of them, and
+/// `Err` when the agent had none to offer.
+async fn agent_sign_in<H: client::Handler>(
+    handle: &mut client::Handle<H>,
+    user: &str,
+    agent: &mut Agent,
+    files: &[PathBuf],
+    identities_only: bool,
+) -> Result<bool, ()> {
+    let identities = agent.request_identities().await.map_err(|_| ())?;
+    let wanted: Vec<keys::PublicKey> = files
+        .iter()
+        .filter_map(|file| {
+            let mut public = file.clone().into_os_string();
+            public.push(".pub");
+            let text = std::fs::read_to_string(public).ok()?;
+            keys::PublicKey::from_openssh(text.trim()).ok()
+        })
+        .collect();
+    let offered: Vec<&AgentIdentity> = identities
+        .iter()
+        .filter(|identity| {
+            !identities_only
+                || wanted
+                    .iter()
+                    .any(|key| key.key_data() == identity.public_key().key_data())
+        })
+        // Servers end a sign-in after a handful of refused keys.
+        .take(5)
+        .collect();
+    if offered.is_empty() {
+        return Err(());
+    }
+    for identity in offered {
+        let result = match identity {
+            AgentIdentity::PublicKey { key, .. } => {
+                let hash = if key.algorithm().is_rsa() {
+                    handle
+                        .best_supported_rsa_hash()
+                        .await
+                        .ok()
+                        .flatten()
+                        .flatten()
+                } else {
+                    None
+                };
+                handle
+                    .authenticate_publickey_with(user, key.clone(), hash, agent)
+                    .await
+            }
+            AgentIdentity::Certificate { certificate, .. } => {
+                handle
+                    .authenticate_certificate_with(user, certificate.clone(), None, agent)
+                    .await
+            }
+        };
+        if result.is_ok_and(|result| result.success()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -748,6 +873,121 @@ mod tests {
                 .await
                 .map(|_| ())
         })
+    }
+
+    /// A server that takes `accepted` alone.
+    struct KeyServer {
+        accepted: keys::PublicKey,
+    }
+
+    impl server::Handler for KeyServer {
+        type Error = russh::Error;
+
+        async fn auth_publickey_offered(
+            &mut self,
+            _user: &str,
+            key: &keys::PublicKey,
+        ) -> Result<Auth, Self::Error> {
+            Ok(if key.key_data() == self.accepted.key_data() {
+                Auth::Accept
+            } else {
+                Auth::reject()
+            })
+        }
+
+        async fn auth_publickey(
+            &mut self,
+            user: &str,
+            key: &keys::PublicKey,
+        ) -> Result<Auth, Self::Error> {
+            Ok(
+                if user == "lab" && key.key_data() == self.accepted.key_data() {
+                    Auth::Accept
+                } else {
+                    Auth::reject()
+                },
+            )
+        }
+    }
+
+    fn key(seed: u8) -> keys::PrivateKey {
+        keys::PrivateKey::from(keys::ssh_key::private::Ed25519Keypair::from_seed(
+            &[seed; 32],
+        ))
+    }
+
+    /// Signs in to an in-process server that takes key 2, offering what an
+    /// in-process agent holding keys 1 and 2 has; `files` are the identity
+    /// files named for the host.
+    fn agent_sign_in_with(files: &[PathBuf], identities_only: bool) -> Result<bool, ()> {
+        let config = Arc::new(server::Config {
+            keys: vec![key(7)],
+            methods: MethodSet::from(&[MethodKind::PublicKey][..]),
+            ..Default::default()
+        });
+        block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let handler = KeyServer {
+                    accepted: key(2).public_key().clone(),
+                };
+                if let Ok(session) = server::run_stream(config, stream, handler).await {
+                    let _ = session.await;
+                }
+            });
+            let (ours, theirs) = tokio::io::duplex(64 * 1024);
+            tokio::spawn(keys::agent::server::serve(
+                futures_util::stream::iter(vec![Ok(theirs)]),
+                (),
+            ));
+            let mut agent = AgentClient::connect(ours).dynamic();
+            for seed in [1, 2] {
+                agent.add_identity(&key(seed), &[]).await.unwrap();
+            }
+            let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let mut handle =
+                client::connect_stream(Arc::new(client::Config::default()), stream, AcceptAll)
+                    .await
+                    .unwrap();
+            agent_sign_in(&mut handle, "lab", &mut agent, files, identities_only).await
+        })
+    }
+
+    struct AcceptAll;
+
+    impl client::Handler for AcceptAll {
+        type Error = russh::Error;
+
+        async fn check_server_key(
+            &mut self,
+            _key: &PublicKeyOrCertificate,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn an_agent_signs_in_with_the_key_the_server_takes() {
+        assert_eq!(agent_sign_in_with(&[], false), Ok(true));
+        let dir = tempfile::tempdir().unwrap();
+        let named = |seed: u8| {
+            let file = dir.path().join(format!("id_{seed}"));
+            std::fs::write(
+                dir.path().join(format!("id_{seed}.pub")),
+                key(seed).public_key().to_openssh().unwrap(),
+            )
+            .unwrap();
+            file
+        };
+        // IdentitiesOnly offers the agent's key 1 alone, which is refused.
+        assert_eq!(agent_sign_in_with(&[named(1)], true), Ok(false));
+        assert_eq!(agent_sign_in_with(&[named(2)], true), Ok(true));
+        // No agent key matches the files: nothing is offered.
+        assert_eq!(agent_sign_in_with(&[named(3)], true), Err(()));
     }
 
     #[test]

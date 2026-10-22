@@ -26,7 +26,7 @@ import { AccountsPage } from "@/components/accounts/accounts-page";
 import { UsagePage } from "@/components/usage/usage-page";
 import type { AccountSource, AccountSourceKind, AccountSourceListPayload, AccountSourceMethod } from "@/types/account-sources";
 import type { GatewayModel, GatewayState } from "@/types/gateway";
-import type { RemoteClients, RemoteHost, RemoteHostInput } from "@/types/remote";
+import type { RemoteClients, RemoteHost, RemoteHostInput, RemoteManagedClient } from "@/types/remote";
 import type { CursorStatus } from "@/types/cursor";
 import { McpPage } from "@/components/mcp/mcp-page";
 import { CommandPalette } from "@/components/command-palette/command-palette";
@@ -296,19 +296,25 @@ const installRemote = () => {
   };
   const clientsOf = (id: string): RemoteClients => review.remoteClients[id] ??= {
     home: "/home/ubuntu",
-    installed: { codex: "codex-cli 0.163.0", claudeCode: null },
+    installed: { codex: "codex-cli 0.163.0", claudeCode: null, opencode: null, pi: "0.74.0" },
     webSearch: { deployed: false, path: "/home/ubuntu/.agentharbor/web-search/server.py", request: null, backend: null,
       codex: false, claudeCode: false, stale: false, error: null },
     codex: { path: "/home/ubuntu/.codex/config.toml", configured: false, request: null, conflict: false, conflictFields: [], stale: false, error: null },
     claudeCode: { targetId: "claudeCode", name: "Claude Code", path: "/home/ubuntu/.claude/settings.json", protocols: ["anthropicMessages"],
+      configured: false, conflict: false, error: null, providerId: null, model: null, request: null, conflictFields: [] },
+    opencode: { targetId: "opencode", name: "OpenCode", path: "/home/ubuntu/.config/opencode/opencode.json",
+      protocols: ["chatCompletions", "responses", "anthropicMessages"],
+      configured: false, conflict: false, error: null, providerId: null, model: null, request: null, conflictFields: [] },
+    pi: { targetId: "pi", name: "Pi", path: "/home/ubuntu/.pi/agent/models.json", protocols: ["responses", "chatCompletions", "anthropicMessages"],
       configured: false, conflict: false, error: null, providerId: null, model: null, request: null, conflictFields: [] },
     env: {}, envMoved: [],
   };
   const settle = (id: string) => {
     const clients = clientsOf(id);
     const host = hostOf(id);
-    host.inUse = clients.codex.configured || clients.claudeCode.configured;
-    host.routed = !!clients.codex.request?.router || clients.claudeCode.request?.accessMode === "router";
+    const managed = [clients.claudeCode, clients.opencode, clients.pi];
+    host.inUse = clients.codex.configured || managed.some(status => status.configured);
+    host.routed = !!clients.codex.request?.router || managed.some(status => status.request?.accessMode === "router");
     // The fixture's tunnel connects at once.
     host.tunnel = host.routed ? { state: "connected", since: 1_790_000_000 } : null;
   };
@@ -328,7 +334,7 @@ const installRemote = () => {
       user: input.user ?? null, auth: input.auth, identityFile: input.identityFile ?? null, hasPassword,
       hasPassphrase: input.auth === "key" && !input.clearPassphrase && (!!input.passphrase || !!existing?.hasPassphrase),
       resolved: { hostName: input.host === "dev" ? "10.0.0.5" : input.host, port: input.port ?? 22,
-        user: input.user ?? (input.host === "dev" ? "ubuntu" : null), identityFiles: ["C:/Users/fixture/.ssh/id_ed25519"] },
+        user: input.user ?? (input.host === "dev" ? "ubuntu" : null), identityFiles: ["C:/Users/fixture/.ssh/id_ed25519"], agents: ["Pageant"] },
       inUse: existing?.inUse ?? false,
       tunnelPort: input.tunnelPort ?? 43127, routed: existing?.routed ?? false, tunnel: existing?.tunnel ?? null,
       env: Object.fromEntries(Object.entries(input.env ?? {}).filter(([, value]) => value.trim())),
@@ -401,27 +407,28 @@ const installRemote = () => {
     return { path: clients.codex.path };
   };
   api.remote.releaseCodex = async id => { record("releaseCodex", id); await api.remote.restoreCodex(id); };
-  api.remote.previewClaude = async (id, request, replace) => {
-    record("previewClaude", id, request, replace);
+  api.remote.previewClient = async (id, request, replace) => {
+    record("previewClient", id, request, replace);
     trusted(id);
-    return { path: clientsOf(id).claudeCode.path, revision: "rev-claude",
+    return { path: clientsOf(id)[request.targetId as RemoteManagedClient].path, revision: "rev-client",
       content: JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://mixed.invalid", ANTHROPIC_AUTH_TOKEN: "[managed locally]" }, model: request.model }, null, 2) };
   };
-  api.remote.applyClaude = async (id, request, revision, replace) => {
-    record("applyClaude", id, request, revision, replace);
+  api.remote.applyClient = async (id, request, revision, replace) => {
+    record("applyClient", id, request, revision, replace);
     const clients = clientsOf(id);
-    clients.claudeCode = { ...clients.claudeCode, configured: true, providerId: request.providerId, model: request.model, request: structuredClone(request) };
+    const target = request.targetId as RemoteManagedClient;
+    clients[target] = { ...clients[target], configured: true, providerId: request.providerId, model: request.model, request: structuredClone(request) };
     settle(id);
-    return { path: clients.claudeCode.path, backupPath: "C:/synthetic/backup.dat", warnings: [] };
+    return { path: clients[target].path, backupPath: "C:/synthetic/backup.dat", warnings: [] };
   };
-  api.remote.restoreClaude = async (id, replace) => {
-    record("restoreClaude", id, replace);
+  api.remote.restoreClient = async (id, target, replace) => {
+    record("restoreClient", id, target, replace);
     const clients = clientsOf(id);
-    clients.claudeCode = { ...clients.claudeCode, configured: false, providerId: null, model: null, request: null };
+    clients[target] = { ...clients[target], configured: false, providerId: null, model: null, request: null };
     settle(id);
-    return { path: clients.claudeCode.path, backupPath: "C:/synthetic/backup.dat", warnings: [] };
+    return { path: clients[target].path, backupPath: "C:/synthetic/backup.dat", warnings: [] };
   };
-  api.remote.releaseClaude = async id => { record("releaseClaude", id); await api.remote.restoreClaude(id); };
+  api.remote.releaseClient = async (id, target) => { record("releaseClient", id, target); await api.remote.restoreClient(id, target); };
 };
 api.routing.diagnostics = async () => {
   if (controls.review.routeDiagnostics) return controls.review.routeDiagnostics;

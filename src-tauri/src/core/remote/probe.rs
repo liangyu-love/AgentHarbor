@@ -1,14 +1,16 @@
-//! What runs on a host: which Codex and Claude Code are installed, and one
-//! small request through either as it is configured, so the user sees the
+//! What runs on a host: which clients are installed, and one small request
+//! through any of them as it is configured, so the user sees the
 //! configuration work end to end.
 
-use super::RemoteSession;
-use crate::core::targets::TargetId;
+use super::{connection::quote, RemoteSession};
+use crate::core::{client_config::ConfigRequest, targets::TargetId};
 use serde::Serialize;
+use serde_json::Value;
 use std::time::{Duration, Instant};
 
 /// A shell function printing where command `$1` is: on the non-interactive
-/// PATH, the login shell's, or `~/.local/bin` (where both CLIs install).
+/// PATH, the login shell's, or `~/.local/bin` (where Codex and Claude Code
+/// install).
 pub(super) const FIND: &str = r#"find() { p=$(command -v "$1" 2>/dev/null) || p=$(bash -lc "command -v $1" 2>/dev/null) || p=; if [ -z "$p" ] && [ -x "$HOME/.local/bin/$1" ]; then p="$HOME/.local/bin/$1"; fi; printf %s "$p"; }"#;
 const PROMPT: &str = "Reply with exactly the word: pong";
 const PROBE_LIMIT: Duration = Duration::from_secs(150);
@@ -18,12 +20,14 @@ const PROBE_LIMIT: Duration = Duration::from_secs(150);
 pub struct Installed {
     pub codex: Option<String>,
     pub claude_code: Option<String>,
+    pub opencode: Option<String>,
+    pub pi: Option<String>,
 }
 
 /// The versions of the CLIs on the host; a missing one is `None`.
 pub fn installed(session: &RemoteSession) -> Installed {
     let script = format!(
-        "{FIND}; for c in codex claude; do b=$(find $c); if [ -n \"$b\" ]; then printf '%s\\t' $c; \"$b\" --version 2>/dev/null | head -n 1; fi; done"
+        "{FIND}; for c in codex claude opencode pi; do b=$(find $c); if [ -n \"$b\" ]; then printf '%s\\t' $c; \"$b\" --version 2>/dev/null | head -n 1; fi; done"
     );
     let Ok((_, output)) = session.run(&script, Duration::from_secs(20)) else {
         return Installed::default();
@@ -37,6 +41,8 @@ pub fn installed(session: &RemoteSession) -> Installed {
         match name {
             "codex" => installed.codex = version,
             "claude" => installed.claude_code = version,
+            "opencode" => installed.opencode = version,
+            "pi" => installed.pi = version,
             _ => {}
         }
     }
@@ -54,11 +60,13 @@ pub struct Probe {
 }
 
 /// Asks `client` on the host for a one-word reply as it is configured;
-/// `codex_profile` runs Codex with that profile.
+/// `codex_profile` runs Codex with that profile, and `pi` is the request Pi
+/// was configured with, whose model it is asked for by name.
 pub fn probe(
     session: &RemoteSession,
     client: TargetId,
     codex_profile: Option<&str>,
+    pi: Option<&ConfigRequest>,
 ) -> Result<Probe, String> {
     let run = match client {
         TargetId::Codex => {
@@ -79,6 +87,24 @@ pub fn probe(
         TargetId::ClaudeCode => {
             format!("b=$(find claude); [ -n \"$b\" ] || {{ echo 'claude: not found'; exit 127; }}; \"$b\" -p '{PROMPT}'")
         }
+        // OpenCode runs the model its configuration names.
+        TargetId::OpenCode => {
+            format!("b=$(find opencode); [ -n \"$b\" ] || {{ echo 'opencode: not found'; exit 127; }}; \"$b\" run '{PROMPT}'")
+        }
+        TargetId::Pi => {
+            let request = pi.ok_or("clients.errors.notConfigured")?;
+            let models = session.client_paths().pi;
+            let text = crate::core::client_config::ClientFiles::read(session, &models)?;
+            let model = match text.as_deref().and_then(|text| pi_provider(text, request)) {
+                Some(provider) => format!(
+                    "--provider {} --model {}",
+                    quote(&provider),
+                    quote(&request.model)
+                ),
+                None => format!("--model {}", quote(&request.model)),
+            };
+            format!("b=$(find pi); [ -n \"$b\" ] || {{ echo 'pi: not found'; exit 127; }}; \"$b\" {model} --print '{PROMPT}'")
+        }
         _ => return Err("clients.errors.unsupported".into()),
     };
     let script = format!("{FIND}; cd /tmp && {{ {run}; }} </dev/null 2>&1 | tail -n 24");
@@ -91,6 +117,28 @@ pub fn probe(
     })
 }
 
+/// The provider of Pi's `models.json` this app wrote with `request`'s model,
+/// its relay's first.
+fn pi_provider(models: &str, request: &ConfigRequest) -> Option<String> {
+    let models: Value = serde_json::from_str(models).ok()?;
+    let relay = format!("agentharbor-relay-{}-", request.provider_id);
+    let mut found: Vec<&String> = models["providers"]
+        .as_object()?
+        .iter()
+        .filter(|(key, provider)| {
+            key.starts_with("agentharbor-")
+                && provider["models"].as_array().is_some_and(|models| {
+                    models
+                        .iter()
+                        .any(|model| model["id"] == request.model.as_str())
+                })
+        })
+        .map(|(key, _)| key)
+        .collect();
+    found.sort_by_key(|key| !key.starts_with(&relay));
+    found.first().map(|key| (*key).clone())
+}
+
 fn answered(output: &str) -> bool {
     output.lines().any(|line| {
         line.trim()
@@ -101,7 +149,7 @@ fn answered(output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::answered;
+    use super::*;
 
     #[test]
     fn a_reply_counts_only_on_its_own_line() {
@@ -110,5 +158,23 @@ mod tests {
         assert!(!answered(
             "Reply with exactly the word: pong\nERROR: unauthorized\n"
         ));
+    }
+
+    #[test]
+    fn pi_is_asked_for_its_relay_by_name() {
+        let request: ConfigRequest = serde_json::from_value(serde_json::json!({
+            "targetId": "pi", "providerId": "mimo", "model": "mimo-v2.6-flash"
+        }))
+        .unwrap();
+        let models = r#"{"providers": {
+            "openai": {"models": [{"id": "mimo-v2.6-flash"}]},
+            "agentharbor-relay-other-openai-completions": {"models": [{"id": "mimo-v2.6-flash"}]},
+            "agentharbor-relay-mimo-anthropic-messages": {"models": [{"id": "mimo-v2.6-flash"}]}
+        }}"#;
+        assert_eq!(
+            pi_provider(models, &request).as_deref(),
+            Some("agentharbor-relay-mimo-anthropic-messages")
+        );
+        assert_eq!(pi_provider("{}", &request), None);
     }
 }
