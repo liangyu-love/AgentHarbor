@@ -9,9 +9,10 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 
 /// A shell function printing where command `$1` is: on the non-interactive
-/// PATH, the login shell's, or `~/.local/bin` (where Codex and Claude Code
-/// install).
-pub(super) const FIND: &str = r#"find() { p=$(command -v "$1" 2>/dev/null) || p=$(bash -lc "command -v $1" 2>/dev/null) || p=; if [ -z "$p" ] && [ -x "$HOME/.local/bin/$1" ]; then p="$HOME/.local/bin/$1"; fi; printf %s "$p"; }"#;
+/// PATH, the login shell's, or where the installers put it (`~/.local/bin`
+/// for Codex and Claude Code, `~/.opencode/bin`, `~/.pi/agent/bin`), whose
+/// PATH line often sits in `.bashrc` past its non-interactive return.
+pub(super) const FIND: &str = r#"find() { p=$(command -v "$1" 2>/dev/null) || p=$(bash -lc "command -v $1" 2>/dev/null) || p=; for d in .local/bin .opencode/bin .pi/agent/bin; do if [ -z "$p" ] && [ -x "$HOME/$d/$1" ]; then p="$HOME/$d/$1"; fi; done; printf %s "$p"; }"#;
 const PROMPT: &str = "Reply with exactly the word: pong";
 const PROBE_LIMIT: Duration = Duration::from_secs(150);
 
