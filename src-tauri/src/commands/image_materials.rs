@@ -296,6 +296,189 @@ fn add(
     Ok(with_directory(paths, groups))
 }
 
+/// What a folder import added and what it left out.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderImport {
+    pub library: ImageMaterialLibrary,
+    pub added: usize,
+    /// Groups made for subfolders that had no same-named group yet.
+    pub groups_created: usize,
+    /// Pictures whose name the group already has, as when a folder is imported again.
+    pub duplicates: usize,
+    /// Files that are not a picture we keep, too large, unreadable, or past the limits.
+    pub skipped: usize,
+}
+
+/// How deep a subfolder's own subfolders are read; deeper ones are left out.
+const MAX_FOLDER_DEPTH: usize = 8;
+
+/// The kept extension of a picture, judged by its bytes rather than its name.
+fn picture_extension(bytes: &[u8]) -> Option<&'static str> {
+    match image::guess_format(bytes).ok()? {
+        image::ImageFormat::Png => Some("png"),
+        image::ImageFormat::Jpeg => Some("jpg"),
+        image::ImageFormat::WebP => Some("webp"),
+        image::ImageFormat::Gif => Some("gif"),
+        _ => None,
+    }
+}
+
+fn looks_like_picture(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif"
+            )
+        })
+}
+
+/// A folder's picture files and subfolders, each by name. Links are neither, so
+/// a folder cannot lead the import outside itself.
+fn folder_entries(folder: &Path) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let mut entries: Vec<_> = std::fs::read_dir(folder).ok()?.flatten().collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    let (mut files, mut folders) = (Vec::new(), Vec::new());
+    for entry in entries {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if kind.is_file() && looks_like_picture(&path) {
+            files.push(path);
+        } else if kind.is_dir() {
+            folders.push(path);
+        }
+    }
+    Some((files, folders))
+}
+
+/// The pictures in `folder`, then those of its subfolders down to `deep` levels.
+fn picture_files(folder: &Path, deep: usize, materials: &Path) -> Vec<PathBuf> {
+    let Some((mut files, folders)) = folder_entries(folder) else {
+        return Vec::new();
+    };
+    if deep > 0 {
+        for path in folders.iter().filter(|path| !same_folder(path, materials)) {
+            files.extend(picture_files(path, deep - 1, materials));
+        }
+    }
+    files
+}
+
+/// Copy the pictures of a folder in: those at its top level into `group_id`, and each
+/// subfolder's (its own subfolders included) into the group of that name, made when
+/// missing. A name the group already has is skipped, so importing again adds only
+/// what is new. Whatever fits is added; the rest is counted as skipped.
+fn import_folder(
+    paths: &CodexPaths,
+    group_id: &str,
+    source: &Path,
+) -> Result<FolderImport, String> {
+    let source = source
+        .canonicalize()
+        .ok()
+        .filter(|source| source.is_dir())
+        .ok_or("image.errors.imageMaterials")?;
+    let _guard = LIBRARY_LOCK
+        .lock()
+        .map_err(|_| "image.errors.imageMaterials".to_owned())?;
+    let folder = directory(paths);
+    if same_folder(&source, &folder) {
+        return Err("image.errors.imageMaterialsInvalid".into());
+    }
+    let mut groups = read_groups(paths)?;
+    if !groups.iter().any(|group| group.id == group_id) {
+        return Err("image.errors.imageMaterialsInvalid".into());
+    }
+    // (group name, its files); the first entry is the chosen group.
+    let (top, subfolders) = folder_entries(&source).ok_or("image.errors.imageMaterials")?;
+    let mut batches = vec![(None, top)];
+    for path in subfolders.iter().filter(|path| !same_folder(path, &folder)) {
+        let files = picture_files(path, MAX_FOLDER_DEPTH, &folder);
+        if !files.is_empty() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            batches.push((Some(clipped(&name, MAX_GROUP_NAME_CHARS)), files));
+        }
+    }
+
+    std::fs::create_dir_all(&folder).map_err(|_| "image.errors.imageMaterials".to_owned())?;
+    let mut total: usize = groups.iter().map(|group| group.items.len()).sum();
+    let mut written = Vec::new();
+    let (mut groups_created, mut duplicates, mut skipped) = (0, 0, 0);
+    for (name, files) in batches {
+        let index = match &name {
+            None => groups.iter().position(|group| group.id == group_id),
+            Some(name) => groups.iter().position(|group| &group.name == name),
+        };
+        let index = match index {
+            Some(index) => index,
+            None if groups.len() < MAX_GROUPS => {
+                groups.push(ImageMaterialGroup {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: name.clone().unwrap_or_default(),
+                    items: Vec::new(),
+                });
+                groups_created += 1;
+                groups.len() - 1
+            }
+            None => {
+                skipped += files.len();
+                continue;
+            }
+        };
+        for path in files {
+            let name = clipped(
+                &path.file_stem().unwrap_or_default().to_string_lossy(),
+                MAX_NAME_CHARS,
+            );
+            if groups[index].items.iter().any(|item| item.name == name) {
+                duplicates += 1;
+                continue;
+            }
+            let picture = std::fs::metadata(&path)
+                .ok()
+                .filter(|meta| meta.len() <= MAX_IMAGE_BYTES as u64)
+                .and_then(|_| std::fs::read(&path).ok())
+                .and_then(|bytes| picture_extension(&bytes).map(|extension| (bytes, extension)));
+            let Some((bytes, extension)) = picture.filter(|_| total < MAX_ITEMS) else {
+                skipped += 1;
+                continue;
+            };
+            let id = uuid::Uuid::new_v4().to_string();
+            let file = format!("{id}.{extension}");
+            if std::fs::write(folder.join(&file), bytes).is_err() {
+                skipped += 1;
+                continue;
+            }
+            written.push(file.clone());
+            groups[index].items.push(ImageMaterial {
+                id,
+                name,
+                note: String::new(),
+                file,
+            });
+            total += 1;
+        }
+    }
+    let (groups, _) = sanitize(groups);
+    if let Err(error) = write_groups(paths, &groups) {
+        for file in &written {
+            let _ = std::fs::remove_file(folder.join(file));
+        }
+        return Err(error);
+    }
+    Ok(FolderImport {
+        library: with_directory(paths, groups),
+        added: written.len(),
+        groups_created,
+        duplicates,
+        skipped,
+    })
+}
+
 /// Keep the materials in `target` from now on. A folder that already holds a library
 /// is switched to as it is; otherwise the current pictures and index move there,
 /// copied first and removed from the old folder only once the new one is in use.
@@ -430,6 +613,17 @@ pub async fn add_image_materials(
 ) -> Result<ImageMaterialLibrary, String> {
     let paths = paths(&repo)?;
     super::blocking(move || add(&paths, &group_id, images)).await
+}
+
+/// Copy a folder's pictures in, its subfolders into groups of their names.
+#[tauri::command]
+pub async fn import_image_materials_folder(
+    repo: State<'_, Mutex<Repository>>,
+    group_id: String,
+    directory: String,
+) -> Result<FolderImport, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || import_folder(&paths, &group_id, Path::new(&directory))).await
 }
 
 /// Keep the materials in another folder, moving them there unless it holds a library.
@@ -708,6 +902,84 @@ mod tests {
         assert_ne!(directory(&paths), gallery.canonicalize().unwrap());
         relocate(&paths, &gallery, true).unwrap();
         assert_eq!(directory(&paths), gallery.canonicalize().unwrap());
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        STANDARD
+            .decode(png().trim_start_matches("data:image/png;base64,"))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_folder_import_puts_subfolders_in_groups_of_their_names() {
+        let (dir, paths) = temp_paths();
+        save(
+            &paths,
+            library(vec![group("g1", "人物"), group("g2", "背景")]),
+        )
+        .unwrap();
+        let source = dir.path().join("素材");
+        std::fs::create_dir_all(source.join("背景/夜景")).unwrap();
+        std::fs::create_dir_all(source.join("服装")).unwrap();
+        std::fs::create_dir_all(source.join("空的")).unwrap();
+        std::fs::write(source.join("b.PNG"), png_bytes()).unwrap();
+        std::fs::write(source.join("a.png"), png_bytes()).unwrap();
+        std::fs::write(source.join("note.txt"), b"not a picture").unwrap();
+        std::fs::write(source.join("fake.png"), b"not a picture").unwrap();
+        std::fs::write(source.join("背景/街道.png"), png_bytes()).unwrap();
+        std::fs::write(source.join("背景/夜景/霓虹.png"), png_bytes()).unwrap();
+        std::fs::write(source.join("服装/裙子.png"), png_bytes()).unwrap();
+
+        let imported = import_folder(&paths, "g1", &source).unwrap();
+        assert_eq!(
+            (
+                imported.added,
+                imported.groups_created,
+                imported.duplicates,
+                imported.skipped
+            ),
+            (5, 1, 0, 1)
+        );
+        let names = |group: &ImageMaterialGroup| -> Vec<String> {
+            group.items.iter().map(|item| item.name.clone()).collect()
+        };
+        let groups = &imported.library.groups;
+        assert_eq!(groups.len(), 3, "an empty subfolder makes no group");
+        assert_eq!(names(&groups[0]), ["a", "b"]);
+        assert_eq!(
+            names(&groups[1]),
+            ["街道", "霓虹"],
+            "nested pictures join their subfolder's group"
+        );
+        assert_eq!(
+            (groups[2].name.as_str(), names(&groups[2])),
+            ("服装", vec!["裙子".to_owned()])
+        );
+        assert!(groups
+            .iter()
+            .flat_map(|group| &group.items)
+            .all(
+                |item| item.file.ends_with(".png") && directory(&paths).join(&item.file).is_file()
+            ));
+        assert_eq!(load(&paths).unwrap(), imported.library);
+
+        // Importing again adds only what is new.
+        std::fs::write(source.join("服装/外套.png"), png_bytes()).unwrap();
+        let again = import_folder(&paths, "g1", &source).unwrap();
+        assert_eq!(
+            (again.added, again.groups_created, again.duplicates),
+            (1, 0, 5)
+        );
+        assert_eq!(names(&again.library.groups[2]), ["裙子", "外套"]);
+
+        assert_eq!(
+            import_folder(&paths, "gone", &source).unwrap_err(),
+            "image.errors.imageMaterialsInvalid"
+        );
+        assert_eq!(
+            import_folder(&paths, "g1", &directory(&paths)).unwrap_err(),
+            "image.errors.imageMaterialsInvalid"
+        );
     }
 
     #[test]

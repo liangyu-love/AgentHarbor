@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, FolderInput, FolderOpen, ImagePlus, Loader2, Pencil, Plus, RotateCw, Trash2 } from "lucide-react";
+import { Check, FolderInput, FolderOpen, FolderPlus, ImagePlus, Loader2, Pencil, Plus, RotateCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -12,6 +12,9 @@ import { formatInvokeError } from "@/lib/invoke-error";
 import { cn } from "@/lib/utils";
 import { editorKeys } from "./prompt-template-dialog";
 import { BookHeader, GroupNameInput } from "./library-parts";
+import {
+  DragGhost, MaterialMenu, MoveToButton, useMaterialDrag, useMaterialSelection, type MaterialMenuRequest,
+} from "./material-selection";
 import { IMAGE_MATERIAL_LIMITS, useImageMaterials } from "./use-image-materials";
 import { usePointerSort } from "./use-pointer-sort";
 import type { LibraryBook } from "./use-prompt-library";
@@ -54,9 +57,24 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [picking, setPicking] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [menu, setMenu] = useState<MaterialMenuRequest | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const active = groups.find(group => group.id === activeId) ?? groups[0];
+  const activeItems = useMemo(() => active?.items ?? [], [active]);
   const groupSort = usePointerSort({ onMove: (from, to) => void library.moveGroup(from, to), disabled: naming !== null });
+  const selection = useMaterialSelection(activeItems, active?.id);
+
+  /** Move pictures to another group, saying where they went. */
+  const moveTo = async (ids: string[], groupId: string) => {
+    const target = groups.find(group => group.id === groupId);
+    if (ids.length === 0 || !target) return;
+    if (await library.moveItems(ids, groupId)) {
+      selection.clear();
+      toast({ title: `已移动 ${ids.length} 张图片到「${target.name}」`, variant: "success" });
+    }
+  };
+  const materialDrag = useMaterialDrag({ groupId: active?.id, onDrop: (ids, groupId) => void moveTo(ids, groupId) });
+  const chosen = (id: string) => references.some(reference => reference.materialId === id);
 
   const nameTaken = (name: string, exceptId: string | null) =>
     groups.some(group => group.name === name && group.id !== exceptId);
@@ -105,21 +123,35 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
     },
   });
 
-  const confirmDeleteItem = (item: ImageMaterial) => setConfirm({
-    title: `删除图片「${item.name}」？`,
-    description: "图片会从素材文件夹删除，且无法恢复；已加入参考图的那张不受影响。",
-    confirmLabel: "删除图片",
-    destructive: true,
-    onConfirm: () => {
-      setConfirm(null);
-      void library.deleteItem(item.id);
-    },
-  });
+  const confirmDeleteItems = (ids: string[]) => {
+    const items = activeItems.filter(item => ids.includes(item.id));
+    if (items.length === 0) return;
+    setConfirm({
+      title: items.length === 1 ? `删除图片「${items[0].name}」？` : `删除选中的 ${items.length} 张图片？`,
+      description: "图片会从素材文件夹删除，且无法恢复；已加入参考图的不受影响。",
+      confirmLabel: items.length === 1 ? "删除图片" : `删除 ${items.length} 张`,
+      destructive: true,
+      onConfirm: () => {
+        setConfirm(null);
+        void library.deleteItems(items.map(item => item.id)).then(saved => saved && selection.clear());
+      },
+    });
+  };
 
   const addFiles = async (files: File[]) => {
     if (!active || files.length === 0) return;
     setAdding(true);
     await library.addImages(active.id, files);
+    setAdding(false);
+  };
+
+  /** Import a whole folder: its pictures into this group, its subfolders into their own. */
+  const importFolder = async () => {
+    if (!active) return;
+    const directory = await library.pickDirectory();
+    if (!directory) return;
+    setAdding(true);
+    await library.importFolder(active.id, directory);
     setAdding(false);
   };
 
@@ -179,7 +211,7 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
               );
             }
             const dragging = groupSort.drag?.from === index;
-            const dropTarget = groupSort.drag?.over === index && !dragging;
+            const dropTarget = (groupSort.drag?.over === index && !dragging) || materialDrag.drag?.over === group.id;
             return (
               <button
                 key={group.id}
@@ -188,7 +220,8 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
                 role="tab"
                 aria-selected={selected}
                 data-image-material-group={group.name}
-                title="单击切换 · 双击重命名 · 拖动或 Alt + ←→ 排序"
+                data-material-drop={group.id}
+                title="单击切换 · 双击重命名 · 拖动或 Alt + ←→ 排序 · 把图片拖到这里可移入"
                 onClick={() => setActiveId(group.id)}
                 onDoubleClick={() => setNaming({ groupId: group.id })}
                 {...groupSort.handleProps(index, groups.length)}
@@ -228,27 +261,63 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
           </p>
         ) : (
           <>
-            <div className="flex items-center justify-between gap-2">
-              <p className="min-w-0 truncate font-serif text-[11px] text-muted-foreground">
-                {active.items.length} 张图片{active.items.length > 0 && " · 点图片加入或移出参考图"}
-              </p>
-              <div className="flex shrink-0 items-center gap-0.5">
-                <Button type="button" variant="ghost" size="xs"
-                  className="h-6 gap-1 px-1.5 font-serif text-[11px] text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]"
-                  disabled={adding || library.itemCount >= IMAGE_MATERIAL_LIMITS.items}
-                  onClick={() => inputRef.current?.click()}>
-                  {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />} 添加图片
-                </Button>
-                <Button type="button" size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                  title="重命名分组" aria-label="重命名分组" onClick={() => setNaming({ groupId: active.id })}>
-                  <Pencil className="h-3 w-3" />
-                </Button>
-                <Button type="button" size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                  title="删除分组" aria-label="删除分组" onClick={() => confirmDeleteGroup(active)}>
-                  <Trash2 className="h-3 w-3" />
-                </Button>
+            {selection.ids.length > 0 ? (
+              <div role="toolbar" aria-label="选中的图片" data-material-selection
+                className="flex min-h-6 items-center justify-between gap-2 rounded-md bg-[#b83b38]/[0.07] px-2 py-0.5 dark:bg-[#d94f4b]/10">
+                <p className="min-w-0 truncate font-serif text-[11px] text-[#b83b38] dark:text-[#fca5a5]">
+                  已选 {selection.ids.length} 张 · 点图片继续选，Esc 退出
+                </p>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <MoveToButton groups={groups} groupId={active.id} onMove={target => void moveTo(selection.ids, target)}>
+                    <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 font-serif text-[11px]">
+                      <FolderInput className="h-3.5 w-3.5" /> 移动到
+                    </Button>
+                  </MoveToButton>
+                  <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 font-serif text-[11px] hover:text-destructive"
+                    onClick={() => confirmDeleteItems(selection.ids)}>
+                    <Trash2 className="h-3.5 w-3.5" /> 删除
+                  </Button>
+                  <Button type="button" variant="ghost" size="xs" className="h-6 px-1.5 font-serif text-[11px] text-muted-foreground"
+                    onClick={selection.selectAll}>
+                    全选
+                  </Button>
+                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground"
+                    title="取消选择" aria-label="取消选择" onClick={selection.clear}>
+                    <X className="h-3 w-3" />
+                  </Button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <p className="min-w-0 truncate font-serif text-[11px] text-muted-foreground"
+                  title="点图片加入或移出参考图 · Ctrl / Shift + 点击多选 · 右键或拖到分组上移动">
+                  {active.items.length} 张图片{active.items.length > 0 && " · 点击加入参考图 · Ctrl / Shift 多选 · 右键或拖到分组可移动"}
+                </p>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <Button type="button" variant="ghost" size="xs"
+                    className="h-6 gap-1 px-1.5 font-serif text-[11px] text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]"
+                    disabled={adding || library.itemCount >= IMAGE_MATERIAL_LIMITS.items}
+                    onClick={() => inputRef.current?.click()}>
+                    {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />} 添加图片
+                  </Button>
+                  <Button type="button" variant="ghost" size="xs"
+                    className="h-6 gap-1 px-1.5 font-serif text-[11px] text-muted-foreground hover:text-[#b83b38] dark:hover:text-[#fca5a5]"
+                    title="导入一个文件夹里的全部图片；子文件夹会放进同名分组"
+                    disabled={adding || library.itemCount >= IMAGE_MATERIAL_LIMITS.items}
+                    onClick={() => void importFolder()}>
+                    <FolderPlus className="h-3.5 w-3.5" /> 导入文件夹
+                  </Button>
+                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                    title="重命名分组" aria-label="重命名分组" onClick={() => setNaming({ groupId: active.id })}>
+                    <Pencil className="h-3 w-3" />
+                  </Button>
+                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                    title="删除分组" aria-label="删除分组" onClick={() => confirmDeleteGroup(active)}>
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+            )}
             <input ref={inputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden"
               aria-label="添加图片素材"
               onChange={event => {
@@ -258,47 +327,86 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
             {active.items.length === 0 ? (
               <p className="py-6 text-center font-serif text-xs leading-relaxed text-muted-foreground">
                 这个分组还没有图片。点「添加图片」选入 PNG / JPG / WebP，一次最多 {IMAGE_MATERIAL_LIMITS.add} 张；
+                <br />或「导入文件夹」一次导入整个文件夹，子文件夹会放进同名分组。
                 <br />文件名会成为图片的名字，可以再改名、写备注，AI 润色时模型会读到。
               </p>
             ) : (
-              <div className="grid max-h-96 grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-2 overflow-y-auto overscroll-contain pr-1">
+              <div
+                role="group"
+                aria-label={`${active.name} 的图片`}
+                className={cn(
+                  "grid max-h-96 grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-2 overflow-y-auto overscroll-contain pr-1",
+                  materialDrag.drag && "cursor-grabbing select-none",
+                )}
+                onKeyDown={event => {
+                  if (event.key === "Escape" && selection.ids.length > 0) {
+                    event.preventDefault();
+                    selection.clear();
+                  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+                    event.preventDefault();
+                    selection.selectAll();
+                  }
+                }}
+              >
                 {active.items.map(item => {
                   const index = references.findIndex(reference => reference.materialId === item.id);
-                  const chosen = index >= 0;
+                  const isChosen = index >= 0;
+                  const picked = selection.has(item.id);
+                  const carried = materialDrag.drag?.ids.includes(item.id) ?? false;
                   return (
                     <div key={item.id} data-image-material={item.name} className="group/card relative min-w-0">
                       <button
                         type="button"
-                        aria-pressed={chosen}
-                        aria-label={chosen ? `${item.name}：已是图${index + 1}，点击移出参考图` : `${item.name}：加入参考图`}
+                        aria-pressed={isChosen}
+                        aria-label={(isChosen ? `${item.name}：已是图${index + 1}，点击移出参考图` : `${item.name}：加入参考图`)
+                          + (picked ? "（已选中）" : "")}
+                        data-picked={picked || undefined}
                         title={item.note || item.name}
-                        disabled={(!chosen && references.length >= MAX_REFERENCES) || picking === item.id}
-                        onClick={() => void toggle(item)}
+                        disabled={(!isChosen && references.length >= MAX_REFERENCES && selection.ids.length === 0) || picking === item.id}
+                        {...materialDrag.handleProps(() => selection.targetsOf(item))}
+                        onClick={event => {
+                          if (materialDrag.consumeClick() || selection.click(event, item)) return;
+                          void toggle(item);
+                        }}
+                        onContextMenu={event => {
+                          event.preventDefault();
+                          if (!selection.has(item.id)) selection.clear();
+                          setMenu({ x: event.clientX, y: event.clientY, ids: selection.targetsOf(item) });
+                        }}
                         className={cn(
-                          "block aspect-square w-full overflow-hidden rounded-lg border bg-card/60 outline-none transition-[border-color,box-shadow] focus-visible:ring-2 focus-visible:ring-[#b83b38]/35 disabled:cursor-not-allowed disabled:opacity-60",
-                          chosen ? "border-[#b83b38]/70 ring-2 ring-[#b83b38]/35" : "border-border/60 hover:border-[#b83b38]/40",
+                          "block aspect-square w-full touch-none overflow-hidden rounded-lg border bg-card/60 outline-none transition-[border-color,box-shadow,opacity] focus-visible:ring-2 focus-visible:ring-[#b83b38]/35 disabled:cursor-not-allowed disabled:opacity-60",
+                          isChosen ? "border-[#b83b38]/70 ring-2 ring-[#b83b38]/35" : "border-border/60 hover:border-[#b83b38]/40",
+                          picked && "border-foreground/70 ring-2 ring-foreground/45 ring-offset-1 ring-offset-background",
+                          carried && "opacity-45",
                         )}
                       >
                         <MaterialThumb item={item} />
                       </button>
-                      {chosen && (
+                      {isChosen && (
                         <span className="pointer-events-none absolute left-1 top-1 inline-flex items-center gap-0.5 rounded bg-[#b83b38] px-1 font-sans text-[10px] font-semibold text-white">
                           <Check className="h-2.5 w-2.5" /> 图{index + 1}
+                        </span>
+                      )}
+                      {picked && (
+                        <span aria-hidden className="pointer-events-none absolute bottom-6 right-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground text-background shadow">
+                          <Check className="h-2.5 w-2.5" />
                         </span>
                       )}
                       {picking === item.id && (
                         <Loader2 className="pointer-events-none absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 animate-spin text-white drop-shadow" />
                       )}
-                      <div className="absolute right-1 top-1 flex gap-0.5 opacity-0 transition-opacity group-hover/card:opacity-100 group-focus-within/card:opacity-100">
-                        <button type="button" aria-label={`编辑「${item.name}」`} title="改名 / 备注" onClick={() => setEditing(item)}
-                          className="rounded bg-background/90 p-0.5 text-muted-foreground shadow-sm ring-1 ring-border/60 hover:text-foreground">
-                          <Pencil className="h-3 w-3" />
-                        </button>
-                        <button type="button" aria-label={`删除「${item.name}」`} title="删除图片" onClick={() => confirmDeleteItem(item)}
-                          className="rounded bg-background/90 p-0.5 text-muted-foreground shadow-sm ring-1 ring-border/60 hover:text-destructive">
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
+                      {selection.ids.length === 0 && (
+                        <div className="absolute right-1 top-1 flex gap-0.5 opacity-0 transition-opacity group-hover/card:opacity-100 group-focus-within/card:opacity-100">
+                          <button type="button" aria-label={`编辑「${item.name}」`} title="改名 / 备注" onClick={() => setEditing(item)}
+                            className="rounded bg-background/90 p-0.5 text-muted-foreground shadow-sm ring-1 ring-border/60 hover:text-foreground">
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                          <button type="button" aria-label={`删除「${item.name}」`} title="删除图片" onClick={() => confirmDeleteItems([item.id])}
+                            className="rounded bg-background/90 p-0.5 text-muted-foreground shadow-sm ring-1 ring-border/60 hover:text-destructive">
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      )}
                       <p className="mt-0.5 truncate text-center font-serif text-[10px] text-muted-foreground">{item.name}</p>
                     </div>
                   );
@@ -332,6 +440,10 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
         onSave={async fields => {
           if (editing && await library.updateItem(editing.id, fields)) setEditing(null);
         }} />
+      <MaterialMenu request={menu} onClose={() => setMenu(null)} groups={groups} groupId={active?.id} items={activeItems}
+        chosen={chosen} onToggle={item => void toggle(item)} onEdit={setEditing}
+        onMove={(ids, groupId) => void moveTo(ids, groupId)} onDelete={confirmDeleteItems} />
+      <DragGhost drag={materialDrag.drag} groups={groups} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </div>
   );

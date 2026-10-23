@@ -90,8 +90,21 @@ export function useImageMaterials() {
         : item)),
     }))), [commit]);
 
-  const deleteItem = useCallback((id: string) =>
-    commit(groups => groups.map(group => ({ ...group, items: group.items.filter(item => item.id !== id) }))), [commit]);
+  const deleteItems = useCallback((ids: string[]) => {
+    const gone = new Set(ids);
+    return commit(groups => groups.map(group => ({ ...group, items: group.items.filter(item => !gone.has(item.id)) })));
+  }, [commit]);
+
+  /** Move pictures, in their current order, to the end of another group. */
+  const moveItems = useCallback((ids: string[], groupId: string) => {
+    const moving = new Set(ids);
+    return commit(groups => {
+      const picked = groups.flatMap(group => group.items.filter(item => moving.has(item.id) && group.id !== groupId));
+      return groups.map(group => (group.id === groupId
+        ? { ...group, items: [...group.items, ...picked] }
+        : { ...group, items: group.items.filter(item => !moving.has(item.id)) }));
+    });
+  }, [commit]);
 
   const moveItem = useCallback((groupId: string, from: number, to: number) =>
     commit(groups => groups.map(group => (group.id === groupId ? { ...group, items: moved(group.items, from, to) } : group))), [commit]);
@@ -112,6 +125,30 @@ export function useImageMaterials() {
       return images.length;
     } catch (cause) {
       toast({ title: "添加图片失败", description: formatInvokeError(cause), variant: "destructive" });
+      return 0;
+    }
+  }, [queryClient]);
+
+  /** Copy a folder's pictures in: the top level into `groupId`, subfolders into groups of their names. */
+  const importFolder = useCallback(async (groupId: string, directory: string) => {
+    try {
+      const run = chain.then(() => api.image.importImageMaterialsFolder(groupId, directory));
+      chain = run.catch(() => undefined);
+      const result = await run;
+      queryClient.setQueryData(KEY, result.library);
+      const left = [
+        result.duplicates > 0 && `${result.duplicates} 张同名已跳过`,
+        result.skipped > 0 && `${result.skipped} 个文件无法导入`,
+      ].filter(Boolean).join("，");
+      toast({
+        title: result.added > 0 ? `已导入 ${result.added} 张图片` : "没有新的图片可导入",
+        description: [result.groupsCreated > 0 && `按子文件夹新建了 ${result.groupsCreated} 个分组`, left]
+          .filter(Boolean).join("；") || undefined,
+        variant: result.added > 0 ? "success" : "default",
+      });
+      return result.added;
+    } catch (cause) {
+      toast({ title: "导入文件夹失败", description: formatInvokeError(cause), variant: "destructive" });
       return 0;
     }
   }, [queryClient]);
@@ -161,9 +198,11 @@ export function useImageMaterials() {
     deleteGroup,
     moveGroup,
     updateItem,
-    deleteItem,
+    deleteItems,
+    moveItems,
     moveItem,
     addImages,
+    importFolder,
     pickDirectory,
     moveTo,
   };

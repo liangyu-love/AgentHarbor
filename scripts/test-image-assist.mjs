@@ -223,8 +223,70 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await dress.waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => window.review.imageMaterials.groups[0].items.length), 1);
   await strip.getByRole("button", { name: "移除图1" }).click();
-  await library.getByRole("tab", { name: "提示词灵感" }).click();
   console.log("PASS image materials are added, annotated and deleted in the image book");
+
+  // A whole folder comes in at once: top-level pictures join this group, a subfolder its namesake.
+  const groupsNow = () => page.evaluate(() => Object.fromEntries(
+    window.review.imageMaterials.groups.map(group => [group.name, group.items.map(item => item.name)])));
+  await page.evaluate(() => {
+    window.review.folderToImport = { top: ["连衣裙"], folders: { 背景: ["街道", "夜景"] } };
+    window.__TAURI_INTERNALS__.invoke = async command => {
+      if (command !== "plugin:dialog|open") throw new Error(`Unexpected IPC: ${command}`);
+      return "C:/synthetic/新素材";
+    };
+  });
+  await library.getByRole("button", { name: "导入文件夹" }).click();
+  await eventually(async () => assert.deepEqual(await groupsNow(), { 人物: ["短发女生", "连衣裙"], 背景: ["街道", "夜景"] }));
+  assert.deepEqual(await page.evaluate(() => window.review.folderImports), [{ groupId: "ig-people", directory: "C:/synthetic/新素材" }]);
+  await library.getByRole("tab", { name: /^背景/ }).waitFor();
+  await eventually(async () => assert.equal(await page.evaluate(() => window.review.lastToast), "已导入 3 张图片"));
+  await page.evaluate(() => { delete window.__TAURI_INTERNALS__.invoke; });
+  console.log("PASS a folder is imported at once, its subfolders into groups of their names");
+
+  // A right click moves one picture to another group.
+  const pictureButton = name => page.locator(`[data-image-material="${name}"]`).getByRole("button", { name: new RegExp(`^${name}：`) });
+  await pictureButton("连衣裙").click({ button: "right" });
+  const menu = page.getByRole("menu", { name: "图片操作" });
+  await menu.getByRole("menuitem", { name: "移动到" }).click();
+  await page.getByRole("menuitem", { name: /^背景/ }).click();
+  await eventually(async () => assert.deepEqual(await groupsNow(), { 人物: ["短发女生"], 背景: ["街道", "夜景", "连衣裙"] }));
+  await menu.waitFor({ state: "detached" });
+  console.log("PASS a picture moves to another group from its right-click menu");
+
+  // Ctrl and Shift pick several; dragging one of them onto a group tab moves them all.
+  await library.getByRole("tab", { name: /^背景/ }).click();
+  await pictureButton("街道").click({ modifiers: ["Control"] });
+  await pictureButton("连衣裙").click({ modifiers: ["Shift"] });
+  const picked = library.locator("[data-material-selection]");
+  await picked.getByText("已选 3 张", { exact: false }).waitFor();
+  await pictureButton("夜景").click();
+  await picked.getByText("已选 2 张", { exact: false }).waitFor();
+  assert.equal(await strip.locator("[data-reference]").count(), 0, "a click while picking does not add a reference");
+  const from = await pictureButton("街道").boundingBox();
+  const to = await library.getByRole("tab", { name: /^人物/ }).boundingBox();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 });
+  await page.getByText("2 张图片 → 人物").waitFor();
+  await page.mouse.up();
+  await eventually(async () => assert.deepEqual(await groupsNow(), { 人物: ["短发女生", "街道", "连衣裙"], 背景: ["夜景"] }));
+  assert.equal(await picked.count(), 0, "the pick is cleared once moved");
+  if (captureDir) await library.screenshot({ path: path.join(captureDir, "image-materials-moved.png"), animations: "disabled" });
+  console.log("PASS several picked pictures move together by dragging them onto a group tab");
+
+  // The picked pictures are deleted together, and Escape lets go of a pick.
+  await library.getByRole("tab", { name: /^人物/ }).click();
+  await pictureButton("短发女生").click({ modifiers: ["Control"] });
+  await picked.waitFor();
+  await page.keyboard.press("Escape");
+  await picked.waitFor({ state: "detached" });
+  await pictureButton("街道").click({ modifiers: ["Control"] });
+  await pictureButton("连衣裙").click({ modifiers: ["Control"] });
+  await picked.getByRole("button", { name: "删除" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "删除 2 张" }).click();
+  await eventually(async () => assert.deepEqual(await groupsNow(), { 人物: ["短发女生"], 背景: ["夜景"] }));
+  await library.getByRole("tab", { name: "提示词灵感" }).click();
+  console.log("PASS picked pictures are deleted together and Escape clears the pick");
 
   // A busy photo is sent smaller, within the budget, instead of past a relay's input limit.
   const shrunk = await page.evaluate(async () => {

@@ -1111,6 +1111,32 @@ api.image.addImageMaterials = async (groupId, images) => {
   controls.review.imageMaterials = library;
   return structuredClone(library);
 };
+// Like import_folder in image_materials.rs: `review.folderToImport` lists the folder's top-level
+// pictures and its subfolders'; a subfolder joins the same-named group, a name already there is skipped.
+api.image.importImageMaterialsFolder = async (groupId, directory) => {
+  (controls.review.folderImports ??= []).push({ groupId, directory });
+  const { top = [], folders = {} } = controls.review.folderToImport ?? {};
+  const library = structuredClone(controls.review.imageMaterials);
+  if (!library.groups.some(group => group.id === groupId)) throw "image.errors.imageMaterialsInvalid";
+  let added = 0, groupsCreated = 0, duplicates = 0;
+  const batches: [string | null, string[]][] = [[null, top], ...Object.entries(folders) as [string, string[]][]];
+  for (const [name, pictures] of batches) {
+    let group = name === null ? library.groups.find(item => item.id === groupId) : library.groups.find(item => item.name === name);
+    if (!group) {
+      library.groups.push(group = { id: "ig-" + name, name: name!, items: [] });
+      groupsCreated += 1;
+    }
+    for (const picture of pictures) {
+      if (group!.items.some(item => item.name === picture)) { duplicates += 1; continue; }
+      const id = "img-" + (controls.review.imageMaterialSeq = (controls.review.imageMaterialSeq ?? 0) + 1);
+      controls.review.imageMaterialData[id] = controls.review.imageMaterialData["img-girl"];
+      group!.items.push({ id, name: picture, note: "", file: id + ".png" });
+      added += 1;
+    }
+  }
+  controls.review.imageMaterials = library;
+  return { library: structuredClone(library), added, groupsCreated, duplicates, skipped: 0 };
+};
 api.image.loadImageMaterial = async (id, edge) => {
   (controls.review.imageMaterialLoads ??= []).push({ id, edge: edge ?? null });
   const data = controls.review.imageMaterialData[id];

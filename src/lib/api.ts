@@ -307,6 +307,18 @@ export interface ImageMaterialLibrary {
   directory: string;
 }
 
+/** What importing a folder of pictures added and left out. */
+export interface ImageMaterialFolderImport {
+  library: ImageMaterialLibrary;
+  added: number;
+  /** Groups made for subfolders without a same-named group. */
+  groupsCreated: number;
+  /** Pictures whose name their group already has. */
+  duplicates: number;
+  /** Unreadable, too large, not a picture, or past the limits. */
+  skipped: number;
+}
+
 export interface PromptAssistState {
   settings: PromptAssistSettings;
   defaultInstruction: string;
@@ -362,6 +374,9 @@ const imageApi = {
     invoke<ImageMaterialLibrary>("save_image_materials", { library }),
   addImageMaterials: (groupId: string, images: { name: string; dataUrl: string }[]) =>
     invoke<ImageMaterialLibrary>("add_image_materials", { groupId, images }),
+  /** Top-level pictures go into `groupId`, each subfolder's into the group of its name. */
+  importImageMaterialsFolder: (groupId: string, directory: string) =>
+    invoke<ImageMaterialFolderImport>("import_image_materials_folder", { groupId, directory }),
   /**
    * Keep the materials in another folder; they move there unless it already holds a library.
    * Refused with `image.errors.imageMaterialsShared` for the gallery's folder unless `allowShared`.
