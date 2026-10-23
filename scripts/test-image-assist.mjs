@@ -56,13 +56,14 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await panel.getByRole("button", { name: "润色指令" }).click();
   const dialog = page.getByRole("dialog", { name: "润色指令" });
   const instruction = dialog.getByRole("textbox", { name: "润色指令" });
-  assert.equal(await instruction.inputValue(), "默认润色指令");
+  // The dialog fills its field once it has opened.
+  await eventually(async () => assert.equal(await instruction.inputValue(), "默认润色指令"));
   await instruction.fill("只输出英文提示词");
   await page.keyboard.press("Control+Enter");
   await dialog.waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => window.review.promptAssist.settings.instruction), "只输出英文提示词");
   await panel.getByRole("button", { name: "自定义指令" }).click();
-  assert.equal(await instruction.inputValue(), "只输出英文提示词");
+  await eventually(async () => assert.equal(await instruction.inputValue(), "只输出英文提示词"));
   await dialog.getByRole("button", { name: "恢复默认" }).click();
   await dialog.getByRole("button", { name: "保存指令" }).click();
   await dialog.waitFor({ state: "detached" });
