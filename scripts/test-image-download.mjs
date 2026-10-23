@@ -6,6 +6,8 @@ export async function testImageDownload({ page, reset }) {
   await prompt.waitFor();
   // Previous tests may have saved a manual endpoint. Choose the provider as a
   // user would instead of depending on the persisted default selection.
+  const unfold = page.getByRole("button", { name: "展开连接设置" });
+  if (await unfold.count()) await unfold.click();
   await page.getByRole("combobox", { name: "图像供应商" }).click();
   await page.getByRole("option", { name: "Provider image", exact: true }).click();
   await prompt.fill("JPEG result");

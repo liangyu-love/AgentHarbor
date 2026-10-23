@@ -187,6 +187,9 @@ export function useImageConnection(pageActive: boolean, setError: (error: string
   const hasCredentials = Boolean(providerId || (baseUrl.trim() && (apiKey.trim() || keyStored)));
 
   return {
+    /** A provider or site was saved by an earlier visit, so setup can start folded away. */
+    configuredBefore: Boolean(savedConfig.providerId || savedConfig.baseUrl),
+    providerName: selectedProvider?.name ?? "",
     imageProviders, providerId, chooseProvider,
     baseUrl, setBaseUrl, apiKey, setApiKey, keyStored, keySites, saveKey, forgetKey, markKeyUsed,
     model, setModel, modelOptions, size, setSize, quality, setQuality, qualityOptions, hasCredentials,

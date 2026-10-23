@@ -1,17 +1,25 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { eventually } from "./eventually.mjs";
 
 const MANUAL = "独立配置 / 手动填写连接凭据";
 
 export async function testImageApi({ page, reset, captureDir }) {
   const providerSelect = page.getByRole("combobox", { name: "图像供应商" });
+  // A setup saved by an earlier visit starts folded away.
+  const openConnection = async () => {
+    const unfold = page.getByRole("button", { name: "展开连接设置" });
+    if (await unfold.count()) await unfold.click();
+  };
   const chooseProvider = async name => {
+    await openConnection();
     await providerSelect.click();
     await page.getByRole("option", { name, exact: true }).click();
   };
   const model = page.getByPlaceholder("gpt-image-2", { exact: true });
   const size = page.getByRole("combobox", { name: "画幅尺寸", exact: true });
   const offeredModels = async () => {
+    await openConnection();
     await page.getByRole("button", { name: "展开模型选项" }).click();
     const names = await page.getByRole("listbox", { name: "可用生图模型" }).getByRole("option").allTextContents();
     await page.getByRole("button", { name: "收起模型选项" }).click();
@@ -42,6 +50,39 @@ export async function testImageApi({ page, reset, captureDir }) {
   assert.equal(await model.inputValue(), "gpt-image-2.5-flare");
   assert.equal((await size.textContent()).trim(), "3:2 横卷 (1536x1024)");
   console.log("PASS the image provider choice and its parameters survive a reload");
+
+  // A saved setup starts folded to its summary; size and quality stay in the dock.
+  const connection = page.locator("[data-image-connection]");
+  const unfold = page.getByRole("button", { name: "展开连接设置" });
+  assert.equal(await unfold.getAttribute("aria-expanded"), "false");
+  await eventually(async () => assert.match(await unfold.textContent(), /Provider studio · gpt-image-2\.5-flare.*已就绪/));
+  assert.equal(await providerSelect.isVisible(), false);
+  assert.equal(await size.isVisible(), true);
+  await unfold.click();
+  await providerSelect.waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "收起连接设置" }).click();
+  await eventually(async () => assert.equal(await connection.evaluate(node => node.querySelector("[inert]") !== null), true));
+  console.log("PASS a saved connection folds to a one-line summary and unfolds on request");
+
+  // The generate button stays on screen while the left scroll is taller than the view.
+  const scroller = page.locator("[data-page-scroll-container]");
+  const generateButton = page.locator("[data-image-generate]");
+  const onScreen = async () => {
+    const button = await generateButton.boundingBox();
+    const view = await scroller.boundingBox();
+    return button.y >= view.y && button.y + button.height <= view.y + view.height + 1;
+  };
+  const frameTaller = await page.evaluate(() => {
+    const frame = document.querySelector("[data-image-dock]").parentElement.getBoundingClientRect();
+    return frame.height > document.querySelector("[data-page-scroll-container]").getBoundingClientRect().height;
+  });
+  assert.equal(frameTaller, true, "the check needs a scroll taller than the view");
+  for (const top of [0, 400]) {
+    await scroller.evaluate((node, value) => { node.scrollTop = value; }, top);
+    await eventually(async () => assert.equal(await onScreen(), true));
+    if (captureDir) await page.screenshot({ path: path.join(captureDir, `image-dock-${top}.png`), animations: "disabled" });
+  }
+  console.log("PASS the generate dock stays in view while the scroll is taller than the window");
 
   // A chosen relay that disappears hands over to the next image relay.
   await page.evaluate(() => {

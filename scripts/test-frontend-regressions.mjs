@@ -275,6 +275,9 @@ try {
   const providerSelect = page.getByRole("combobox", { name: "图像供应商" });
   await page.waitForFunction(() => document.querySelector('[role="combobox"][aria-label="图像供应商"]')?.textContent.includes("Provider image"));
   const selectImageProvider = async name => {
+    // A setup saved by an earlier visit starts folded away.
+    const unfold = page.getByRole("button", { name: "展开连接设置" });
+    if (await unfold.count()) await unfold.click();
     await providerSelect.click();
     await page.getByRole("option", { name, exact: true }).click();
   };
@@ -313,8 +316,7 @@ try {
   await reset("image");
   const imagePrompt = page.locator('textarea[placeholder^="描述画面主体"]');
   const imageSubmit = page.locator('[data-image-generate]');
-  await providerSelect.click();
-  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await selectImageProvider("Provider image");
   await imagePrompt.fill("First canvas");
   await imageSubmit.click();
   await imagePrompt.fill("Second canvas");
@@ -339,8 +341,7 @@ try {
   console.log("PASS image jobs run concurrently, keep separate canvases, queue and cancel independently");
 
   await reset("image");
-  await providerSelect.click();
-  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await selectImageProvider("Provider image");
   await page.evaluate(() => { window.review.failGallerySave = true; });
   await imagePrompt.fill("Retry canvas");
   await imageSubmit.click();
@@ -359,8 +360,7 @@ try {
   console.log("PASS a failed gallery save remains on its canvas and can be retried");
 
   await reset("image");
-  await providerSelect.click();
-  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await selectImageProvider("Provider image");
   await imagePrompt.fill("Stopped canvas");
   await imageSubmit.click();
   const stoppedCanvas = page.locator('[data-generation-job-status="running"]').filter({ hasText: "Stopped canvas" });
@@ -371,8 +371,7 @@ try {
   console.log("PASS a running image job can be cancelled and shows as cancelled, not failed");
 
   await reset("image");
-  await providerSelect.click();
-  await page.getByRole("option", { name: "Provider image", exact: true }).click();
+  await selectImageProvider("Provider image");
   await imagePrompt.fill("Two images on one canvas");
   await imageSubmit.click();
   await page.evaluate(() => window.review.imageResolvers[0]([window.review.pixel, window.review.pixel]));
