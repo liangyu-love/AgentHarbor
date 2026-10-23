@@ -243,10 +243,29 @@ export async function testImageAssist({ page, reset, captureDir }) {
   await page.evaluate(() => { delete window.__TAURI_INTERNALS__.invoke; });
   console.log("PASS a folder is imported at once, its subfolders into groups of their names");
 
-  // A right click moves one picture to another group.
+  // A right click copies the full picture to the clipboard, a JPEG turned into the PNG it takes.
   const pictureButton = name => page.locator(`[data-image-material="${name}"]`).getByRole("button", { name: new RegExp(`^${name}：`) });
-  await pictureButton("连衣裙").click({ button: "right" });
   const menu = page.getByRole("menu", { name: "图片操作" });
+  await page.evaluate(() => {
+    const item = window.review.imageMaterials.groups.flatMap(group => group.items).find(entry => entry.name === "连衣裙");
+    const canvas = Object.assign(document.createElement("canvas"), { width: 3, height: 2 });
+    window.review.imageMaterialData[item.id] = canvas.toDataURL("image/jpeg");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write: async items => {
+      const blob = await items[0].getType("image/png");
+      const bitmap = await createImageBitmap(blob);
+      window.review.copiedImage = { types: items[0].types, type: blob.type, width: bitmap.width, height: bitmap.height };
+    } } });
+  });
+  await pictureButton("连衣裙").click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "复制图片" }).click();
+  await eventually(async () => assert.deepEqual(await page.evaluate(() => window.review.copiedImage),
+    { types: ["image/png"], type: "image/png", width: 3, height: 2 }));
+  await eventually(async () => assert.equal(await page.evaluate(() => window.review.lastToast), "已复制图片"));
+  await menu.waitFor({ state: "detached" });
+  console.log("PASS a picture is copied to the clipboard as PNG from its right-click menu");
+
+  // A right click moves one picture to another group.
+  await pictureButton("连衣裙").click({ button: "right" });
   await menu.getByRole("menuitem", { name: "移动到" }).click();
   await page.getByRole("menuitem", { name: /^背景/ }).click();
   await eventually(async () => assert.deepEqual(await groupsNow(), { 人物: ["短发女生"], 背景: ["街道", "夜景", "连衣裙"] }));

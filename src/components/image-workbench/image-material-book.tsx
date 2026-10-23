@@ -40,6 +40,19 @@ function MaterialThumb({ item }: { item: ImageMaterial }) {
   );
 }
 
+/** A picture as PNG, the one picture type the clipboard takes; a GIF keeps its first frame. */
+async function pngBlob(src: string): Promise<Blob> {
+  const blob = await (await fetch(src)).blob();
+  if (blob.type === "image/png") return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return new Promise((resolve, reject) => canvas.toBlob(png => png ? resolve(png) : reject(new Error("PNG encoding failed")), "image/png"));
+}
+
 /** The 画谱's image book: pictures the user keeps in groups, a click away from the references. */
 export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, references, onAddReferences, onRemoveReference }: {
   onKindChange: (kind: LibraryBook) => void;
@@ -107,6 +120,19 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
       toast({ title: "未能载入图片", description: formatInvokeError(cause), variant: "destructive" });
     } finally {
       setPicking(null);
+    }
+  };
+
+  /** The full picture onto the system clipboard, ready to paste into a chat or an editor. */
+  const copyItem = async (item: ImageMaterial) => {
+    try {
+      // The blob is handed over as a promise, so the write still counts as the click's own.
+      await navigator.clipboard.write([new ClipboardItem({
+        "image/png": api.image.loadImageMaterial(item.id).then(pngBlob),
+      })]);
+      toast({ title: "已复制图片", description: item.name });
+    } catch (cause) {
+      toast({ title: "未能复制图片", description: formatInvokeError(cause), variant: "destructive" });
     }
   };
 
@@ -441,7 +467,7 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
           if (editing && await library.updateItem(editing.id, fields)) setEditing(null);
         }} />
       <MaterialMenu request={menu} onClose={() => setMenu(null)} groups={groups} groupId={active?.id} items={activeItems}
-        chosen={chosen} onToggle={item => void toggle(item)} onEdit={setEditing}
+        chosen={chosen} onToggle={item => void toggle(item)} onCopy={item => void copyItem(item)} onEdit={setEditing}
         onMove={(ids, groupId) => void moveTo(ids, groupId)} onDelete={confirmDeleteItems} />
       <DragGhost drag={materialDrag.drag} groups={groups} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />

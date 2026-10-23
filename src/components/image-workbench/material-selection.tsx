@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { FolderInput, ImageMinus, ImagePlus, Pencil, Trash2 } from "lucide-react";
+import { Copy, FolderInput, ImageMinus, ImagePlus, Pencil, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -180,7 +180,7 @@ function MoveTargets({ groups, groupId, onMove }: {
 export type MaterialMenuRequest = { x: number; y: number; ids: string[] };
 
 /** The right-click menu of one picture, or of the picked pictures it belongs to. */
-export function MaterialMenu({ request, onClose, groups, groupId, items, chosen, onToggle, onEdit, onMove, onDelete }: {
+export function MaterialMenu({ request, onClose, groups, groupId, items, chosen, onToggle, onCopy, onEdit, onMove, onDelete }: {
   request: MaterialMenuRequest | null;
   onClose: () => void;
   groups: ImageMaterialGroup[];
@@ -189,6 +189,7 @@ export function MaterialMenu({ request, onClose, groups, groupId, items, chosen,
   /** Whether a picture is among the references. */
   chosen: (id: string) => boolean;
   onToggle: (item: ImageMaterial) => void;
+  onCopy: (item: ImageMaterial) => void;
   onEdit: (item: ImageMaterial) => void;
   onMove: (ids: string[], groupId: string) => void;
   onDelete: (ids: string[]) => void;
@@ -210,6 +211,9 @@ export function MaterialMenu({ request, onClose, groups, groupId, items, chosen,
             <DropdownMenuItem className="font-serif text-xs" onSelect={() => onToggle(single)}>
               {chosen(single.id) ? <ImageMinus /> : <ImagePlus />}
               {chosen(single.id) ? "移出参考图" : "加入参考图"}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="font-serif text-xs" onSelect={() => onCopy(single)}>
+              <Copy /> 复制图片
             </DropdownMenuItem>
             <DropdownMenuItem className="font-serif text-xs" onSelect={() => onEdit(single)}>
               <Pencil /> 改名 / 备注
