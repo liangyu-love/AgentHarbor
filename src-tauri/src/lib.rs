@@ -341,6 +341,7 @@ pub fn run() {
             commands::image_materials::load_image_materials,
             commands::image_materials::save_image_materials,
             commands::image_materials::add_image_materials,
+            commands::image_materials::set_image_materials_directory,
             commands::image_materials::load_image_material,
             commands::system::load_snapshot,
             commands::system::is_updater_configured,

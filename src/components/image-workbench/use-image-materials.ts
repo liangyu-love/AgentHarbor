@@ -31,7 +31,7 @@ const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "").trim();
 // Saves and adds run one after another: an add between two saves must not be written over.
 let chain: Promise<unknown> = Promise.resolve();
 
-/** The user's image materials: groups of pictures kept in the app data folder. */
+/** The user's image materials: groups of pictures kept in the app data folder or one the user picked. */
 export function useImageMaterials() {
   const queryClient = useQueryClient();
   const query = useQuery({
@@ -116,6 +116,23 @@ export function useImageMaterials() {
     }
   }, [queryClient]);
 
+  /** Pick another folder for the materials; they move there unless it already holds some. */
+  const chooseDirectory = useCallback(async () => {
+    if (!isTauriRuntime() || !queryClient.getQueryData(KEY)) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected !== "string") return;
+      const relocate = chain.then(() => api.image.setImageMaterialsDirectory(selected));
+      chain = relocate.catch(() => undefined);
+      const library = await relocate;
+      queryClient.setQueryData(KEY, library);
+      toast({ title: "图片素材位置已更换", description: library.directory, variant: "success" });
+    } catch (cause) {
+      toast({ title: "更换图片素材位置失败", description: formatInvokeError(cause), variant: "destructive" });
+    }
+  }, [queryClient]);
+
   return {
     groups,
     itemCount,
@@ -132,5 +149,6 @@ export function useImageMaterials() {
     deleteItem,
     moveItem,
     addImages,
+    chooseDirectory,
   };
 }

@@ -1,6 +1,7 @@
 //! The image workbench's image materials: pictures the user keeps in groups to use
 //! as image-to-image references, each with a name and note the polishing model reads.
-//! The pictures are copied into the app data folder beside an index of the groups.
+//! The pictures are copied into one folder beside an index of the groups: the app data
+//! folder unless the user picks another, so the folder alone holds the whole library.
 
 use super::image::{
     decode_data_url, paths, thumbnail_data_url, MAX_IMAGE_BYTES, THUMBNAIL_EDGE, THUMBNAIL_JOBS,
@@ -11,12 +12,14 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Mutex,
 };
 use tauri::State;
 
 const DIRECTORY: &str = "image-materials";
+/// The folder the user picked, kept in the app data folder as a JSON string.
+const DIRECTORY_SETTING: &str = "image-materials-directory.json";
 const INDEX_FILE: &str = "library.json";
 const LIBRARY_VERSION: u32 = 1;
 const MAX_GROUPS: usize = 100;
@@ -82,7 +85,12 @@ pub struct NewImageMaterial {
 }
 
 fn directory(paths: &CodexPaths) -> PathBuf {
-    paths.app_data_dir.join(DIRECTORY)
+    std::fs::read(paths.app_data_dir.join(DIRECTORY_SETTING))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| paths.app_data_dir.join(DIRECTORY))
 }
 
 fn clipped(value: &str, limit: usize) -> String {
@@ -159,7 +167,11 @@ fn sanitize(groups: Vec<ImageMaterialGroup>) -> (Vec<ImageMaterialGroup>, usize)
 }
 
 fn read_groups(paths: &CodexPaths) -> Result<Vec<ImageMaterialGroup>, String> {
-    let bytes = match std::fs::read(directory(paths).join(INDEX_FILE)) {
+    read_index(&directory(paths))
+}
+
+fn read_index(folder: &Path) -> Result<Vec<ImageMaterialGroup>, String> {
+    let bytes = match std::fs::read(folder.join(INDEX_FILE)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => return Err("image.errors.imageMaterials".into()),
@@ -170,6 +182,10 @@ fn read_groups(paths: &CodexPaths) -> Result<Vec<ImageMaterialGroup>, String> {
 }
 
 fn write_groups(paths: &CodexPaths, groups: &[ImageMaterialGroup]) -> Result<(), String> {
+    write_index(&directory(paths), groups)
+}
+
+fn write_index(folder: &Path, groups: &[ImageMaterialGroup]) -> Result<(), String> {
     let index = ImageMaterialLibrary {
         version: LIBRARY_VERSION,
         groups: groups.to_vec(),
@@ -177,7 +193,7 @@ fn write_groups(paths: &CodexPaths, groups: &[ImageMaterialGroup]) -> Result<(),
     };
     let contents =
         serde_json::to_vec_pretty(&index).map_err(|_| "image.errors.imageMaterials".to_owned())?;
-    storage::write_atomic(&directory(paths).join(INDEX_FILE), &contents)
+    storage::write_atomic(&folder.join(INDEX_FILE), &contents)
         .map_err(|_| "image.errors.imageMaterials".to_owned())
 }
 
@@ -279,6 +295,81 @@ fn add(
     Ok(with_directory(paths, groups))
 }
 
+/// Keep the materials in `target` from now on. A folder that already holds a library
+/// is switched to as it is; otherwise the current pictures and index move there,
+/// copied first and removed from the old folder only once the new one is in use.
+fn relocate(paths: &CodexPaths, target: &Path) -> Result<ImageMaterialLibrary, String> {
+    let _guard = LIBRARY_LOCK
+        .lock()
+        .map_err(|_| "image.errors.imageMaterials".to_owned())?;
+    let target = target
+        .canonicalize()
+        .ok()
+        .filter(|target| target.is_dir())
+        .ok_or("image.errors.imageMaterials")?;
+    let current = directory(paths);
+    if current
+        .canonicalize()
+        .is_ok_and(|current| current == target)
+    {
+        return load(paths);
+    }
+    let moving = !target.join(INDEX_FILE).exists();
+    let groups = if moving {
+        read_groups(paths)?
+    } else {
+        read_index(&target)?
+    };
+    let files: Vec<&str> = groups
+        .iter()
+        .flat_map(|group| &group.items)
+        .map(|item| item.file.as_str())
+        .collect();
+    let undo = |copied: &[&str]| {
+        for file in copied.iter().chain([&INDEX_FILE]) {
+            let _ = std::fs::remove_file(target.join(file));
+        }
+    };
+    let mut copied = Vec::new();
+    if moving {
+        for &file in &files {
+            match std::fs::copy(current.join(file), target.join(file)) {
+                Ok(_) => copied.push(file),
+                // A picture already gone from the old folder is no more lost than before.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    undo(&copied);
+                    return Err("image.errors.imageMaterials".into());
+                }
+            }
+        }
+        if let Err(error) = write_index(&target, &groups) {
+            undo(&copied);
+            return Err(error);
+        }
+    }
+    let setting = serde_json::to_vec(&target.to_string_lossy())
+        .map_err(|_| "image.errors.imageMaterials".to_owned())?;
+    if storage::write_atomic(&paths.app_data_dir.join(DIRECTORY_SETTING), &setting).is_err() {
+        if moving {
+            undo(&copied);
+        }
+        return Err("image.errors.imageMaterials".into());
+    }
+    if moving {
+        for file in files.iter().chain([&INDEX_FILE]) {
+            // The new folder is in use; a copy left behind only takes space.
+            match std::fs::remove_file(current.join(file)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    log::warn!("old image material {file} not deleted: {error}");
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(with_directory(paths, groups))
+}
+
 /// The picture's bytes and media type, found by item id in the index.
 fn read_picture(paths: &CodexPaths, id: &str) -> Result<(Vec<u8>, &'static str), String> {
     let file = read_groups(paths)?
@@ -329,6 +420,16 @@ pub async fn add_image_materials(
 ) -> Result<ImageMaterialLibrary, String> {
     let paths = paths(&repo)?;
     super::blocking(move || add(&paths, &group_id, images)).await
+}
+
+/// Keep the materials in another folder, moving them there unless it holds a library.
+#[tauri::command]
+pub async fn set_image_materials_directory(
+    repo: State<'_, Mutex<Repository>>,
+    directory: String,
+) -> Result<ImageMaterialLibrary, String> {
+    let paths = paths(&repo)?;
+    super::blocking(move || relocate(&paths, Path::new(&directory))).await
 }
 
 /// A picture as a data URL: the original, or a copy no larger than `edge` for the grid.
@@ -523,6 +624,55 @@ mod tests {
         // Deleting the group deletes its pictures.
         save(&paths, library(vec![group("g1", "人物")])).unwrap();
         assert!(!directory(&paths).join(&first.file).exists());
+    }
+
+    #[test]
+    fn moving_the_folder_takes_the_pictures_along() {
+        let (dir, paths) = temp_paths();
+        save(&paths, library(vec![group("g1", "人物")])).unwrap();
+        let added = add(&paths, "g1", vec![new_image("一", png())]).unwrap();
+        let file = added.groups[0].items[0].file.clone();
+        let old = directory(&paths);
+        let custom = dir.path().join("my-materials");
+        std::fs::create_dir_all(&custom).unwrap();
+
+        let moved = relocate(&paths, &custom).unwrap();
+        let canonical = custom.canonicalize().unwrap();
+        assert_eq!(directory(&paths), canonical);
+        assert_eq!(moved.groups, added.groups);
+        assert_eq!(moved.directory, canonical.to_string_lossy());
+        assert!(canonical.join(&file).is_file());
+        assert!(canonical.join(INDEX_FILE).is_file());
+        assert!(!old.join(&file).exists());
+        assert!(!old.join(INDEX_FILE).exists());
+        assert!(read_picture(&paths, &added.groups[0].items[0].id).is_ok());
+
+        // Choosing the same folder again changes nothing.
+        assert_eq!(relocate(&paths, &custom).unwrap().groups, added.groups);
+        assert!(canonical.join(&file).is_file());
+    }
+
+    #[test]
+    fn a_folder_with_a_library_is_switched_to_as_it_is() {
+        let (dir, paths) = temp_paths();
+        save(&paths, library(vec![group("g1", "人物")])).unwrap();
+        add(&paths, "g1", vec![new_image("一", png())]).unwrap();
+        let first = directory(&paths);
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&second).unwrap();
+        write_index(&second, &[group("g2", "背景")]).unwrap();
+
+        let switched = relocate(&paths, &second).unwrap();
+        assert_eq!(switched.groups, vec![group("g2", "背景")]);
+        assert!(
+            first.join(INDEX_FILE).is_file(),
+            "the other library stays where it was"
+        );
+        assert_eq!(relocate(&paths, &first).unwrap().groups[0].items.len(), 1);
+        assert_eq!(
+            relocate(&paths, &dir.path().join("missing")).unwrap_err(),
+            "image.errors.imageMaterials"
+        );
     }
 
     #[test]

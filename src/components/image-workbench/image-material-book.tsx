@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, FolderOpen, ImagePlus, Loader2, Pencil, Plus, RotateCw, Trash2 } from "lucide-react";
+import { Check, FolderInput, FolderOpen, ImagePlus, Loader2, Pencil, Plus, RotateCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, type ConfirmRequest } from "@/components/ui/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -301,10 +301,16 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
       <BookHeader kind="images" onKindChange={onKindChange} count={library.itemCount} countLabel="张图片"
         collapsed={collapsed} onCollapsedChange={onCollapsedChange}
         actions={library.ready && library.directory && (
-          <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-            title="在资源管理器中打开存放图片素材的文件夹" onClick={() => void openFolder()}>
-            <FolderOpen className="h-3.5 w-3.5" /> 文件夹
-          </Button>
+          <>
+            <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              title="换一个文件夹存放图片素材，现有素材会一起搬过去" onClick={() => void library.chooseDirectory()}>
+              <FolderInput className="h-3.5 w-3.5" /> 位置
+            </Button>
+            <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              title={`在资源管理器中打开：${library.directory}`} onClick={() => void openFolder()}>
+              <FolderOpen className="h-3.5 w-3.5" /> 文件夹
+            </Button>
+          </>
         )} />
       {!collapsed && body()}
       <ImageMaterialDialog item={editing} onClose={() => setEditing(null)}

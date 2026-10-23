@@ -361,6 +361,9 @@ const imageApi = {
     invoke<ImageMaterialLibrary>("save_image_materials", { library }),
   addImageMaterials: (groupId: string, images: { name: string; dataUrl: string }[]) =>
     invoke<ImageMaterialLibrary>("add_image_materials", { groupId, images }),
+  /** Keep the materials in another folder; they move there unless it already holds a library. */
+  setImageMaterialsDirectory: (directory: string) =>
+    invoke<ImageMaterialLibrary>("set_image_materials_directory", { directory }),
   /** The original picture, or a copy no larger than `edge` for the grid. */
   loadImageMaterial: (id: string, edge?: number) =>
     invoke<string>("load_image_material", { id, edge: edge ?? null }),
