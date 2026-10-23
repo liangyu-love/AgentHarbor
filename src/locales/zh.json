@@ -1708,6 +1708,8 @@
       "imageMaterialsInvalid": "图片素材已在别处改动，请重新打开后再试。",
       "imageMaterialsAdd": "一次最多添加 50 张图片。",
       "imageMaterialsFull": "图片素材最多 1000 张，请先删掉一些。",
+      "imageMaterialsShared": "这个文件夹正被历史画册使用，请换一个文件夹。",
+      "galleryShared": "这个文件夹正被图片素材使用，请换一个文件夹。",
       "assistRouter": "本地路由没有启动，无法请求润色模型。",
       "assistEmpty": "模型没有返回内容，请换个模型或重试。"
     },
@@ -1727,6 +1729,9 @@
     "galleryEmpty": "画册尚无成图，挥毫生成后会自动存入这里。",
     "galleryRefresh": "刷新画册",
     "chooseGalleryDirectory": "保存位置",
+    "gallerySharedTitle": "和图片素材用同一个文件夹？",
+    "gallerySharedDescription": "这个文件夹正存放图片素材。合用后素材图片也会出现在画册里，在画册里删除一张，素材里的那张也会一起删掉。",
+    "gallerySharedConfirm": "仍然使用",
     "galleryDelete": "删除这张",
     "galleryDeleted": "已从画册删除",
     "galleryDeleteConfirm": "删除这张成图？",

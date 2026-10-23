@@ -331,8 +331,9 @@ const imageApi = {
   saveFile: (path: string, dataUrl: string) => invoke<void>("save_image_file", { path, dataUrl }),
   saveToGallery: (dataUrls: string[], meta?: GenerationMeta) =>
     invoke<SavedImagesPayload>("save_images_to_gallery", { dataUrls, meta: meta ?? null }),
-  setGalleryDirectory: (directory: string) =>
-    invoke<string>("set_gallery_directory", { directory }),
+  /** Refused with `image.errors.galleryShared` for the image materials' folder unless `allowShared`. */
+  setGalleryDirectory: (directory: string, allowShared = false) =>
+    invoke<string>("set_gallery_directory", { directory, allowShared }),
   listGallery: () => invoke<GalleryListPayload>("list_gallery_images"),
   loadGalleryImage: (path: string) => invoke<string>("load_gallery_image", { path }),
   /** A downscaled copy no wider or taller than `edge` (640 when omitted). */
@@ -361,9 +362,12 @@ const imageApi = {
     invoke<ImageMaterialLibrary>("save_image_materials", { library }),
   addImageMaterials: (groupId: string, images: { name: string; dataUrl: string }[]) =>
     invoke<ImageMaterialLibrary>("add_image_materials", { groupId, images }),
-  /** Keep the materials in another folder; they move there unless it already holds a library. */
-  setImageMaterialsDirectory: (directory: string) =>
-    invoke<ImageMaterialLibrary>("set_image_materials_directory", { directory }),
+  /**
+   * Keep the materials in another folder; they move there unless it already holds a library.
+   * Refused with `image.errors.imageMaterialsShared` for the gallery's folder unless `allowShared`.
+   */
+  setImageMaterialsDirectory: (directory: string, allowShared = false) =>
+    invoke<ImageMaterialLibrary>("set_image_materials_directory", { directory, allowShared }),
   /** The original picture, or a copy no larger than `edge` for the grid. */
   loadImageMaterial: (id: string, edge?: number) =>
     invoke<string>("load_image_material", { id, edge: edge ?? null }),

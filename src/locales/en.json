@@ -1708,6 +1708,8 @@
       "imageMaterialsInvalid": "The image materials changed elsewhere. Reopen them and try again.",
       "imageMaterialsAdd": "Add at most 50 images at a time.",
       "imageMaterialsFull": "Image materials hold at most 1000 images. Delete a few first.",
+      "imageMaterialsShared": "The gallery already uses this folder. Choose another one.",
+      "galleryShared": "Image materials already use this folder. Choose another one.",
       "assistRouter": "The local router is not running, so the polishing model cannot be reached.",
       "assistEmpty": "The model returned nothing. Try again or choose another model."
     },
@@ -1727,6 +1729,9 @@
     "galleryEmpty": "No images yet. Generated art is saved here automatically.",
     "galleryRefresh": "Refresh gallery",
     "chooseGalleryDirectory": "Save location",
+    "gallerySharedTitle": "Share a folder with image materials?",
+    "gallerySharedDescription": "Image materials are kept in this folder. Their pictures will show up in the gallery, and deleting one from the gallery deletes the material too.",
+    "gallerySharedConfirm": "Use anyway",
     "galleryDelete": "Delete image",
     "galleryDeleted": "Removed from gallery",
     "galleryDeleteConfirm": "Delete this image?",

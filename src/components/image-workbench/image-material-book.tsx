@@ -123,6 +123,21 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
     setAdding(false);
   };
 
+  /** Move the materials to another folder; sharing the gallery's folder is the user's call. */
+  const changeFolder = async () => {
+    const selected = await library.pickDirectory();
+    if (!selected || await library.moveTo(selected) !== "shared") return;
+    setConfirm({
+      title: "和历史画册用同一个文件夹？",
+      description: "这个文件夹正被历史画册使用。合用后素材图片也会出现在画册里，在画册里删除一张，素材里的那张也会一起删掉。",
+      confirmLabel: "仍然使用",
+      onConfirm: () => {
+        setConfirm(null);
+        void library.moveTo(selected, true);
+      },
+    });
+  };
+
   const openFolder = async () => {
     try {
       await api.openPath(library.directory);
@@ -303,7 +318,7 @@ export function ImageMaterialBook({ onKindChange, collapsed, onCollapsedChange, 
         actions={library.ready && library.directory && (
           <>
             <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-              title="换一个文件夹存放图片素材，现有素材会一起搬过去" onClick={() => void library.chooseDirectory()}>
+              title="换一个文件夹存放图片素材，现有素材会一起搬过去" onClick={() => void changeFolder()}>
               <FolderInput className="h-3.5 w-3.5" /> 位置
             </Button>
             <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"

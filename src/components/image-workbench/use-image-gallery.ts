@@ -35,6 +35,8 @@ export function useImageGallery(pageActive: boolean) {
   const previewRequest = useRef(0);
   const [galleryPreviewPath, setGalleryPreviewPath] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<GalleryItem | null>(null);
+  // A folder the image materials already use, waiting for the user to accept sharing it.
+  const [sharedGalleryDir, setSharedGalleryDir] = useState<string | null>(null);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const galleryRef = useRef<HTMLDivElement>(null);
 
@@ -121,19 +123,37 @@ export function useImageGallery(pageActive: boolean) {
     }
   };
 
+  /** Moves the gallery to `selected`; the image materials' folder waits for the user's consent. */
+  const applyGalleryDirectory = async (selected: string, allowShared: boolean) => {
+    try {
+      const directory = await api.image.setGalleryDirectory(selected, allowShared);
+      setSavedGalleryDir(directory);
+      await queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
+    } catch (cause) {
+      const key = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.save";
+      if (key === "image.errors.galleryShared") {
+        setSharedGalleryDir(selected);
+        return;
+      }
+      toast({ title: t("image.saveFailed"), description: t(key.startsWith("image.") ? key : "image.errors.save"), variant: "destructive" });
+    }
+  };
+
   const chooseGalleryDirectory = async () => {
     if (!isTauriRuntime()) return;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({ directory: true, multiple: false });
-      if (typeof selected !== "string") return;
-      const directory = await api.image.setGalleryDirectory(selected);
-      setSavedGalleryDir(directory);
-      await queryClient.invalidateQueries({ queryKey: GALLERY_KEY });
-    } catch (cause) {
-      const key = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "image.errors.save";
-      toast({ title: t("image.saveFailed"), description: t(key.startsWith("image.") ? key : "image.errors.save"), variant: "destructive" });
+      if (typeof selected === "string") await applyGalleryDirectory(selected, false);
+    } catch {
+      toast({ title: t("image.saveFailed"), description: t("image.errors.save"), variant: "destructive" });
     }
+  };
+
+  const confirmSharedGalleryDir = () => {
+    const selected = sharedGalleryDir;
+    setSharedGalleryDir(null);
+    if (selected) void applyGalleryDirectory(selected, true);
   };
 
   const saveImageAs = async (src: string, index: number) => {
@@ -282,6 +302,7 @@ export function useImageGallery(pageActive: boolean) {
     galleryOpen, galleryRef, galleryQuery, galleryItems, savedGalleryDir,
     preview, previewLoading, stepPreview, galleryPreviewPath, pendingDelete, setPendingDelete,
     loadGalleryThumbnail, persistToGallery, openGalleryDirectory, chooseGalleryDirectory,
+    sharedGalleryDir, confirmSharedGalleryDir, cancelSharedGalleryDir: () => setSharedGalleryDir(null),
     saveImageAs, openGallery, refreshGallery, showPreview, closeGallery, openGalleryImage,
     saveGalleryImageAs, deleteGalleryItem,
   };

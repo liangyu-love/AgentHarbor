@@ -933,21 +933,39 @@ pub async fn save_images_to_gallery(
 pub async fn set_gallery_directory(
     repo: State<'_, Mutex<Repository>>,
     directory: String,
+    allow_shared: Option<bool>,
 ) -> Result<String, String> {
     let paths = paths(&repo)?;
-    super::blocking(move || persist_gallery_directory(&paths, std::path::Path::new(&directory)))
-        .await
+    let allow_shared = allow_shared.unwrap_or(false);
+    super::blocking(move || {
+        persist_gallery_directory(&paths, std::path::Path::new(&directory), allow_shared)
+    })
+    .await
 }
 
+/// Both paths exist and name the same folder.
+pub(super) fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// The image materials' folder is refused unless `allow_shared`: the gallery would
+/// list those pictures, and deleting one here deletes the material.
 fn persist_gallery_directory(
     paths: &CodexPaths,
     directory: &std::path::Path,
+    allow_shared: bool,
 ) -> Result<String, String> {
     let canonical = directory
         .canonicalize()
         .map_err(|_| "image.errors.save".to_owned())?;
     if !canonical.is_dir() {
         return Err("image.errors.save".into());
+    }
+    if !allow_shared
+        && !same_folder(&gallery_dir(paths), &canonical)
+        && same_folder(&super::image_materials::directory(paths), &canonical)
+    {
+        return Err("image.errors.galleryShared".into());
     }
     let setting = paths.app_data_dir.join("image-gallery-directory.json");
     let contents = serde_json::to_vec(&canonical.to_string_lossy().to_string())
@@ -956,7 +974,7 @@ fn persist_gallery_directory(
     Ok(canonical.to_string_lossy().into_owned())
 }
 
-fn gallery_dir(paths: &CodexPaths) -> std::path::PathBuf {
+pub(super) fn gallery_dir(paths: &CodexPaths) -> std::path::PathBuf {
     let setting = paths.app_data_dir.join("image-gallery-directory.json");
     std::fs::read(setting)
         .ok()
@@ -1915,7 +1933,7 @@ mod tests {
         let paths = CodexPaths::from_home(dir.path().join("codex"));
         let custom = dir.path().join("my-image-library");
         std::fs::create_dir_all(&custom).unwrap();
-        let selected = persist_gallery_directory(&paths, &custom).unwrap();
+        let selected = persist_gallery_directory(&paths, &custom, false).unwrap();
         let canonical = custom.canonicalize().unwrap();
         assert_eq!(gallery_dir(&paths), canonical);
         assert_eq!(selected, canonical.to_string_lossy());
@@ -1923,6 +1941,23 @@ mod tests {
         let image = gallery_dir(&paths).join("saved.png");
         std::fs::write(&image, b"png").unwrap();
         assert!(ensure_inside_gallery(&paths, &image).is_ok());
+    }
+
+    #[test]
+    fn sharing_the_image_materials_folder_needs_the_users_consent() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::from_home(dir.path().join("codex"));
+        let materials = super::super::image_materials::directory(&paths);
+        std::fs::create_dir_all(&materials).unwrap();
+        assert_eq!(
+            persist_gallery_directory(&paths, &materials, false).unwrap_err(),
+            "image.errors.galleryShared"
+        );
+        assert_ne!(gallery_dir(&paths), materials.canonicalize().unwrap());
+        persist_gallery_directory(&paths, &materials, true).unwrap();
+        assert_eq!(gallery_dir(&paths), materials.canonicalize().unwrap());
+        // Picking the folder already in use again does not ask twice.
+        persist_gallery_directory(&paths, &materials, false).unwrap();
     }
 
     #[test]

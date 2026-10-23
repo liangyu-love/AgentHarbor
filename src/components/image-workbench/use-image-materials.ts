@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ImageMaterial, type ImageMaterialGroup, type ImageMaterialLibrary } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
-import { formatInvokeError } from "@/lib/invoke-error";
+import { errorMessage, formatInvokeError } from "@/lib/invoke-error";
 import { queryKeys } from "@/lib/query-keys";
 import { isTauriRuntime } from "@/lib/tauri-runtime";
 import { fileToDataUrl } from "./workbench-types";
@@ -116,20 +116,35 @@ export function useImageMaterials() {
     }
   }, [queryClient]);
 
-  /** Pick another folder for the materials; they move there unless it already holds some. */
-  const chooseDirectory = useCallback(async () => {
-    if (!isTauriRuntime() || !queryClient.getQueryData(KEY)) return;
+  /** Ask the user for a folder; null when they cancel. */
+  const pickDirectory = useCallback(async () => {
+    if (!isTauriRuntime() || !queryClient.getQueryData(KEY)) return null;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({ directory: true, multiple: false });
-      if (typeof selected !== "string") return;
-      const relocate = chain.then(() => api.image.setImageMaterialsDirectory(selected));
+      return typeof selected === "string" ? selected : null;
+    } catch (cause) {
+      toast({ title: "无法打开文件夹选择", description: formatInvokeError(cause), variant: "destructive" });
+      return null;
+    }
+  }, [queryClient]);
+
+  /**
+   * Keep the materials in `directory`; they move there unless it already holds some.
+   * Resolves "shared" when it is the gallery's folder and `allowShared` is not set.
+   */
+  const moveTo = useCallback(async (directory: string, allowShared = false) => {
+    try {
+      const relocate = chain.then(() => api.image.setImageMaterialsDirectory(directory, allowShared));
       chain = relocate.catch(() => undefined);
       const library = await relocate;
       queryClient.setQueryData(KEY, library);
       toast({ title: "图片素材位置已更换", description: library.directory, variant: "success" });
+      return "moved" as const;
     } catch (cause) {
+      if (errorMessage(cause) === "image.errors.imageMaterialsShared") return "shared" as const;
       toast({ title: "更换图片素材位置失败", description: formatInvokeError(cause), variant: "destructive" });
+      return "failed" as const;
     }
   }, [queryClient]);
 
@@ -149,6 +164,7 @@ export function useImageMaterials() {
     deleteItem,
     moveItem,
     addImages,
-    chooseDirectory,
+    pickDirectory,
+    moveTo,
   };
 }

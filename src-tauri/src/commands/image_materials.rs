@@ -4,7 +4,8 @@
 //! folder unless the user picks another, so the folder alone holds the whole library.
 
 use super::image::{
-    decode_data_url, paths, thumbnail_data_url, MAX_IMAGE_BYTES, THUMBNAIL_EDGE, THUMBNAIL_JOBS,
+    decode_data_url, gallery_dir, paths, same_folder, thumbnail_data_url, MAX_IMAGE_BYTES,
+    THUMBNAIL_EDGE, THUMBNAIL_JOBS,
 };
 use crate::core::{repository::Repository, storage};
 use crate::platform::paths::CodexPaths;
@@ -84,7 +85,7 @@ pub struct NewImageMaterial {
     pub data_url: String,
 }
 
-fn directory(paths: &CodexPaths) -> PathBuf {
+pub(super) fn directory(paths: &CodexPaths) -> PathBuf {
     std::fs::read(paths.app_data_dir.join(DIRECTORY_SETTING))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok())
@@ -298,7 +299,13 @@ fn add(
 /// Keep the materials in `target` from now on. A folder that already holds a library
 /// is switched to as it is; otherwise the current pictures and index move there,
 /// copied first and removed from the old folder only once the new one is in use.
-fn relocate(paths: &CodexPaths, target: &Path) -> Result<ImageMaterialLibrary, String> {
+/// The gallery's folder is refused unless `allow_shared`: the gallery would list the
+/// pictures, and deleting one there deletes the material.
+fn relocate(
+    paths: &CodexPaths,
+    target: &Path,
+    allow_shared: bool,
+) -> Result<ImageMaterialLibrary, String> {
     let _guard = LIBRARY_LOCK
         .lock()
         .map_err(|_| "image.errors.imageMaterials".to_owned())?;
@@ -313,6 +320,9 @@ fn relocate(paths: &CodexPaths, target: &Path) -> Result<ImageMaterialLibrary, S
         .is_ok_and(|current| current == target)
     {
         return load(paths);
+    }
+    if !allow_shared && same_folder(&gallery_dir(paths), &target) {
+        return Err("image.errors.imageMaterialsShared".into());
     }
     let moving = !target.join(INDEX_FILE).exists();
     let groups = if moving {
@@ -427,9 +437,11 @@ pub async fn add_image_materials(
 pub async fn set_image_materials_directory(
     repo: State<'_, Mutex<Repository>>,
     directory: String,
+    allow_shared: Option<bool>,
 ) -> Result<ImageMaterialLibrary, String> {
     let paths = paths(&repo)?;
-    super::blocking(move || relocate(&paths, Path::new(&directory))).await
+    let allow_shared = allow_shared.unwrap_or(false);
+    super::blocking(move || relocate(&paths, Path::new(&directory), allow_shared)).await
 }
 
 /// A picture as a data URL: the original, or a copy no larger than `edge` for the grid.
@@ -636,7 +648,7 @@ mod tests {
         let custom = dir.path().join("my-materials");
         std::fs::create_dir_all(&custom).unwrap();
 
-        let moved = relocate(&paths, &custom).unwrap();
+        let moved = relocate(&paths, &custom, false).unwrap();
         let canonical = custom.canonicalize().unwrap();
         assert_eq!(directory(&paths), canonical);
         assert_eq!(moved.groups, added.groups);
@@ -648,7 +660,10 @@ mod tests {
         assert!(read_picture(&paths, &added.groups[0].items[0].id).is_ok());
 
         // Choosing the same folder again changes nothing.
-        assert_eq!(relocate(&paths, &custom).unwrap().groups, added.groups);
+        assert_eq!(
+            relocate(&paths, &custom, false).unwrap().groups,
+            added.groups
+        );
         assert!(canonical.join(&file).is_file());
     }
 
@@ -662,17 +677,37 @@ mod tests {
         std::fs::create_dir_all(&second).unwrap();
         write_index(&second, &[group("g2", "背景")]).unwrap();
 
-        let switched = relocate(&paths, &second).unwrap();
+        let switched = relocate(&paths, &second, false).unwrap();
         assert_eq!(switched.groups, vec![group("g2", "背景")]);
         assert!(
             first.join(INDEX_FILE).is_file(),
             "the other library stays where it was"
         );
-        assert_eq!(relocate(&paths, &first).unwrap().groups[0].items.len(), 1);
         assert_eq!(
-            relocate(&paths, &dir.path().join("missing")).unwrap_err(),
+            relocate(&paths, &first, false).unwrap().groups[0]
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            relocate(&paths, &dir.path().join("missing"), false).unwrap_err(),
             "image.errors.imageMaterials"
         );
+    }
+
+    #[test]
+    fn sharing_the_gallery_folder_needs_the_users_consent() {
+        let (_dir, paths) = temp_paths();
+        save(&paths, library(vec![group("g1", "人物")])).unwrap();
+        let gallery = gallery_dir(&paths);
+        std::fs::create_dir_all(&gallery).unwrap();
+        assert_eq!(
+            relocate(&paths, &gallery, false).unwrap_err(),
+            "image.errors.imageMaterialsShared"
+        );
+        assert_ne!(directory(&paths), gallery.canonicalize().unwrap());
+        relocate(&paths, &gallery, true).unwrap();
+        assert_eq!(directory(&paths), gallery.canonicalize().unwrap());
     }
 
     #[test]

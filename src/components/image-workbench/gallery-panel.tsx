@@ -15,6 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { formatDateTime, formatRelative } from "@/lib/format-time";
 import { storageKeys } from "@/lib/storage-keys";
 import type { GalleryItem } from "@/lib/api";
@@ -330,7 +331,7 @@ function GalleryCard({ item, gallery, onOpen, onUsePrompt, onUseAsReference }: {
   );
 }
 
-/** Delete confirmation and the zoomable full-size preview. */
+/** Delete and shared-folder confirmations, and the zoomable full-size preview. */
 export function GalleryOverlays({ gallery, pageActive, onUsePrompt, onUseAsReference }: {
   gallery: ImageGallery;
   pageActive: boolean;
@@ -360,6 +361,15 @@ export function GalleryOverlays({ gallery, pageActive, onUsePrompt, onUseAsRefer
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ConfirmDialog
+        request={gallery.sharedGalleryDir === null ? null : {
+          title: t("image.gallerySharedTitle"),
+          description: t("image.gallerySharedDescription"),
+          confirmLabel: t("image.gallerySharedConfirm"),
+          onConfirm: gallery.confirmSharedGalleryDir,
+        }}
+        onClose={gallery.cancelSharedGalleryDir} />
 
       {preview && entry && pageActive && createPortal(
         <ImageViewer
