@@ -132,20 +132,24 @@ export function GenerationForm({
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          <div role="radiogroup" aria-label="生成张数"
-            className="flex h-9 shrink-0 items-center rounded-[0.65rem] bg-black/[0.04] p-0.5 ring-1 ring-border/50 dark:bg-white/[0.04]">
-            {COUNTS.map(value => (
-              <button key={value} type="button" role="radio" aria-checked={count === value} aria-label={`${value} 张`}
-                onClick={() => setCount(value)}
-                className={cn(
-                  "h-8 w-8 rounded-[0.5rem] font-serif text-xs tabular-nums outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[#b83b38]/35",
-                  count === value
-                    ? "bg-background font-bold text-[#b83b38] shadow-xs dark:bg-white/[0.08] dark:text-[#fca5a5]"
-                    : "text-muted-foreground hover:text-foreground",
-                )}>
-                {value}
-              </button>
-            ))}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {/* For the eye only: the radiogroup carries its own name. */}
+            <span aria-hidden className="font-serif text-[11px] text-muted-foreground">张数</span>
+            <div role="radiogroup" aria-label="生成张数"
+              className="flex h-9 shrink-0 items-center rounded-[0.65rem] bg-black/[0.04] p-0.5 ring-1 ring-border/50 dark:bg-white/[0.04]">
+              {COUNTS.map(value => (
+                <button key={value} type="button" role="radio" aria-checked={count === value} aria-label={`${value} 张`}
+                  onClick={() => setCount(value)}
+                  className={cn(
+                    "h-8 w-8 rounded-[0.5rem] font-serif text-xs tabular-nums outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[#b83b38]/35",
+                    count === value
+                      ? "bg-background font-bold text-[#b83b38] shadow-xs dark:bg-white/[0.08] dark:text-[#fca5a5]"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}>
+                  {value}
+                </button>
+              ))}
+            </div>
           </div>
           <Select value={connection.size} onValueChange={connection.setSize}>
             <SelectTrigger className="ink-select-trigger !h-9 !w-auto min-w-0 max-w-[13rem] flex-1 basis-36" aria-label="画幅尺寸">
