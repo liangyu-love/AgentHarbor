@@ -17,6 +17,7 @@ pub mod client_config;
 pub mod client_launch;
 pub mod client_files;
 pub mod codex_config;
+pub mod codex_rollout;
 pub mod cursor_inject;
 pub mod custom_instructions;
 pub mod gateway;

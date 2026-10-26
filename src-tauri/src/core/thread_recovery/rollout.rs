@@ -16,7 +16,7 @@ pub(super) fn select_rollout(
         return find_rollout(paths, thread_id);
     }
     if let Some(catalog_path) = database.and_then(|entry| entry.rollout_path.as_deref()) {
-        if catalog_path.is_file() {
+        if codex_rollout::existing(catalog_path).is_some() {
             let path = validate_rollout_path(paths, catalog_path)?;
             let snapshot = read_rollout(&path, thread_id)?;
             if snapshot.has_session_meta {
@@ -84,8 +84,8 @@ pub(super) fn find_rollout(
                     .and_then(|name| name.to_str())
                     .unwrap_or("");
                 if !file_type.is_file()
-                    || !name.starts_with("rollout-")
-                    || !name.ends_with(".jsonl")
+                    || !codex_rollout::is_rollout_name(name)
+                    || codex_rollout::is_shadowed(&path)
                     || !name.contains(thread_id)
                 {
                     continue;
@@ -114,8 +114,13 @@ fn select_unique_rollout(
     }
 }
 
+/// Checks the rollout on disk and returns its plain path, which recovery uses as
+/// the thread's rollout identity whether or not Codex has compressed it.
 pub(super) fn validate_rollout_path(paths: &CodexPaths, path: &Path) -> Result<PathBuf, CoreError> {
-    let resolved = std::fs::canonicalize(path)?;
+    let on_disk = codex_rollout::existing(path).ok_or_else(|| {
+        CoreError::NotFound(format!("Thread rollout {}", path.display()))
+    })?;
+    let resolved = std::fs::canonicalize(on_disk)?;
     let allowed = [&paths.sessions_dir, &paths.archived_sessions_dir]
         .iter()
         .filter_map(|root| std::fs::canonicalize(root).ok())
@@ -126,11 +131,18 @@ pub(super) fn validate_rollout_path(paths: &CodexPaths, path: &Path) -> Result<P
             path.display()
         )));
     }
-    Ok(resolved)
+    Ok(codex_rollout::plain_path(&resolved))
+}
+
+fn read_rollout_bytes(path: &Path) -> Result<Vec<u8>, CoreError> {
+    let on_disk = codex_rollout::existing(path).ok_or_else(|| {
+        CoreError::NotFound(format!("Thread rollout {}", path.display()))
+    })?;
+    Ok(codex_rollout::read(&on_disk)?)
 }
 
 pub(super) fn read_rollout(path: &Path, thread_id: &str) -> Result<RolloutSnapshot, CoreError> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_rollout_bytes(path)?;
     parse_rollout_bytes(bytes, thread_id)
 }
 
@@ -149,7 +161,7 @@ pub(super) fn read_pending_rollout_snapshot(
     }
     validate_journal_mutation(journal, &backup)?;
     let path = validate_rollout_path(paths, Path::new(&backup.rollout_path))?;
-    let bytes = std::fs::read(&path)?;
+    let bytes = read_rollout_bytes(&path)?;
     let snapshot = match parse_rollout_bytes(bytes.clone(), &journal.thread_id) {
         Ok(snapshot) => snapshot,
         Err(error) if error.to_string().contains("duplicate session metadata") => {
@@ -208,7 +220,7 @@ pub(super) fn ensure_rollout_unchanged(
     path: &Path,
     expected: &RolloutSnapshot,
 ) -> Result<(), CoreError> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_rollout_bytes(path)?;
     if bytes.len() as u64 != expected.length || sha256_hex(&bytes) != expected.sha256 {
         return Err(CoreError::OperationFailed(
             "THREAD_RECOVERY_CHANGED: Rollout changed after preview".into(),

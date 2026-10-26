@@ -2,11 +2,12 @@
 //! List scanning stays unchanged; transcript bodies only leave the backend when
 //! a message page is requested. Statistics scan the file without retaining text.
 use super::{extract_chat_message, record_message, CoreError, SeenMessage};
+use crate::core::codex_rollout;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
 #[path = "details_index.rs"]
@@ -246,6 +247,16 @@ fn resolve_path(sessions: &Path, archived: &Path, key: &str) -> Result<PathBuf, 
     {
         return Err(CoreError::InvalidData("invalid thread locator".into()));
     }
+    // Codex may have compressed or restored the rollout since the list was read.
+    let alternate = match relative.strip_suffix(".zst") {
+        Some(plain) => plain.to_owned(),
+        None => format!("{relative}.zst"),
+    };
+    let relative = if !root.join(relative).exists() && root.join(&alternate).is_file() {
+        alternate.as_str()
+    } else {
+        relative
+    };
     let mut path = root.to_path_buf();
     for component in Path::new(relative).components() {
         let Component::Normal(part) = component else {
@@ -266,19 +277,52 @@ fn resolve_path(sessions: &Path, archived: &Path, key: &str) -> Result<PathBuf, 
     Ok(path)
 }
 
+/// Rollout JSONL bytes; a compressed rollout is decoded into memory so pages
+/// can seek to the same offsets as in the plain file.
+enum Body {
+    Plain(File),
+    Decoded(Cursor<Vec<u8>>),
+}
+
+impl Read for Body {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(file) => file.read(buf),
+            Self::Decoded(bytes) => bytes.read(buf),
+        }
+    }
+}
+
+impl Seek for Body {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::Plain(file) => file.seek(position),
+            Self::Decoded(bytes) => bytes.seek(position),
+        }
+    }
+}
+
+/// The JSONL reader plus the on-disk file it came from, which change checks stamp.
 fn open_snapshot(
     path: &Path,
     snapshot: Option<u64>,
-) -> Result<(BufReader<std::io::Take<File>>, u64), CoreError> {
-    let file = File::open(path)?;
-    let length = file.metadata()?.len();
+) -> Result<(BufReader<std::io::Take<Body>>, u64, File), CoreError> {
+    let source = File::open(path)?;
+    let (body, length) = if codex_rollout::is_compressed(path) {
+        let mut bytes = Vec::new();
+        codex_rollout::decoded(source.try_clone()?, true)?.read_to_end(&mut bytes)?;
+        let length = bytes.len() as u64;
+        (Body::Decoded(Cursor::new(bytes)), length)
+    } else {
+        (Body::Plain(source.try_clone()?), source.metadata()?.len())
+    };
     let bytes = snapshot.unwrap_or(length);
     if bytes > MAX_FILE_BYTES || length < bytes || bytes == 0 {
         return Err(CoreError::InvalidData(
             "rollout too large, empty or changed; refresh or open the original file".into(),
         ));
     }
-    Ok((BufReader::new(file.take(bytes)), bytes))
+    Ok((BufReader::new(body.take(bytes)), bytes, source))
 }
 
 // Discard oversized lines without allocating their full body.
@@ -391,14 +435,14 @@ pub fn read_details(
     id: &str,
 ) -> Result<ThreadDetails, CoreError> {
     let path = resolve_path(sessions, archived, key)?;
-    let (mut reader, snapshot_bytes) = open_snapshot(&path, None)?;
+    let (mut reader, snapshot_bytes, source) = open_snapshot(&path, None)?;
     let mut diagnostics = Diagnostics::default();
     let mut tracker = TokenUsageTracker::default();
     let mut model = "unknown".to_owned();
     let mut by_model = BTreeMap::<String, Usage>::new();
     let mut by_date = BTreeMap::<String, Usage>::new();
     let mut tools = BTreeMap::<String, usize>::new();
-    let fingerprint = index::stamp(reader.get_ref().get_ref())?;
+    let fingerprint = index::stamp(&source)?;
     let mut parser = MessageParser::default();
     let mut positions = Vec::new();
     visit(
@@ -473,7 +517,7 @@ pub fn read_details(
     diagnostics.last_usage_only = tracker.last_usage_only;
     diagnostics.counter_resets = tracker.counter_resets;
     let usage = tracker.usage().cloned();
-    index::ensure_unchanged(&path, reader.get_ref().get_ref(), &fingerprint)?;
+    index::ensure_unchanged(&path, &source, &fingerprint)?;
     let snapshot_id = index::token(&fingerprint);
     index::remember(
         &path,
@@ -776,7 +820,7 @@ mod tests {
         let indexed = started.elapsed();
         let started = std::time::Instant::now();
         for _ in (9000..10000).step_by(PAGE_SIZE) {
-            let (mut reader, _) =
+            let (mut reader, _, _) =
                 open_snapshot(&s.join("rollout-test.jsonl"), Some(detail.snapshot_bytes)).unwrap();
             let mut parser = MessageParser::default();
             visit(

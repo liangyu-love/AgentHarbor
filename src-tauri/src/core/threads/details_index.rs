@@ -139,8 +139,8 @@ pub(super) fn page(
     offset: usize,
     snapshot_id: Option<&str>,
 ) -> Result<MessagePage, CoreError> {
-    let (mut reader, _) = open_snapshot(path, Some(snapshot_bytes))?;
-    let fingerprint = stamp(reader.get_ref().get_ref())?;
+    let (mut reader, _, source) = open_snapshot(path, Some(snapshot_bytes))?;
+    let fingerprint = stamp(&source)?;
     if snapshot_id.is_some_and(|t| t != token(&fingerprint)) {
         cache()
             .lock()
@@ -175,7 +175,7 @@ pub(super) fn page(
             }
             true
         })?;
-        ensure_unchanged(path, reader.get_ref().get_ref(), &fingerprint)?;
+        ensure_unchanged(path, &source, &fingerprint)?;
         remember(
             path,
             fingerprint.clone(),
@@ -185,8 +185,8 @@ pub(super) fn page(
             diagnostics,
         )
     };
-    let file = reader.into_inner().into_inner();
-    let mut reader = BufReader::new(file);
+    let body = reader.into_inner().into_inner();
+    let mut reader = BufReader::new(body);
     let end = offset.saturating_add(PAGE_SIZE).min(index.positions.len());
     let mut messages = Vec::new();
     let mut line = Vec::new();
@@ -212,7 +212,7 @@ pub(super) fn page(
             text: text.chars().take(MAX_TEXT_CHARS).collect(),
         });
     }
-    ensure_unchanged(path, reader.get_ref(), &fingerprint)?;
+    ensure_unchanged(path, &source, &fingerprint)?;
     Ok(MessagePage {
         messages,
         next_offset: (end < index.positions.len()).then_some(end),

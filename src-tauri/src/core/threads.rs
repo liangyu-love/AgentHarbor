@@ -1,3 +1,4 @@
+use crate::core::codex_rollout;
 use crate::core::models::{CoreError, CoreWarning};
 use chrono::DateTime;
 use rusqlite::{params, Connection, OpenFlags};
@@ -954,7 +955,10 @@ fn collect_rollout_files(
             let path = entry.path();
             if file_type.is_dir() {
                 stack.push(path);
-            } else if file_type.is_file() && is_rollout_file(&path) {
+            } else if file_type.is_file()
+                && is_rollout_file(&path)
+                && !codex_rollout::is_shadowed(&path)
+            {
                 let relative = path.strip_prefix(root).unwrap_or(&path);
                 let scope = if archived { "archived" } else { "active" };
                 out.push(ThreadFile {
@@ -976,8 +980,7 @@ fn normalize_relative_path(path: &Path) -> String {
 }
 
 fn is_rollout_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    name.starts_with("rollout-") && name.ends_with(".jsonl")
+    codex_rollout::is_rollout_path(path)
 }
 
 fn parse_timestamp_millis(value: &serde_json::Value) -> Option<i64> {
@@ -1229,8 +1232,7 @@ fn parse_thread(
     file: &ThreadFile,
     include_messages: bool,
 ) -> Result<Option<ParsedThread>, CoreError> {
-    let source_file = File::open(&file.path)?;
-    let mut reader = BufReader::new(source_file);
+    let mut reader = codex_rollout::buffered(&file.path)?;
     let mut line = String::new();
     let mut session_id = String::new();
     let mut cwd = String::new();
@@ -1522,7 +1524,7 @@ fn stage_export(
         ))
     })?;
     let mut jsonl_source = match format {
-        ThreadExportFormat::Jsonl => Some(File::open(&file.path)?),
+        ThreadExportFormat::Jsonl => Some(codex_rollout::reader(&file.path)?),
         ThreadExportFormat::Markdown => None,
     };
     let file_name = next_export_name(&parsed.summary, format, target_dir, used_names);
@@ -2220,6 +2222,72 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "thread_rollout_mismatch"));
+    }
+
+    #[test]
+    fn compressed_rollouts_stay_available_readable_and_exportable() {
+        let root = tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archived = root.path().join("archived_sessions");
+        let output = root.path().join("output");
+        fs::create_dir_all(&sessions).unwrap();
+        let plain = sessions.join("rollout-cold.jsonl");
+        let text = rollout("cold", "C:/work", "Cold");
+        fs::write(&plain, &text).unwrap();
+        let compressed = codex_rollout::compress(&plain);
+        // A plain copy wins over a stale compressed sibling, as in Codex.
+        let fresh = sessions.join("rollout-fresh.jsonl");
+        fs::write(&fresh, rollout("fresh", "C:/work", "Fresh")).unwrap();
+        let stale = codex_rollout::compress(&fresh);
+        fs::write(&fresh, rollout("fresh", "C:/work", "Fresh")).unwrap();
+        assert!(stale.is_file());
+
+        let database = root.path().join("state_5.sqlite");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT);")
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads VALUES ('cold', ?1, 'Cold')",
+                [plain.display().to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let scan =
+            scan_threads_from_catalog_with_warnings(&database, &sessions, &archived).unwrap();
+        assert_eq!(scan.items.len(), 2, "{:?}", scan.items);
+        let cold = scan.items.iter().find(|item| item.id == "cold").unwrap();
+        assert_eq!(cold.rollout_status, "available");
+        assert_eq!(cold.user_messages, 1);
+        assert_eq!(
+            path_identity(Path::new(&cold.file_path)),
+            path_identity(&compressed)
+        );
+        let fresh_item = scan.items.iter().find(|item| item.id == "fresh").unwrap();
+        assert_eq!(path_identity(Path::new(&fresh_item.file_path)), path_identity(&fresh));
+
+        let detail = details::read_details(&sessions, &archived, &cold.key, "cold").unwrap();
+        let page =
+            details::read_messages(&sessions, &archived, &cold.key, "cold", detail.snapshot_bytes, 0)
+                .unwrap();
+        assert!(page.messages.iter().any(|message| message.text == "Cold"));
+        // A key read before Codex restored the plain file still resolves.
+        codex_rollout::materialize(&compressed).unwrap();
+        details::read_details(&sessions, &archived, &cold.key, "cold").unwrap();
+        let compressed = codex_rollout::compress(&plain);
+
+        let exported = export_threads(
+            &sessions,
+            &archived,
+            std::slice::from_ref(&cold.key),
+            &output,
+            ThreadExportFormat::Jsonl,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(output.join(&exported.files[0])).unwrap(), text);
+        assert!(compressed.is_file());
     }
 
     #[test]

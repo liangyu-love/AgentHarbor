@@ -313,6 +313,11 @@ export function CodexAccessCard({
                       })}
                     </p>
                   )}
+                  {nativeAccess && (
+                    <p data-codex-native-work-note className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+                      {t("newapi.accessNativeWorkNote")}
+                    </p>
+                  )}
                 </div>
 
                 {!nativeAccess && sources.aggregate && (

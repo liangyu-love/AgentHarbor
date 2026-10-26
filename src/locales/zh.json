@@ -813,6 +813,7 @@
     "accessNative": "原生提供方（Responses）",
     "nativeNoRouter": "原生接入 · 无需本地路由",
     "accessSelectedModel": "默认模型：{{provider}} / {{model}} · {{protocol}}",
+    "accessNativeWorkNote": "原生直连时，Codex 桌面端的 Work 模式无法发送消息（Codex 官方尚未修复）；要用 Work 请切换到路由。",
     "nativeProtocolHint": "原生接入需要 Responses 模型，请调整模型协议或选择 Responses 默认模型。",
     "nativeProviderHint": "请先启用带 API Key 和 Responses 默认模型的中转。",
     "nativeAuthHint": "使用供应商 API Key 直连，Codex 可能不显示 ChatGPT 账号。密钥保存在 Codex 本机 .env，不写入 auth.json。",

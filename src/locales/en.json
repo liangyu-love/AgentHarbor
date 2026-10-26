@@ -813,6 +813,7 @@
     "accessNative": "Native provider (Responses)",
     "nativeNoRouter": "Native access · local router not required",
     "accessSelectedModel": "Default model: {{provider}} / {{model}} · {{protocol}}",
+    "accessNativeWorkNote": "Codex desktop's Work mode cannot send messages with a native provider (an open Codex bug); switch to Router to use Work.",
     "nativeProtocolHint": "Native access needs a Responses model. Change the model protocol or pick a Responses default.",
     "nativeProviderHint": "Enable a relay with an API key and a Responses default model first.",
     "nativeAuthHint": "Connects directly with the provider API key, so Codex may not show a ChatGPT account. The key stays in Codex's local .env, never in auth.json.",

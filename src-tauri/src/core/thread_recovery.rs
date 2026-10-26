@@ -1,4 +1,4 @@
-use super::{models::CoreError, storage};
+use super::{codex_rollout, models::CoreError, storage};
 use crate::platform::{paths::CodexPaths, process};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Utc};
@@ -338,6 +338,8 @@ impl LockedRollout {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
+        // Writes go to the plain file, as Codex's own appends do.
+        let path = &codex_rollout::materialize(path)?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -2376,6 +2378,26 @@ mod tests {
             THREAD_ID,
         )
         .unwrap();
+        assert_eq!(rollout.provider.as_deref(), Some("agentharbor_native"));
+        assert!(!journal_path(&paths).exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn compressed_rollout_is_previewed_in_place_and_restored_to_plain_on_apply() {
+        let (_temp, paths) = fixture("agentharbor_native", "openai");
+        let plain = find_rollout(&paths, THREAD_ID).unwrap().unwrap().0;
+        let compressed = codex_rollout::compress(&plain);
+        let preview = preview_thread_recovery(&paths, THREAD_ID).unwrap();
+        assert!(preview.can_apply, "{}", preview.reason);
+        assert!(compressed.is_file(), "a preview must not touch the rollout");
+        assert_eq!(preview.rollout_path.as_deref().map(PathBuf::from), Some(plain.clone()));
+
+        let result =
+            apply_thread_recovery_inner(&paths, THREAD_ID, &preview.revision, false).unwrap();
+        assert!(result.changed);
+        assert!(!compressed.exists());
+        let rollout = read_rollout(&plain, THREAD_ID).unwrap();
         assert_eq!(rollout.provider.as_deref(), Some("agentharbor_native"));
         assert!(!journal_path(&paths).exists());
     }

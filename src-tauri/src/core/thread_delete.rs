@@ -1,11 +1,11 @@
-use super::{models::CoreError, storage, threads};
+use super::{codex_rollout, models::CoreError, storage, threads};
 use chrono::Utc;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
@@ -786,7 +786,7 @@ fn validate_rollout(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    if !file_name.starts_with("rollout-") || !file_name.ends_with(".jsonl") {
+    if !codex_rollout::is_rollout_name(file_name) {
         return Err(CoreError::InvalidData(
             "selected file is not a rollout".into(),
         ));
@@ -802,7 +802,7 @@ fn validate_rollout(
 }
 
 fn read_rollout_id(path: &Path) -> Result<String, CoreError> {
-    let reader = BufReader::new(File::open(path)?);
+    let reader = codex_rollout::buffered(path)?;
     let mut session_id = None;
     for line in reader.lines() {
         let line = line?;
@@ -1033,6 +1033,32 @@ mod tests {
             !has_journals(&database),
             "a finished deletion leaves no journal"
         );
+    }
+
+    #[test]
+    fn deletes_a_compressed_rollout_and_backs_up_its_bytes() {
+        let (_temp, sessions, archived, database) = fixture();
+        let plain = sessions.join("rollout-one.jsonl");
+        std::fs::write(&plain, rollout("one")).unwrap();
+        let path = codex_rollout::compress(&plain);
+        let compressed = std::fs::read(&path).unwrap();
+        // Codex keeps the plain path in its catalog.
+        insert_thread(&database, "one", &plain);
+        let result = delete_threads_inner(
+            &database,
+            &sessions,
+            &archived,
+            &["active:rollout-one.jsonl.zst".into()],
+        )
+        .unwrap();
+        assert_eq!(result.rollout_files_deleted, 1);
+        assert!(!path.exists());
+        let backup = std::fs::read_dir(&result.backup_path)
+            .unwrap()
+            .flatten()
+            .find(|entry| entry.file_name().to_string_lossy().ends_with(".jsonl.zst"))
+            .unwrap();
+        assert_eq!(std::fs::read(backup.path()).unwrap(), compressed);
     }
 
     /// Simulates a crash after the rollout was removed: writes the journal the way

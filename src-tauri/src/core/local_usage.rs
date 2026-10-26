@@ -1,13 +1,13 @@
 //! Usage records read from local Codex and Claude Code transcripts. They live
 //! in the usage ledger (see `usage_ledger`) and outlive the transcripts: a
 //! deleted or archived session keeps its usage.
+use super::codex_rollout;
 use chrono::DateTime;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -317,12 +317,10 @@ fn discover(root: &Path, source_id: &'static str, codex_only: bool, output: &mut
                 .and_then(|value| value.to_str())
                 .map(|value| value.eq_ignore_ascii_case("jsonl"))
                 .unwrap_or(false);
-            let rollout = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(|value| value.starts_with("rollout-"))
-                .unwrap_or(false);
-            if jsonl && (!codex_only || rollout) {
+            // Codex compresses cold rollouts to `.jsonl.zst`.
+            let rollout =
+                codex_rollout::is_rollout_path(&path) && !codex_rollout::is_shadowed(&path);
+            if (codex_only && rollout) || (!codex_only && jsonl) {
                 output.push(SourceFile { source_id, path });
             }
         }
@@ -483,8 +481,7 @@ fn parse_claude(path: &Path, fallback: i64) -> Result<(Vec<UsageRecord>, Option<
 }
 
 fn visit_values(path: &Path, mut visit: impl FnMut(usize, Value)) -> Result<u64, String> {
-    let file = File::open(path).map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(file);
+    let mut reader = codex_rollout::buffered(path).map_err(|error| error.to_string())?;
     let mut line = String::new();
     let mut index = 0_usize;
     let mut invalid = 0_u64;
@@ -782,6 +779,11 @@ mod tests {
             )
         };
         assert_eq!(codex(), (1, 130, 1));
+
+        // Codex compressing a cold rollout neither drops nor doubles its usage.
+        let compressed = codex_rollout::compress(&rollout);
+        assert_eq!(codex(), (1, 130, 1));
+        codex_rollout::materialize(&compressed).unwrap();
 
         let moved = archived.join("rollout-a.jsonl");
         fs::rename(&rollout, &moved).unwrap();
