@@ -26,7 +26,7 @@ Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness、Grok B
 - **本地路由**：三种协议自动互相转换；支持模型聚合，按优先级失败切换
 - **通用网关**：一个本地地址加上 API Key，任何支持自定义 Base URL 的 agent 都能用上全部模型
 - **跨协议联网搜索**：各客户端自带的联网搜索在其他协议的模型上照样可用
-- **Cursor 接入**：在 Cursor 的 Agent、Tab 补全和提交信息中使用自己配置的模型
+- **Cursor 接入**：在 Cursor 的 Agent、Tab 补全和提交信息中使用自己配置的模型。Cursor 3.27 新增的本地 Agent 循环协议（`RunInference`）暂未实现：AgentHarbor 会拒绝它，Cursor 随后自动回退到旧版 Agent 协议，使用不受影响。如果以后 Cursor 去掉这个回退，经 AgentHarbor 的对话会失效，需等 `RunInference` 适配完成
 - **远程主机**：通过 SSH 修改服务器上 Codex、Claude Code、OpenCode 和 Pi 的配置（主机按 `ssh` 命令的规则解析，支持 ssh-agent、私钥文件和密码登录），直连中转或经 SSH 隧道使用本机路由；配置目录跟随服务器的 `CODEX_HOME`、`CLAUDE_CONFIG_DIR`；Codex 可写成 profile，与官方账号并存；还能一键部署联网搜索 MCP（DeepSeek 搜索接口或 MiMo 自带搜索），可预览、可恢复
 - **一键启动**：改完配置后直接启动或重启对应客户端
 

@@ -26,7 +26,7 @@ Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness, Grok Build a
 - **Local router**: automatic translation between the three protocols, plus model aggregation with priority-based failover
 - **Gateway**: one local address and an API key give any agent with a custom base URL every model you have
 - **Cross-protocol web search**: each client's built-in web search keeps working on models of another protocol
-- **Cursor**: use your own models for Cursor's Agent, Tab completion and commit messages
+- **Cursor**: use your own models for Cursor's Agent, Tab completion and commit messages. Cursor 3.27's new local agent loop (`RunInference`) is not implemented yet: AgentHarbor declines it, and Cursor falls back to the classic agent protocol, which works as before. If Cursor drops that fallback, chats through AgentHarbor stop working until `RunInference` is supported
 - **Remote hosts**: edit Codex, Claude Code, OpenCode and Pi configuration on servers over SSH (hosts resolved as `ssh` resolves them; ssh-agent keys, key files or a password), direct to a relay or through this computer's router over an SSH tunnel; config directories follow the server's `CODEX_HOME` and `CLAUDE_CONFIG_DIR`, Codex can be a profile beside its official sign-in, and a web search MCP server (DeepSeek's search API or MiMo's own search) deploys in one click, with preview and restore
 - **One-click launch**: start or restart a client right after changing its configuration
 
