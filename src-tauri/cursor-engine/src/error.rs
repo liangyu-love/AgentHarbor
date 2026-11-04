@@ -13,6 +13,10 @@ pub enum Error {
     Config(String),
     #[error("protocol error: {0}")]
     Protocol(String),
+    // Cursor recognizes this exact PermissionDenied message and reruns using
+    // AgentService, which this engine supports, instead of retrying RunInference.
+    #[error("InferenceService.RunInference is not enabled for this account")]
+    InferenceUnavailable,
     #[error("provider error: {0}")]
     Provider(String),
     #[error("store error: {0}")]
@@ -38,6 +42,7 @@ pub enum Error {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = match self {
+            Self::InferenceUnavailable => StatusCode::FORBIDDEN,
             Self::Config(_) | Self::Protocol(_) | Self::Decode(_) | Self::Json(_) => {
                 StatusCode::BAD_REQUEST
             }
@@ -52,6 +57,7 @@ impl IntoResponse for Error {
         // Every error answered to Cursor is logged, or its reason shows only there.
         tracing::warn!(%status, error = %self, "request failed");
         let code = match status {
+            StatusCode::FORBIDDEN => "permission_denied",
             StatusCode::BAD_REQUEST => "invalid_argument",
             StatusCode::NOT_FOUND => "not_found",
             StatusCode::CONFLICT => "aborted",

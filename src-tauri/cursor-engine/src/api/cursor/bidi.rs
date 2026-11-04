@@ -153,6 +153,24 @@ fn history_image_count(history: &agent::ConversationHistory) -> usize {
         .sum()
 }
 
+// New Cursor local-loop clients share BidiAppend with AgentService, but field 1
+// of their run request is a conversation UUID, not ConversationStateStructure.
+// Decode only the discriminating fields; the remaining inference protocol is
+// intentionally handled by Cursor's built-in fallback to AgentService.
+#[derive(Clone, PartialEq, Message)]
+struct InferenceClientMessage {
+    #[prost(message, optional, tag = "1")]
+    run_request: Option<InferenceRunRequest>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct InferenceRunRequest {
+    #[prost(string, tag = "1")]
+    conversation_id: String,
+    #[prost(message, optional, tag = "3")]
+    requested_model: Option<agent::RequestedModel>,
+}
+
 pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
     let request_id = request
         .request_id
@@ -160,18 +178,34 @@ pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
         .map(|id| id.request_id.as_str())
         .filter(|id| !id.is_empty())
         .ok_or_else(|| Error::Protocol("BidiAppend request_id is required".into()))?;
-    if !request.data_binary.is_empty() {
+    if !request.data_binary.is_empty() && !request.data.is_empty() {
         return Err(Error::Protocol(
-            "BidiAppend data_binary is not part of the captured protocol".into(),
+            "BidiAppend must not contain both data and data_binary".into(),
         ));
     }
-    if request.data.is_empty() {
+    if request.data.is_empty() && request.data_binary.is_empty() {
         return Err(Error::Protocol(
             "BidiAppend contains no AgentClientMessage".into(),
         ));
     }
-    let payload = hex::decode(&request.data)
-        .map_err(|error| Error::Protocol(format!("invalid BidiAppend hex: {error}")))?;
+    let payload = if request.data_binary.is_empty() {
+        hex::decode(&request.data)
+            .map_err(|error| Error::Protocol(format!("invalid BidiAppend hex: {error}")))?
+    } else {
+        request.data_binary.clone()
+    };
+    if let Ok(InferenceClientMessage {
+        run_request: Some(run),
+    }) = InferenceClientMessage::decode(payload.as_slice())
+    {
+        if uuid::Uuid::parse_str(&run.conversation_id).is_ok()
+            && run
+                .requested_model
+                .is_some_and(|model| !model.model_id.is_empty())
+        {
+            return Err(Error::InferenceUnavailable);
+        }
+    }
     Ok(DecodedAppend {
         request_id: request_id.into(),
         seqno: request.append_seqno,

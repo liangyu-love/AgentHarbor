@@ -136,3 +136,89 @@ async fn bidi_append_gzip_body_is_decompressed_before_protobuf_decode() {
     assert!(text.contains("BidiAppend contains no AgentClientMessage"));
     assert!(!text.contains("protobuf decode error"));
 }
+
+#[tokio::test]
+async fn inference_handshake_requests_cursors_legacy_fallback_in_both_encodings() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let registry = fixtures::registry(
+        store,
+        Arc::new(fake_provider::FakeProvider::default()),
+        PromptCompiler::new(PromptAssets::embedded().unwrap()),
+    );
+    let clients = NetworkClients::new(cursor_engine::host::Host::new());
+    let router = cursor::router(registry, cursor::proxy::CursorProxy::cursor(clients));
+    // Sanitized wire shape captured from Cursor 3.27: RunInferenceClientMessage
+    // -> RunInferenceRunRequest { conversation_id: UUID, requested_model }.
+    // These bytes must never be interpreted as ConversationStateStructure.
+    let payload = [
+        b"\x0a\x32\x0a\x24".as_slice(),
+        b"00000000-0000-4000-8000-000000000001",
+        b"\x1a\x0a\x0a\x08ah-local",
+    ]
+    .concat();
+    for binary in [false, true] {
+        let request = ai::BidiAppendRequest {
+            request_id: Some(ai::BidiRequestId {
+                request_id: "inference-handshake".into(),
+            }),
+            data: if binary {
+                String::new()
+            } else {
+                hex::encode(&payload)
+            },
+            data_binary: if binary { payload.clone() } else { Vec::new() },
+            ..Default::default()
+        };
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/aiserver.v1.BidiService/BidiAppend")
+                    .header(header::CONTENT_TYPE, "application/proto")
+                    .body(Body::from(request.encode_to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "permission_denied");
+        assert_eq!(
+            error["message"],
+            "InferenceService.RunInference is not enabled for this account"
+        );
+    }
+}
+
+#[test]
+fn legacy_bidi_messages_still_decode_and_malformed_data_stays_an_error() {
+    for binary in [false, true] {
+        let payload = hex::decode("1a0408011a00").unwrap();
+        let request = ai::BidiAppendRequest {
+            request_id: Some(ai::BidiRequestId {
+                request_id: "legacy-ack".into(),
+            }),
+            data: if binary {
+                String::new()
+            } else {
+                hex::encode(&payload)
+            },
+            data_binary: if binary { payload } else { Vec::new() },
+            ..Default::default()
+        };
+        let decoded = cursor::bidi::decode(&request).unwrap();
+        assert!(matches!(
+            decoded.message.message,
+            Some(pb::agent_client_message::Message::KvClientMessage(_))
+        ));
+        let malformed = ai::BidiAppendRequest {
+            data: "not hex".into(),
+            data_binary: Vec::new(),
+            ..request
+        };
+        assert!(matches!(
+            cursor::bidi::decode(&malformed),
+            Err(cursor_engine::Error::Protocol(_))
+        ));
+    }
+}

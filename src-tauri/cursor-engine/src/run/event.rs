@@ -30,6 +30,7 @@ impl From<crate::Error> for RunFailure {
         use crate::Error;
         match error {
             Error::Protocol(message) | Error::Config(message) => Self::Protocol(message),
+            Error::InferenceUnavailable => Self::Protocol(error.to_string()),
             Error::Provider(message) => Self::Provider(message),
             Error::Store(message) => Self::Store(message),
             Error::Cancelled => Self::Client("run was cancelled".into()),
