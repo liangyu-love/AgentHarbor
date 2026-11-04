@@ -2,7 +2,7 @@
 //! Only [DONE]/message_stop completes a stream; EOF cannot complete tool calls.
 
 use super::canonical::{CanonicalEvent, MAX_RETAINED_BYTES};
-use super::responses::{openai_usage, valid_function_call, Completion};
+use super::responses::{openai_usage, valid_function_call, with_details, Completion};
 use super::Translation;
 use crate::core::router::ModelProtocol;
 use serde_json::{json, Value};
@@ -758,7 +758,7 @@ impl StreamTranslator {
         let mut response = json!({
             "id":self.response_id,"object":"response","model":self.model,
             "output":self.output,
-            "usage":self.usage.clone().unwrap_or_else(|| json!({"input_tokens":0,"output_tokens":0,"total_tokens":0})),
+            "usage":with_details(self.usage.clone().unwrap_or_else(|| json!({"input_tokens":0,"output_tokens":0,"total_tokens":0}))),
         });
         completion.apply(&mut response);
         response
@@ -1011,11 +1011,15 @@ mod tests {
         assert!(!before_done.join("").contains(".done"));
         assert!(t.completed_response().is_none());
         events.extend(before_done);
-        events.extend(feed(&mut t, json!({"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}})));
+        events.extend(feed(&mut t, json!({"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8,
+            "completion_tokens_details":{"reasoning_tokens":2}}})));
         events.extend(t.push(b"data: [DONE]\n\n"));
         let response = terminal_response(&events);
         assert_eq!(response["status"], "completed");
         assert_eq!(response["usage"]["total_tokens"], 8);
+        // Grok Build refuses a Responses usage without both detail objects.
+        assert_eq!(response["usage"]["input_tokens_details"], json!({"cached_tokens":0}));
+        assert_eq!(response["usage"]["output_tokens_details"], json!({"reasoning_tokens":2}));
         assert_eq!(response["output"][0]["content"][0]["text"], "Hello");
         assert_eq!(response["output"][1]["name"], "lookup");
         assert_eq!(t.completed_response(), Some(&response));

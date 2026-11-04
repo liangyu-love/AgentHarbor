@@ -686,7 +686,8 @@ fn messages_usage_reaches_responses_and_chat_callers_with_its_cache_counted_in()
         translator.finish();
         translator.completed_response().expect("a completed response")["usage"].clone()
     }
-    let expected = json!({"input_tokens":105,"output_tokens":7,"total_tokens":112,"input_tokens_details":{"cached_tokens":80}});
+    let expected = json!({"input_tokens":105,"output_tokens":7,"total_tokens":112,"input_tokens_details":{"cached_tokens":80},
+        "output_tokens_details":{"reasoning_tokens":0}});
     for from in [ModelProtocol::Responses, ModelProtocol::ChatCompletions] {
         assert_eq!(streamed(from, json!({"output_tokens":7})), expected, "{from:?}");
         // Counts are cumulative: a relay repeating zeros keeps the start's.

@@ -316,14 +316,28 @@ fn finish(
         "status": "completed",
         "model": upstream.get("model").and_then(Value::as_str).unwrap_or_default(),
         "output": output,
-        "usage": usage.unwrap_or_else(|| json!({
+        "usage": with_details(usage.unwrap_or_else(|| json!({
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
-        })),
+        }))),
     });
     completion.apply(&mut response);
     response
+}
+
+/// Responses usage as strict readers take it: Grok Build refuses a usage
+/// without both detail objects, which OpenAI always sends.
+pub(super) fn with_details(mut usage: Value) -> Value {
+    if usage.is_object() {
+        if usage.get("input_tokens_details").map_or(true, Value::is_null) {
+            usage["input_tokens_details"] = json!({"cached_tokens": 0});
+        }
+        if usage.get("output_tokens_details").map_or(true, Value::is_null) {
+            usage["output_tokens_details"] = json!({"reasoning_tokens": 0});
+        }
+    }
+    usage
 }
 
 pub(super) fn openai_usage(usage: &Value) -> Value {
@@ -340,6 +354,7 @@ pub(super) fn openai_usage(usage: &Value) -> Value {
         "output_tokens": output,
         "total_tokens": usage.get("total_tokens").and_then(Value::as_u64).unwrap_or(input + output),
         "input_tokens_details": {"cached_tokens":usage["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0)},
+        "output_tokens_details": {"reasoning_tokens":usage["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0)},
     })
 }
 
