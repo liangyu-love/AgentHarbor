@@ -756,7 +756,7 @@ export function ConfigDialog({ client, providers, onClose, onApplied, remote }: 
               <section className="space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-3.5" aria-labelledby="client-model-label">
                 <div className="flex items-center justify-between gap-2"><Label id="client-model-label" htmlFor="client-model" className="flex items-center gap-1.5">
                   <Star aria-hidden className="h-3.5 w-3.5 fill-amber-400 text-amber-500" />
-                  {t(isClaude ? "clients.startupModel" : client.targetId === "pi" ? "clients.piModel" : "clients.model")}</Label>
+                  {t(isClaude || client.targetId === "grok" ? "clients.startupModel" : client.targetId === "pi" ? "clients.piModel" : "clients.model")}</Label>
                   {selectedProtocol && <Badge variant="outline" className="text-[10px]">{t("newapi.protocol" + (selectedProtocol === "responses" ? "Responses" : selectedProtocol === "chatCompletions" ? "ChatCompletions" : "AnthropicMessages"))}</Badge>}
                 </div>
                 <Select disabled={busy || selected.length + selectedAggregates.length === 0} value={!modelCompatible ? "" : claudeMixed ? JSON.stringify(["mixed:", request.model])

@@ -557,7 +557,7 @@ api.loadSnapshot = async () => ({ data: { status: {
   autoSwitch: { supported: true, enabled: false, threshold5hPercent: 15, thresholdWeeklyPercent: 10 },
 } } }) as any;
 // Like core/mcp/library.rs: one list, a switch per agent; unsupported and missing agents refuse.
-const MCP_APPS = ["codex", "claudeCode", "openCode", "pi", "cursor", "harness", "claudeDesktop"];
+const MCP_APPS = ["codex", "claudeCode", "openCode", "pi", "cursor", "harness", "grok", "claudeDesktop"];
 const mcpInstalled = new Set(["codex", "claudeCode", "openCode", "cursor"]);
 const mcpUnsupported = (app: string, name: string, spec: any) =>
   spec.transport === "sse" && ["codex", "pi", "harness"].includes(app) ? "mcp.unsupported.sse"
@@ -972,6 +972,11 @@ api.targets.files = async () => [
     keyFile("credentials", ".credentials.yaml", "C:/synthetic/.dsh/.credentials.yaml", true),
     keyFile("homePatch", "cordis.patch.yml", "C:/synthetic/.dsh/cordis.patch.yml", false),
     keyFile("sessions", "sessions/", "C:/synthetic/.dsh/sessions", true, true),
+  ] },
+  { client: "grok", files: [
+    keyFile("config", "config.toml", "C:/synthetic/.grok/config.toml", true),
+    keyFile("auth", "auth.json", "C:/synthetic/.grok/auth.json", false),
+    keyFile("sessions", "sessions/", "C:/synthetic/.grok/sessions", true, true),
   ] },
 ];
 // Cursor injection: a settings record the switches change, as cursor_inject does.

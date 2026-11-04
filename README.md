@@ -16,13 +16,13 @@
 
 ## What it is
 
-Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness and Cursor each keep accounts, models, sessions, MCP servers and instructions in their own places. AgentHarbor manages them from one desktop app: switch accounts, wire in third-party relays, combine models and clean up sessions without hand-editing config files. Every change to a client's configuration is backed up first and can be restored at any time.
+Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness, Grok Build and Cursor each keep accounts, models, sessions, MCP servers and instructions in their own places. AgentHarbor manages them from one desktop app: switch accounts, wire in third-party relays, combine models and clean up sessions without hand-editing config files. Every change to a client's configuration is backed up first and can be restored at any time.
 
 ## Features
 
 ### Models and routing
 - **Relays**: manage many model providers over Responses, Chat Completions and Anthropic Messages, with connectivity tests, balance checks, import/export and a model capability catalog (context, prices and more)
-- **Model inject**: connect relay and account models to Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness and Cursor in one click, with preview, apply and restore
+- **Model inject**: connect relay and account models to Codex, Claude Code, Claude Desktop, OpenCode, Pi, DeepSeek Harness, Grok Build and Cursor in one click, with preview, apply and restore
 - **Local router**: automatic translation between the three protocols, plus model aggregation with priority-based failover
 - **Gateway**: one local address and an API key give any agent with a custom base URL every model you have
 - **Cross-protocol web search**: each client's built-in web search keeps working on models of another protocol

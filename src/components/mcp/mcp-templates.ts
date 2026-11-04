@@ -1,7 +1,7 @@
 import type { McpApp, McpSpec } from "@/types";
 
 /** The agents in the order the matrix shows them. */
-export const MCP_APPS: McpApp[] = ["codex", "claudeCode", "openCode", "pi", "cursor", "harness", "claudeDesktop"];
+export const MCP_APPS: McpApp[] = ["codex", "claudeCode", "openCode", "pi", "cursor", "harness", "grok", "claudeDesktop"];
 
 /** Common servers to start from; the form can change anything before saving. */
 export const MCP_TEMPLATES: { name: string; label: string; spec: McpSpec }[] = [

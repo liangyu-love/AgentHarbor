@@ -13,6 +13,8 @@ pub enum TargetId {
     Pi,
     /// DeepSeek Harness (`dsh`), configured through a profile's Cordis patch.
     Harness,
+    /// xAI Grok Build (`grok`), configured through `$GROK_HOME/config.toml`.
+    Grok,
 }
 
 /// Paths for the Codex catalog-backed conversation store. Claude Code uses its
@@ -181,7 +183,7 @@ mod tests {
     fn configuration_only_clients_do_not_fall_back_to_codex_capabilities() {
         let dir = tempfile::tempdir().unwrap();
         let registry = TargetRegistry::new(CodexPaths::from_home(dir.path().join(".codex")));
-        for id in [TargetId::ClaudeCode, TargetId::OpenCode] {
+        for id in [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Grok] {
             assert!(registry.process(id).is_none());
             assert!(registry.conversations(id).is_none());
         }

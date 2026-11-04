@@ -25,10 +25,11 @@ pub enum McpApp {
     Cursor,
     Harness,
     ClaudeDesktop,
+    Grok,
 }
 
 impl McpApp {
-    pub const ALL: [McpApp; 7] = [
+    pub const ALL: [McpApp; 8] = [
         McpApp::Codex,
         McpApp::ClaudeCode,
         McpApp::OpenCode,
@@ -36,6 +37,7 @@ impl McpApp {
         McpApp::Cursor,
         McpApp::Harness,
         McpApp::ClaudeDesktop,
+        McpApp::Grok,
     ];
 
     fn key(self) -> &'static str {
@@ -47,6 +49,7 @@ impl McpApp {
             McpApp::Cursor => "cursor",
             McpApp::Harness => "harness",
             McpApp::ClaudeDesktop => "claude-desktop",
+            McpApp::Grok => "grok",
         }
     }
 }
@@ -194,6 +197,12 @@ pub fn targets(codex: &CodexPaths, clients: &ClientPaths, desktop: Option<PathBu
             path: desktop.unwrap_or_default(),
             codex: None,
         },
+        Target {
+            app: McpApp::Grok,
+            installed: dir_exists(&clients.grok),
+            path: clients.grok.clone(),
+            codex: None,
+        },
     ]
 }
 
@@ -260,7 +269,7 @@ impl Target {
     /// do not tell SSE from HTTP.
     fn held(&self, spec: &McpSpec) -> McpSpec {
         let mut spec = spec.clone();
-        if !matches!(self.app, McpApp::Codex | McpApp::Pi | McpApp::Harness) {
+        if !matches!(self.app, McpApp::Codex | McpApp::Pi | McpApp::Harness | McpApp::Grok) {
             spec.cwd = None;
         }
         if matches!(self.app, McpApp::OpenCode | McpApp::Cursor) && spec.transport == McpKind::Sse {
@@ -278,6 +287,7 @@ impl Target {
         match self.app {
             McpApp::Codex => self.read_codex(),
             McpApp::Harness => self.read_harness(),
+            McpApp::Grok => self.read_grok(),
             _ => {
                 let (_, document) = self.json_document(read_text(&self.path)?.as_deref())?;
                 Ok(document
@@ -309,6 +319,32 @@ impl Target {
                 }
                 config.extend(harness_config(name, spec));
                 harness_mcp_rows::upsert(text, &id, &Value::Object(config))
+            }),
+            McpApp::Grok => self.edit_text(backups, |text| {
+                let mut document = grok_document(text)?;
+                let servers = document
+                    .entry("mcp_servers")
+                    .or_insert_with(|| {
+                        let mut servers = toml_edit::Table::new();
+                        servers.set_implicit(true);
+                        toml_edit::Item::Table(servers)
+                    })
+                    .as_table_like_mut()
+                    .ok_or(SHAPE)?;
+                if servers.get(name).is_none() {
+                    servers.insert(name, toml_edit::Item::Table(toml_edit::Table::new()));
+                }
+                let server = servers
+                    .get_mut(name)
+                    .and_then(toml_edit::Item::as_table_like_mut)
+                    .ok_or(SHAPE)?;
+                for key in GROK_KEYS {
+                    server.remove(key);
+                }
+                for (key, value) in grok_table(spec) {
+                    server.insert(key, toml_edit::Item::Value(value));
+                }
+                Ok(Some(document.to_string()))
             }),
             _ => self.edit_text(backups, |text| {
                 let (id, mut document) = self.json_document(text)?;
@@ -352,6 +388,15 @@ impl Target {
                     Some(id) => harness_mcp_rows::remove(text, &id),
                     None => Ok(text.map(str::to_owned)),
                 }
+            }),
+            McpApp::Grok => self.edit_text(backups, |text| {
+                let mut document = grok_document(text)?;
+                let removed = document
+                    .get_mut("mcp_servers")
+                    .and_then(toml_edit::Item::as_table_like_mut)
+                    .and_then(|servers| servers.remove(name))
+                    .is_some();
+                Ok(if removed { Some(document.to_string()) } else { text.map(str::to_owned) })
             }),
             _ => self.edit_text(backups, |text| {
                 let (id, mut document) = self.json_document(text)?;
@@ -437,6 +482,47 @@ impl Target {
                     })
                     .flatten();
                 Some((name, Live { spec, on: true }))
+            })
+            .collect())
+    }
+
+    fn read_grok(&self) -> Result<BTreeMap<String, Live>, String> {
+        let text = read_text(&self.path)?;
+        let document: toml::Table = text
+            .as_deref()
+            .unwrap_or("")
+            .trim_start_matches('\u{feff}')
+            .parse()
+            .map_err(|_| "mcp.errors.configUnreadable")?;
+        let servers = match document.get("mcp_servers") {
+            None => return Ok(BTreeMap::new()),
+            Some(toml::Value::Table(servers)) => servers,
+            Some(_) => return Err(SHAPE.into()),
+        };
+        Ok(servers
+            .iter()
+            .map(|(name, entry)| {
+                let entry = serde_json::to_value(entry).unwrap_or(Value::Null);
+                let on = entry.get("enabled").and_then(Value::as_bool) != Some(false);
+                let spec = if let Some(url) = entry.get("url").and_then(Value::as_str) {
+                    let sse = entry.get("type").and_then(Value::as_str) == Some("sse");
+                    Some(McpSpec {
+                        transport: if sse { McpKind::Sse } else { McpKind::Http },
+                        url: Some(url.to_owned()),
+                        headers: strings(entry.get("headers")),
+                        ..Default::default()
+                    })
+                } else {
+                    entry.get("command").and_then(Value::as_str).map(|command| McpSpec {
+                        transport: McpKind::Stdio,
+                        command: Some(command.to_owned()),
+                        args: string_list(entry.get("args")),
+                        env: strings(entry.get("env")),
+                        cwd: entry.get("cwd").and_then(Value::as_str).map(str::to_owned),
+                        ..Default::default()
+                    })
+                };
+                (name.clone(), Live { spec, on })
             })
             .collect())
     }
@@ -728,6 +814,63 @@ fn codex_table(spec: &McpSpec) -> toml::Table {
     table
 }
 
+/// Keys of a Grok server table the page writes. Timeouts, OAuth, setup and
+/// the rest of the table belong to the user and are kept.
+const GROK_KEYS: [&str; 8] = ["enabled", "type", "command", "args", "env", "cwd", "url", "headers"];
+
+/// Grok's `config.toml`, refused when its `mcp_servers` is not a table.
+fn grok_document(text: Option<&str>) -> Result<toml_edit::DocumentMut, String> {
+    let document: toml_edit::DocumentMut = text
+        .unwrap_or("")
+        .trim_start_matches('\u{feff}')
+        .parse()
+        .map_err(|_| "mcp.errors.configUnreadable")?;
+    if document
+        .get("mcp_servers")
+        .is_some_and(|servers| !servers.is_table_like())
+    {
+        return Err(SHAPE.into());
+    }
+    Ok(document)
+}
+
+/// The keys of a Grok server table the page sets for `spec`, as `grok mcp add` writes them.
+fn grok_table(spec: &McpSpec) -> Vec<(&'static str, toml_edit::Value)> {
+    let map = |values: &BTreeMap<String, String>| {
+        let mut table = toml_edit::InlineTable::new();
+        for (key, value) in values {
+            table.insert(key, value.as_str().into());
+        }
+        toml_edit::Value::InlineTable(table)
+    };
+    let mut table = Vec::new();
+    match spec.transport {
+        McpKind::Stdio => {
+            table.push(("command", spec.command.as_deref().unwrap_or_default().into()));
+            if !spec.args.is_empty() {
+                table.push(("args", spec.args.iter().map(String::as_str).collect::<toml_edit::Array>().into()));
+            }
+            if !spec.env.is_empty() {
+                table.push(("env", map(&spec.env)));
+            }
+            if let Some(cwd) = &spec.cwd {
+                table.push(("cwd", cwd.as_str().into()));
+            }
+        }
+        McpKind::Http | McpKind::Sse => {
+            table.push(("url", spec.url.as_deref().unwrap_or_default().into()));
+            if spec.transport == McpKind::Sse {
+                table.push(("type", "sse".into()));
+            }
+            if !spec.headers.is_empty() {
+                table.push(("headers", map(&spec.headers)));
+            }
+        }
+    }
+    table.push(("enabled", true.into()));
+    table
+}
+
 const HARNESS_KEYS: [&str; 8] = [
     "serverName",
     "transport",
@@ -782,6 +925,7 @@ mod tests {
             temp.path().join(".cursor"),
             temp.path().join(".dsh"),
             temp.path().join("Claude"),
+            temp.path().join(".grok"),
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -900,6 +1044,24 @@ mod tests {
         let rows = harness_mcp_rows::read(Some(&text)).unwrap();
         assert_eq!(rows[0].1["toolCallTimeoutMs"], 9000);
         assert_eq!(rows[1].0, "mcp-fetch");
+
+        let grok = &targets[7];
+        std::fs::write(
+            &grok.path,
+            "# my grok\n[ui]\ntheme = \"oscura-midnight\"\n\n[mcp_servers.fetch]\ncommand = \"old\"\ntool_timeout_sec = 90\n\n[mcp_servers.fetch.env]\nOLD = \"x\"\n",
+        )
+        .unwrap();
+        grok.write("fetch", &stdio(), &backups).unwrap();
+        grok.write("remote", &remote(McpKind::Sse), &backups).unwrap();
+        let text = std::fs::read_to_string(&grok.path).unwrap();
+        assert!(text.starts_with("# my grok\n[ui]\ntheme = \"oscura-midnight\"\n"), "{text}");
+        let raw: toml::Table = text.parse().unwrap();
+        assert_eq!(raw["mcp_servers"]["fetch"]["tool_timeout_sec"].as_integer(), Some(90));
+        assert_eq!(raw["mcp_servers"]["fetch"]["env"]["TOKEN"].as_str(), Some("${TOKEN}"));
+        assert!(raw["mcp_servers"]["fetch"]["env"].get("OLD").is_none());
+        assert_eq!(raw["mcp_servers"]["remote"]["type"].as_str(), Some("sse"));
+        grok.remove("remote", &backups).unwrap();
+        assert!(!std::fs::read_to_string(&grok.path).unwrap().contains("remote"));
         drop(temp);
     }
 
@@ -915,6 +1077,7 @@ mod tests {
         assert_eq!(reasons[1], None, "Claude Code");
         assert_eq!(reasons[3], Some("mcp.unsupported.sse"), "Pi");
         assert_eq!(reasons[6], Some("mcp.unsupported.remote"), "Claude Desktop");
+        assert_eq!(reasons[7], None, "Grok");
         assert_eq!(
             targets[5].unsupported("my.server", &stdio()),
             Some("mcp.unsupported.harnessName")

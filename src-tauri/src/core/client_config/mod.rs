@@ -5,6 +5,7 @@
 mod aggregate_models;
 mod claude;
 mod claude_official;
+mod grok;
 mod harness;
 mod jsonc;
 mod mixed_models;
@@ -14,6 +15,7 @@ mod pi;
 mod options;
 mod owned;
 mod takeover;
+mod toml_doc;
 mod version;
 pub use claude_official::ClaudeOfficialPreview;
 pub(crate) use harness::mcp_rows as harness_mcp_rows;
@@ -43,6 +45,7 @@ static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static CLAUDE: claude::ClaudeCode = claude::ClaudeCode;
 static OPENCODE: opencode::OpenCode = opencode::OpenCode;
 static PI: pi::Pi = pi::Pi;
+static GROK: grok::Grok = grok::Grok;
 
 #[derive(Clone)]
 pub struct ClientPaths {
@@ -56,6 +59,8 @@ pub struct ClientPaths {
     pub cursor_cli: PathBuf,
     /// DeepSeek Harness's home (`$DSH_HOME`, else `~/.dsh`).
     pub harness: PathBuf,
+    /// Grok Build's user configuration (`$GROK_HOME/config.toml`, else `~/.grok/config.toml`).
+    pub grok: PathBuf,
 }
 
 impl ClientPaths {
@@ -87,6 +92,7 @@ impl ClientPaths {
             cursor: super::cursor_inject::ide::user_dir().unwrap_or_else(|| config.join("Cursor").join("User")),
             cursor_cli: home.join(".cursor"),
             harness: harness::home(&home, std::env::var_os("DSH_HOME")),
+            grok: env_path("GROK_HOME").unwrap_or_else(|| home.join(".grok")).join("config.toml"),
         }
     }
 
@@ -116,6 +122,10 @@ impl ClientPaths {
             cursor: PathBuf::from(format!("{config}/Cursor/User")),
             cursor_cli: at(".cursor"),
             harness: at(".dsh"),
+            grok: PathBuf::from(format!(
+                "{}/config.toml",
+                var("GROK_HOME").unwrap_or_else(|| format!("{home}/.grok"))
+            )),
         }
     }
 
@@ -128,6 +138,7 @@ impl ClientPaths {
             cursor: home.join(".config/Cursor/User"),
             cursor_cli: home.join(".cursor"),
             harness: home.join(".dsh"),
+            grok: home.join(".grok/config.toml"),
         }
     }
 }
@@ -200,6 +211,7 @@ fn adapter(id: TargetId) -> Result<&'static dyn ClientAdapter, String> {
         TargetId::ClaudeCode => Ok(&CLAUDE),
         TargetId::OpenCode => Ok(&OPENCODE),
         TargetId::Pi => Ok(&PI),
+        TargetId::Grok => Ok(&GROK),
         // Harness edits two YAML files through its own transaction (harness/).
         TargetId::Codex | TargetId::Harness => Err("clients.errors.unsupported".into()),
     }
@@ -485,7 +497,7 @@ impl ConfigManager {
     /// The clients, each direct configuration checked against `store` for a
     /// card changed since it was written.
     pub fn list_with(&self, store: Option<&Store>) -> Vec<ClientStatus> {
-        [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
+        [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi, TargetId::Grok]
             .into_iter()
             .map(|id| self.status(id, store))
             .chain(std::iter::once(self.harness_status(store)))
@@ -557,6 +569,7 @@ impl ConfigManager {
             TargetId::OpenCode => "opencode.dat",
             TargetId::Pi => "pi.dat",
             TargetId::Harness => "harness.dat",
+            TargetId::Grok => "grok.dat",
             TargetId::Codex => "codex.dat",
         })
     }
@@ -896,7 +909,7 @@ impl ConfigManager {
     /// ([`Self::resume_parked`]) once the router listens again.
     pub fn restore_router_configs_on_exit(&self) -> Vec<(TargetId, String)> {
         let harness = self.harness_stored_request().ok().flatten().filter(ConfigRequest::needs_router);
-        [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi]
+        [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi, TargetId::Grok]
             .into_iter()
             .filter_map(|id| match self.session(id) {
                 Ok(Some(session)) if session.request.needs_router() => {
@@ -1083,7 +1096,7 @@ impl ConfigManager {
                 warnings: &mut warnings,
                 managed_provider_keys: previous.as_ref().map(|session| {
                     session.changes.iter().filter_map(|change| {
-                        (change.path.first().is_some_and(|key| key == "providers"))
+                        (change.path.first().is_some_and(|key| key == "providers" || key == "model"))
                             .then(|| change.path.get(1).cloned()).flatten()
                     }).collect()
                 }).unwrap_or_default(),
@@ -1304,7 +1317,7 @@ struct Plan {
 
 pub fn has_router_configs(data_dir: &Path) -> Result<bool, String> {
     let manager = ConfigManager::new(data_dir, ClientPaths::from_home(Path::new(".")));
-    for id in [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi] {
+    for id in [TargetId::ClaudeCode, TargetId::OpenCode, TargetId::Pi, TargetId::Grok] {
         match manager.session(id) {
             Ok(Some(session)) if session.request.needs_router() => return Ok(true),
             Ok(_) => {}
@@ -1349,7 +1362,9 @@ fn parse(text: Option<&str>, id: TargetId) -> Result<Value, String> {
     if id == TargetId::Pi && text.len() > 1024 * 1024 {
         return Err("clients.errors.invalidConfig".into());
     }
-    let value: Value = if matches!(id, TargetId::OpenCode | TargetId::Pi) {
+    let value: Value = if id == TargetId::Grok {
+        toml_doc::read(text)?
+    } else if matches!(id, TargetId::OpenCode | TargetId::Pi) {
         json5::from_str(text).map_err(|_| "clients.errors.invalidConfig")?
     } else if id == TargetId::ClaudeCode {
         // Claude's settings.json is JSON, but other tools may have written
@@ -1388,6 +1403,9 @@ pub(crate) fn render_client_json(
 }
 
 fn render(id: TargetId, base: Option<&str>, next: &Value) -> Result<String, String> {
+    if id == TargetId::Grok {
+        return toml_doc::patch(base, next);
+    }
     let normalized = format!(
         "{}\n",
         serde_json::to_string_pretty(next).map_err(|_| "clients.errors.storage")?
@@ -1446,6 +1464,7 @@ fn conflicting_paths(document: &Value, session: &Session) -> Vec<Vec<String>> {
         .filter(|change| {
             !owned::is_element_array_path(&change.path)
                 && !is_claude_model_selection(document, session, &change.path)
+                && !grok::is_default_selection(document, session, &change.path)
                 && field(document, &change.path) != change.after.as_ref()
                 && field(document, &change.path) != change.before.as_ref()
         })

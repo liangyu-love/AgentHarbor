@@ -61,7 +61,7 @@ const summarizeExclusions = (
 export function ClientConfigs({ providers, onOpenRelays, target }: {
   providers: NewApiProvider[];
   onOpenRelays?: () => void;
-  target: "claudeCode" | "opencode" | "pi" | "harness";
+  target: "claudeCode" | "opencode" | "pi" | "harness" | "grok";
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();

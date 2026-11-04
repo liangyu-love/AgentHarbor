@@ -215,6 +215,7 @@ pub(super) fn router_source_prefix(target: TargetId) -> &'static str {
         TargetId::Codex => "/clients/codex",
         TargetId::Pi => "/clients/pi",
         TargetId::Harness => "/clients/harness",
+        TargetId::Grok => "/clients/grok",
     }
 }
 

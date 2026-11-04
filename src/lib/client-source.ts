@@ -4,6 +4,7 @@ export const CLIENT_SOURCES = [
   { value: "opencode", labelKey: "newapi.routeSourceOpenCode" },
   { value: "pi", labelKey: "newapi.routeSourcePi" },
   { value: "harness", labelKey: "newapi.routeSourceHarness" },
+  { value: "grok", labelKey: "newapi.routeSourceGrok" },
   { value: "claudeDesktop", labelKey: "newapi.routeSourceClaudeDesktop" },
   { value: "cursor", labelKey: "newapi.routeSourceCursor" },
   { value: "imageWorkbench", labelKey: "newapi.routeSourceImageWorkbench" },

@@ -120,6 +120,15 @@ pub fn collect(
             dir("sessions", clients.harness.join("sessions")),
         ],
     });
+    let grok = clients.grok.parent().map(Path::to_path_buf).unwrap_or_default();
+    groups.push(ClientFiles {
+        client: "grok",
+        files: vec![
+            file("config", clients.grok.clone()),
+            file("auth", grok.join("auth.json")),
+            dir("sessions", grok.join("sessions")),
+        ],
+    });
     groups
 }
 
@@ -178,7 +187,7 @@ mod tests {
         };
         assert_eq!(
             groups.iter().map(|group| group.client).collect::<Vec<_>>(),
-            ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "cursor", "harness"]
+            ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "cursor", "harness", "grok"]
         );
         assert_eq!(
             present("codex"),
@@ -219,6 +228,14 @@ mod tests {
                 ("cliConfig", "cli-config.json", false),
                 ("certificate", "cursor-ca.crt", false),
                 ("conversations", "conversations.db", false),
+            ]
+        );
+        assert_eq!(
+            present("grok"),
+            [
+                ("config", "config.toml", false),
+                ("auth", "auth.json", false),
+                ("sessions", "sessions/", false),
             ]
         );
         let paths: Vec<_> = groups

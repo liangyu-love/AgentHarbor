@@ -1,6 +1,8 @@
 use super::*;
 #[path = "aggregate_tests.rs"]
 mod aggregate_tests;
+#[path = "grok_tests.rs"]
+mod grok_tests;
 #[path = "native_tests.rs"]
 mod native_tests;
 #[path = "ownership_tests.rs"]

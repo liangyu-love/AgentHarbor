@@ -74,7 +74,7 @@ function OrbitHub({ links, running, onOpen }: { links: Record<Client, Link>; run
           <path id={`${id}-ring`} d="M160,160 m-157,0 a157,157 0 1,1 314,0 a157,157 0 1,1 -314,0" />
         </defs>
         <g className="orbit-text-spin">
-          <text className="orbit-text"><textPath href={`#${id}-ring`}>AGENTHARBOR · LOCAL ROUTER · CODEX · CLAUDE · OPENCODE · PI · HARNESS · CURSOR ·</textPath></text>
+          <text className="orbit-text"><textPath href={`#${id}-ring`}>AGENTHARBOR · LOCAL ROUTER · CODEX · CLAUDE · OPENCODE · PI · HARNESS · GROK · CURSOR ·</textPath></text>
         </g>
         <circle cx="160" cy="160" r={ORBIT} fill="none" className="dash-orbit-ring stroke-muted-foreground/30" strokeWidth="1.2" strokeDasharray="2 7" />
         <circle cx="160" cy="160" r={ORBIT - 46} fill="none" className="stroke-muted-foreground/20" strokeDasharray="1 6" />
@@ -303,6 +303,8 @@ export function OverviewPage({ onNavigate, onOpenProxySettings }: {
       path: harness?.harness?.home ?? "", ok: !!harness?.configured,
       detail: harness?.configured && harness.request?.harnessProfile
         ? t("workspace.dataHarnessProfile", { profile: harness.request.harnessProfile }) : t("workspace.dataConfigFile") },
+    { key: "grok", name: "Grok Build", mark: <ClientGlyph client="grok" className="h-4 w-4" />, path: configDir("grok"),
+      ok: !!clientConfigs.data?.find((client) => client.targetId === "grok")?.configured, detail: t("workspace.dataConfigFile") },
     { key: "cursor", name: "Cursor", mark: <ClientGlyph client="cursor" className="h-4 w-4" />,
       path: cursor.data?.settingsPath ? parentDir(cursor.data.settingsPath) : "",
       ok: !!cursor.data && (cursor.data.ideApplied || cursor.data.cliApplied),

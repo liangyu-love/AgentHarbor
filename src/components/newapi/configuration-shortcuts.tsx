@@ -7,11 +7,11 @@ import codexMark from "@/assets/client-marks/openai.svg";
 import openCodeMark from "@/assets/client-marks/opencode.svg";
 import { HARNESS_MARK_PATH, HARNESS_MARK_VIEWBOX } from "./harness-mark";
 
-export type ShortcutTarget = "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "harness" | "aggregation";
+export type ShortcutTarget = "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "harness" | "grok" | "aggregation";
 
 /** The mark of each agent the MCP and Skills pages write to. */
 export const AGENT_GLYPHS: Record<McpApp, ShortcutTarget> = {
-  codex: "codex", claudeCode: "claudeCode", openCode: "opencode", pi: "pi", cursor: "cursor", harness: "harness", claudeDesktop: "claudeDesktop",
+  codex: "codex", claudeCode: "claudeCode", openCode: "opencode", pi: "pi", cursor: "cursor", harness: "harness", grok: "grok", claudeDesktop: "claudeDesktop",
 };
 
 // Provider marks are shared with the client cards; Claude's small badge
@@ -31,6 +31,11 @@ export function ClientGlyph({ client, className }: { client: ShortcutTarget; cla
   // Harness's own whale, following the foreground colour as its sidebar does.
   if (client === "harness") return <svg viewBox={HARNESS_MARK_VIEWBOX} className={className} fill="currentColor" aria-hidden>
     <path d={HARNESS_MARK_PATH} />
+  </svg>;
+  // Grok Build: a ring cut by a slash, drawn in the foreground colour.
+  if (client === "grok") return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor"
+    strokeWidth="2.2" strokeLinecap="round" aria-hidden>
+    <path d="M17.2 6.1A8.5 8.5 0 1 0 19.4 15" /><path d="M5.5 19.5 19.5 4.5" />
   </svg>;
   const claude = client === "claudeCode" || client === "claudeDesktop";
   const mark = claude ? claudeMark : client === "opencode" ? openCodeMark : codexMark;
@@ -52,6 +57,7 @@ export const shortcutEntries: Record<ShortcutTarget, { label: string; fold: stri
   pi: { label: "newapi.routeSourcePi", fold: "client-configs", target: "client-config-pi" },
   cursor: { label: "newapi.routeSourceCursor", fold: "client-configs", target: "cursor-access-title" },
   harness: { label: "newapi.routeSourceHarness", fold: "client-configs", target: "client-config-harness" },
+  grok: { label: "newapi.routeSourceGrok", fold: "client-configs", target: "client-config-grok" },
   aggregation: { label: "aggregation.title", fold: "aggregation", target: "aggregation-title" },
 };
 

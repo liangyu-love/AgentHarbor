@@ -179,6 +179,7 @@ pub(super) fn path(data_dir: &Path, id: TargetId) -> PathBuf {
         TargetId::OpenCode => "opencode.owned.dat",
         TargetId::Pi => "pi.owned.dat",
         TargetId::Harness => "harness.owned.dat",
+        TargetId::Grok => "grok.owned.dat",
         TargetId::Codex => "codex.owned.dat",
     })
 }

@@ -33,6 +33,7 @@ fn program(target: TargetId) -> &'static str {
         TargetId::OpenCode => "opencode",
         TargetId::Pi => "pi",
         TargetId::Harness => "dsh",
+        TargetId::Grok => "grok",
     }
 }
 

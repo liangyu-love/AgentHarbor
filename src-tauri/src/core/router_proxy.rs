@@ -737,6 +737,7 @@ fn client_request_path(path: &str) -> (String, Option<&'static str>) {
         ("/clients/opencode/", "opencode"),
         ("/clients/pi/", "pi"),
         ("/clients/harness/", "harness"),
+        ("/clients/grok/", "grok"),
         ("/clients/codex/", "codex"),
         ("/clients/cursor/", "cursor"),
         ("/clients/image-workbench/", "imageWorkbench"),

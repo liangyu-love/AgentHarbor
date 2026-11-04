@@ -162,7 +162,7 @@ export interface CustomInstructionPreviewPayload {
 }
 
 /** The agents whose MCP servers the MCP page manages. */
-export type McpApp = "codex" | "claudeCode" | "openCode" | "pi" | "cursor" | "harness" | "claudeDesktop";
+export type McpApp = "codex" | "claudeCode" | "openCode" | "pi" | "cursor" | "harness" | "grok" | "claudeDesktop";
 export type McpKind = "stdio" | "http" | "sse";
 
 /** One server as the library keeps it, whatever agent it is written to. */

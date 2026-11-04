@@ -2,6 +2,7 @@ import { testClaudeSupport } from "./test-claude-support.mjs";
 import { testMcpLibrary } from "./test-mcp-library.mjs";
 import { testPiIntegration } from "./test-pi-integration.mjs";
 import { testHarnessIntegration } from "./test-harness-integration.mjs";
+import { testGrokIntegration } from "./test-grok-integration.mjs";
 import { testImageDownload } from "./test-image-download.mjs";
 import { testImageApi } from "./test-image-api.mjs";
 import { testImagePrompts } from "./test-image-prompts.mjs";
@@ -122,6 +123,8 @@ try {
     await testPiIntegration({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "harness-integration") {
     await testHarnessIntegration({ page, reset, captureDir });
+  } else if (process.env.FRONTEND_QA_SCOPE === "grok-integration") {
+    await testGrokIntegration({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "claude-support") {
     await testClaudeSupport({ page, reset, captureDir });
   } else if (process.env.FRONTEND_QA_SCOPE === "mcp") {
@@ -1610,6 +1613,7 @@ try {
   await testMcpLibrary({ page, reset, captureDir });
   await testPiIntegration({ page, reset, captureDir });
   await testHarnessIntegration({ page, reset, captureDir });
+  await testGrokIntegration({ page, reset, captureDir });
   await testThreadUiFixes({ page, reset, captureDir });
   await testAggregation({ page, reset, captureDir });
   await testCodexSubagents({ page, reset, captureDir });

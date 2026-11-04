@@ -16,13 +16,13 @@
 
 ## 这是什么
 
-Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness 和 Cursor 各自把账号、模型、会话、MCP 和指令存在不同的地方。AgentHarbor 把它们集中到一个桌面应用里管理：切换账号、接入第三方中转、组合模型、清理会话，都不用再手改配置文件。所有对客户端配置的修改都会先备份，可以随时恢复。
+Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness、Grok Build 和 Cursor 各自把账号、模型、会话、MCP 和指令存在不同的地方。AgentHarbor 把它们集中到一个桌面应用里管理：切换账号、接入第三方中转、组合模型、清理会话，都不用再手改配置文件。所有对客户端配置的修改都会先备份，可以随时恢复。
 
 ## 功能
 
 ### 模型与路由
 - **中转管理**：管理多个模型供应商，支持 Responses、Chat Completions、Anthropic Messages 三种协议，可测试连通性、查看余额、导入导出，并提供模型能力目录（上下文、价格等）
-- **模型注入**：一键把中转模型和账号模型接入 Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness 和 Cursor，可预览、应用、恢复
+- **模型注入**：一键把中转模型和账号模型接入 Codex、Claude Code、Claude Desktop、OpenCode、Pi、DeepSeek Harness、Grok Build 和 Cursor，可预览、应用、恢复
 - **本地路由**：三种协议自动互相转换；支持模型聚合，按优先级失败切换
 - **通用网关**：一个本地地址加上 API Key，任何支持自定义 Base URL 的 agent 都能用上全部模型
 - **跨协议联网搜索**：各客户端自带的联网搜索在其他协议的模型上照样可用

@@ -20,7 +20,7 @@ import { UsageSegments } from "./usage-segments";
 /** Rows a ranking shows before the rest fold away. */
 const FOLD = 5;
 
-const GLYPH_CLIENTS = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "harness", "cursor"] as const;
+const GLYPH_CLIENTS = ["codex", "claudeCode", "claudeDesktop", "opencode", "pi", "harness", "grok", "cursor"] as const;
 type GlyphClient = typeof GLYPH_CLIENTS[number];
 
 export function ClientIcon({ client }: { client: string }) {

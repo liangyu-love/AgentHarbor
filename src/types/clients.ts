@@ -1,7 +1,7 @@
 import type { ModelProtocol } from "./newapi";
 import type { ModelSelection } from "./aggregation";
 
-export type TargetId = "codex" | "claudeCode" | "opencode" | "pi" | "harness";
+export type TargetId = "codex" | "claudeCode" | "opencode" | "pi" | "harness" | "grok";
 /** One initialized DeepSeek Harness profile and its patch file. */
 export interface HarnessProfile {
   name: string;
@@ -57,7 +57,7 @@ export interface ClientKeyFile {
   exists: boolean;
 }
 export interface ClientFiles {
-  client: "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "harness";
+  client: "codex" | "claudeCode" | "claudeDesktop" | "opencode" | "pi" | "cursor" | "harness" | "grok";
   files: ClientKeyFile[];
 }
 export interface ClaudeModels {

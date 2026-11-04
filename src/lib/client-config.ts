@@ -84,7 +84,8 @@ export const conflictScopes = (fields: string[]): ConflictScope[] => {
 
 /** What the user does after a write for the client to read it. */
 export const reloadHint = (target: ClientStatus["targetId"]) =>
-  target === "pi" ? "clients.piReload" : target === "harness" ? "clients.harnessReload" : "clients.restartHint";
+  target === "pi" ? "clients.piReload" : target === "harness" ? "clients.harnessReload"
+    : target === "grok" ? "clients.grokReload" : "clients.restartHint";
 
 export const clientProtocols = (client: ClientStatus, mode: ClientAccessMode): ModelProtocol[] =>
   client.targetId === "claudeCode" && mode === "router"
